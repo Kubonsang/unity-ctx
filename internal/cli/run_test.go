@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"unity-ctx/internal/contextpack"
 )
@@ -220,6 +221,58 @@ func TestQueryRejectsInvalidSelectorCombination(t *testing.T) {
 	}
 }
 
+func TestQueryRejectsZeroIDWhenAnotherSelectorIsPresent(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"query",
+		"testdata/scenes/simple_scene.unity",
+		"--id",
+		"0",
+		"--type",
+		"GameObject",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR query requires exactly one of --id, --name, or --type\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestQueryRejectsEmptyNameWhenAnotherSelectorIsPresent(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"query",
+		"testdata/scenes/simple_scene.unity",
+		"--name",
+		"",
+		"--type",
+		"GameObject",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR query requires exactly one of --id, --name, or --type\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
 func TestQueryNotFoundQuotesNameWithSpaces(t *testing.T) {
 	result := runCLI(
 		t,
@@ -366,6 +419,433 @@ func TestGetReturnsAssetField(t *testing.T) {
 	want := "OK field=maxHealth value=200\n"
 	if result.stdout != want {
 		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestSetAssetDryRunReturnsPlanAndDoesNotWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enemy_config.asset")
+	content := "" +
+		"%YAML 1.1\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: EnemyConfig\n" +
+		"  maxHealth: 200\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	result := runCLI(
+		t,
+		"asset",
+		"set",
+		path,
+		"--field",
+		"maxHealth",
+		"--value",
+		"300",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q", result.exitCode, result.stderr)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	want := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(data) != content {
+		t.Fatal("dry-run should not modify file")
+	}
+}
+
+func TestSetAssetWriteCreatesBackupAndVerifies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enemy_config.asset")
+	content := "" +
+		"%YAML 1.1\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: EnemyConfig\n" +
+		"  maxHealth: 200\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	result := runCLI(
+		t,
+		"asset",
+		"set",
+		path,
+		"--field",
+		"maxHealth",
+		"--value",
+		"300",
+		"--write",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q", result.exitCode, result.stderr)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	want := "WRITE backup=" + path + ".bak field=maxHealth old=200 new=300 type_hint=int changed=1 verified=1\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestSetAssetWriteNoOpDoesNotWriteOrCreateBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enemy_config.asset")
+	content := "" +
+		"%YAML 1.1\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: EnemyConfig\n" +
+		"  maxHealth: 200\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	wantTime := time.Unix(1_700_000_000, 123_000_000)
+	if err := os.Chtimes(path, wantTime, wantTime); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat() before error = %v", err)
+	}
+
+	result := runCLI(
+		t,
+		"asset",
+		"set",
+		path,
+		"--field",
+		"maxHealth",
+		"--value",
+		"200",
+		"--write",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	want := "OK field=maxHealth old=200 new=200 type_hint=int changed=0 verified=1\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat() after error = %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("mtime changed: got %v want %v", after.ModTime(), before.ModTime())
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(data) != content {
+		t.Fatal("no-op write should not modify file")
+	}
+
+	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("expected no backup file, got err=%v", err)
+	}
+}
+
+func TestSetAssetWriteVerifiesStringLookingScalarSemantically(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enemy_config.asset")
+	content := "" +
+		"%YAML 1.1\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: EnemyConfig\n" +
+		"  label: starter\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	result := runCLI(
+		t,
+		"asset",
+		"set",
+		path,
+		"--field",
+		"label",
+		"--value",
+		"001",
+		"--write",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	want := "WRITE backup=" + path + ".bak field=label old=starter new=\"001\" type_hint=string changed=1 verified=1\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestSetRejectsUnsupportedNamespace(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"set",
+		"testdata/scenes/simple_scene.unity",
+		"--id",
+		"2000",
+		"--field",
+		"m_Name",
+		"--value",
+		"Chair_02",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR set not implemented for namespace=scene\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSetRequiresField(t *testing.T) {
+	result := runCLI(
+		t,
+		"asset",
+		"set",
+		"testdata/assets/enemy_config.asset",
+		"--value",
+		"300",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR set requires --field\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSetRequiresValue(t *testing.T) {
+	result := runCLI(
+		t,
+		"asset",
+		"set",
+		"testdata/assets/enemy_config.asset",
+		"--field",
+		"maxHealth",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR set requires --value\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSetAllowsExplicitEmptyValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enemy_config.asset")
+	content := "" +
+		"%YAML 1.1\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: EnemyConfig\n" +
+		"  label: starter\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	result := runCLI(
+		t,
+		"asset",
+		"set",
+		path,
+		"--field",
+		"label",
+		"--value",
+		"",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	want := "DRY_RUN field=label old=starter new=\"\" type_hint=string changed=1\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestSetRejectsIrrelevantFlags(t *testing.T) {
+	result := runCLI(
+		t,
+		"asset",
+		"set",
+		"testdata/assets/enemy_config.asset",
+		"--field",
+		"maxHealth",
+		"--value",
+		"300",
+		"--component",
+		"MonoBehaviour",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR set does not accept --name, --type, --component, --out, --task, --focus, or --max-tokens\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSetSupportsIDSelection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "multi.asset")
+	content := "" +
+		"%YAML 1.1\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: ConfigA\n" +
+		"  maxHealth: 100\n" +
+		"--- !u!114 &11400001\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: ConfigB\n" +
+		"  maxHealth: 200\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	result := runCLI(
+		t,
+		"asset",
+		"set",
+		path,
+		"--id",
+		"11400001",
+		"--field",
+		"maxHealth",
+		"--value",
+		"300",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q", result.exitCode, result.stderr)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	want := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestSetJSONReturnsResultEnvelope(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enemy_config.asset")
+	content := "" +
+		"%YAML 1.1\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: EnemyConfig\n" +
+		"  maxHealth: 200\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	result := runCLI(
+		t,
+		"asset",
+		"set",
+		path,
+		"--field",
+		"maxHealth",
+		"--value",
+		"300",
+		"--json",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0", result.exitCode)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	var got struct {
+		Status    string `json:"status"`
+		Namespace string `json:"namespace"`
+		Command   string `json:"command"`
+		File      string `json:"file"`
+		View      string `json:"view"`
+		Body      string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &got); err != nil {
+		t.Fatalf("parse stdout json: %v\nstdout=%q", err, result.stdout)
+	}
+
+	if got.Status != "OK" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "OK")
+	}
+	if got.Namespace != "asset" {
+		t.Fatalf("namespace mismatch: got %q want %q", got.Namespace, "asset")
+	}
+	if got.Command != "set" {
+		t.Fatalf("command mismatch: got %q want %q", got.Command, "set")
+	}
+	if got.File != path {
+		t.Fatalf("file mismatch: got %q want %q", got.File, path)
+	}
+	if got.View != "compact" {
+		t.Fatalf("view mismatch: got %q want %q", got.View, "compact")
+	}
+	wantBody := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1"
+	if got.Body != wantBody {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, wantBody)
 	}
 }
 
@@ -934,38 +1414,38 @@ func TestContextPackPrefabJSONReturnsResultEnvelope(t *testing.T) {
 
 func TestNonContextPackCommandsRejectContextPackFlags(t *testing.T) {
 	tests := []struct {
-		name     string
-		args     []string
-		wantErr  string
+		name    string
+		args    []string
+		wantErr string
 	}{
 		{
-			name: "summarize rejects task",
-			args: []string{"scene", "summarize", "testdata/scenes/simple_scene.unity", "--task", "inspect props"},
+			name:    "summarize rejects task",
+			args:    []string{"scene", "summarize", "testdata/scenes/simple_scene.unity", "--task", "inspect props"},
 			wantErr: "ERROR summarize does not accept --task, --focus, or --max-tokens\n",
 		},
 		{
-			name: "query rejects focus",
-			args: []string{"scene", "query", "testdata/scenes/simple_scene.unity", "--id", "2000", "--focus", "Chair_01"},
+			name:    "query rejects focus",
+			args:    []string{"scene", "query", "testdata/scenes/simple_scene.unity", "--id", "2000", "--focus", "Chair_01"},
 			wantErr: "ERROR query does not accept --task, --focus, or --max-tokens\n",
 		},
 		{
-			name: "inspect rejects max tokens",
-			args: []string{"prefab", "inspect", "testdata/prefabs/enemy.prefab", "--component", "NavMeshAgent", "--max-tokens", "32"},
+			name:    "inspect rejects max tokens",
+			args:    []string{"prefab", "inspect", "testdata/prefabs/enemy.prefab", "--component", "NavMeshAgent", "--max-tokens", "32"},
 			wantErr: "ERROR inspect does not accept --task, --focus, or --max-tokens\n",
 		},
 		{
-			name: "get rejects task",
-			args: []string{"asset", "get", "testdata/assets/enemy_config.asset", "--field", "maxHealth", "--task", "read health"},
+			name:    "get rejects task",
+			args:    []string{"asset", "get", "testdata/assets/enemy_config.asset", "--field", "maxHealth", "--task", "read health"},
 			wantErr: "ERROR get does not accept --task, --focus, or --max-tokens\n",
 		},
 		{
-			name: "index rejects focus",
-			args: []string{"scene", "index", "testdata/scenes/simple_scene.unity", "--out", "ignored.index.json", "--focus", "Chair_01"},
+			name:    "index rejects focus",
+			args:    []string{"scene", "index", "testdata/scenes/simple_scene.unity", "--out", "ignored.index.json", "--focus", "Chair_01"},
 			wantErr: "ERROR index does not accept --task, --focus, or --max-tokens\n",
 		},
 		{
-			name: "summarize rejects explicit default max tokens",
-			args: []string{"scene", "summarize", "testdata/scenes/simple_scene.unity", "--max-tokens", "256"},
+			name:    "summarize rejects explicit default max tokens",
+			args:    []string{"scene", "summarize", "testdata/scenes/simple_scene.unity", "--max-tokens", "256"},
 			wantErr: "ERROR summarize does not accept --task, --focus, or --max-tokens\n",
 		},
 	}
@@ -982,6 +1462,106 @@ func TestNonContextPackCommandsRejectContextPackFlags(t *testing.T) {
 			}
 			if result.stderr != tt.wantErr {
 				t.Fatalf("stderr mismatch: got %q want %q", result.stderr, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestNonSetCommandsRejectWriteFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "summarize",
+			args: []string{"scene", "summarize", "testdata/scenes/simple_scene.unity", "--write"},
+		},
+		{
+			name: "query",
+			args: []string{"scene", "query", "testdata/scenes/simple_scene.unity", "--id", "2000", "--write"},
+		},
+		{
+			name: "inspect",
+			args: []string{"prefab", "inspect", "testdata/prefabs/enemy.prefab", "--component", "NavMeshAgent", "--write"},
+		},
+		{
+			name: "get",
+			args: []string{"asset", "get", "testdata/assets/enemy_config.asset", "--field", "maxHealth", "--write"},
+		},
+		{
+			name: "index",
+			args: []string{"scene", "index", "testdata/scenes/simple_scene.unity", "--out", "ignored.index.json", "--write"},
+		},
+		{
+			name: "context-pack",
+			args: []string{"scene", "context-pack", "testdata/scenes/simple_scene.unity", "--focus", "Chair_01", "--write"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runCLI(t, tc.args...)
+
+			if result.exitCode != 2 {
+				t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+			}
+			if result.stdout != "" {
+				t.Fatalf("expected empty stdout, got %q", result.stdout)
+			}
+
+			want := fmt.Sprintf("ERROR %s does not accept --write\n", tc.name)
+			if result.stderr != want {
+				t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+			}
+		})
+	}
+}
+
+func TestNonSetCommandsRejectValueFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "summarize",
+			args: []string{"scene", "summarize", "testdata/scenes/simple_scene.unity", "--value", "300"},
+		},
+		{
+			name: "query",
+			args: []string{"scene", "query", "testdata/scenes/simple_scene.unity", "--id", "2000", "--value", "300"},
+		},
+		{
+			name: "inspect",
+			args: []string{"prefab", "inspect", "testdata/prefabs/enemy.prefab", "--component", "NavMeshAgent", "--value", "300"},
+		},
+		{
+			name: "get",
+			args: []string{"asset", "get", "testdata/assets/enemy_config.asset", "--field", "maxHealth", "--value", "300"},
+		},
+		{
+			name: "index",
+			args: []string{"scene", "index", "testdata/scenes/simple_scene.unity", "--out", "ignored.index.json", "--value", "300"},
+		},
+		{
+			name: "context-pack",
+			args: []string{"scene", "context-pack", "testdata/scenes/simple_scene.unity", "--focus", "Chair_01", "--value", "300"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runCLI(t, tc.args...)
+
+			if result.exitCode != 2 {
+				t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+			}
+			if result.stdout != "" {
+				t.Fatalf("expected empty stdout, got %q", result.stdout)
+			}
+
+			want := fmt.Sprintf("ERROR %s does not accept --value\n", tc.name)
+			if result.stderr != want {
+				t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
 			}
 		})
 	}

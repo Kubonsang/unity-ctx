@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,15 +14,19 @@ import (
 	"unity-ctx/internal/core"
 	"unity-ctx/internal/document"
 	"unity-ctx/internal/index"
+	"unity-ctx/internal/mutation"
 	"unity-ctx/internal/parser"
 )
 
 type Service struct{}
 
 type QueryArgs struct {
-	ID   int64
-	Name string
-	Type string
+	HasID   bool
+	HasName bool
+	HasType bool
+	ID      int64
+	Name    string
+	Type    string
 }
 
 type InspectArgs struct {
@@ -39,6 +44,15 @@ type GetArgs struct {
 	Name      string
 	Component string
 	Field     string
+}
+
+type SetArgs struct {
+	HasID    bool
+	HasValue bool
+	ID       int64
+	Field    string
+	Value    string
+	Write    bool
 }
 
 type IndexArgs struct {
@@ -110,6 +124,21 @@ func (s *Service) Query(namespace, path string, view core.View, jsonOut bool, ar
 	if countQueryArgs(args) != 1 {
 		result.Status = "ERROR"
 		result.Body = "ERROR query requires exactly one of --id, --name, or --type"
+		return result, 1
+	}
+	if args.HasID && args.ID == 0 {
+		result.Status = "ERROR"
+		result.Body = "ERROR query requires non-zero --id"
+		return result, 1
+	}
+	if args.HasName && strings.TrimSpace(args.Name) == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR query requires non-empty --name"
+		return result, 1
+	}
+	if args.HasType && strings.TrimSpace(args.Type) == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR query requires non-empty --type"
 		return result, 1
 	}
 
@@ -215,6 +244,169 @@ func (s *Service) Get(namespace, path string, view core.View, jsonOut bool, args
 	result.Status = "OK"
 	result.Body = fmt.Sprintf("OK field=%s value=%s", args.Field, formatValue(value))
 	return result, 0
+}
+
+func (s *Service) Set(namespace, path string, view core.View, jsonOut bool, args SetArgs) (core.Result, int) {
+	_ = jsonOut
+
+	result := core.Result{
+		Namespace: namespace,
+		Command:   "set",
+		File:      path,
+		View:      view,
+	}
+
+	if namespace != "asset" {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR set not implemented for namespace=%s", namespace)
+		return result, 1
+	}
+	if args.HasID && args.ID == 0 {
+		result.Status = "ERROR"
+		result.Body = "ERROR set requires non-zero --id"
+		return result, 1
+	}
+	if strings.TrimSpace(args.Field) == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR set requires --field"
+		return result, 1
+	}
+	if !args.HasValue && args.Value == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR set requires --value"
+		return result, 1
+	}
+
+	loaded, err := s.load(path)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	plan, err := mutation.PlanAssetSet(loaded.data, loaded.blocks, mutation.AssetSetRequest{
+		Path:    path,
+		HasID:   args.HasID,
+		ID:      args.ID,
+		Field:   args.Field,
+		Value:   args.Value,
+		Rewrite: args.Write,
+	})
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	if !args.Write {
+		result.Status = "OK"
+		result.Body = fmt.Sprintf(
+			"DRY_RUN field=%s old=%s new=%s type_hint=%s changed=%d",
+			plan.Field,
+			plan.OldValue,
+			plan.NewValue,
+			plan.TypeHint,
+			boolToInt(plan.Changed),
+		)
+		return result, 0
+	}
+
+	if !plan.Changed {
+		result.Status = "OK"
+		result.Body = fmt.Sprintf(
+			"OK field=%s old=%s new=%s type_hint=%s changed=%d verified=%d",
+			plan.Field,
+			plan.OldValue,
+			plan.NewValue,
+			plan.TypeHint,
+			boolToInt(plan.Changed),
+			1,
+		)
+		return result, 0
+	}
+
+	backupPath, writeErr := mutation.WriteWithBackup(path, plan.UpdatedData)
+	verification := setVerification{}
+	if writeErr == nil || writeCommitted(writeErr) {
+		verification = s.verifySetValue(path, args)
+	}
+
+	if writeErr != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf(
+			"ERROR WRITE_COMMITTED backup=%s field=%s old=%s new=%s type_hint=%s changed=%d verified=%d err=%v",
+			backupPath,
+			plan.Field,
+			plan.OldValue,
+			plan.NewValue,
+			plan.TypeHint,
+			boolToInt(plan.Changed),
+			boolToInt(verification.Matched),
+			writeErr,
+		)
+		if !writeCommitted(writeErr) {
+			result.Body = fmt.Sprintf("ERROR %v", writeErr)
+		}
+		return result, 1
+	}
+
+	if !verification.Matched {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf(
+			"ERROR WRITE_COMMITTED backup=%s field=%s old=%s new=%s type_hint=%s changed=%d verified=%d err=VERIFY_FAILED expected=%s actual=%s",
+			backupPath,
+			plan.Field,
+			plan.OldValue,
+			plan.NewValue,
+			plan.TypeHint,
+			boolToInt(plan.Changed),
+			0,
+			plan.NewValue,
+			verification.Actual,
+		)
+		return result, 1
+	}
+
+	result.Status = "OK"
+	result.Body = fmt.Sprintf(
+		"WRITE backup=%s field=%s old=%s new=%s type_hint=%s changed=%d verified=%d",
+		backupPath,
+		plan.Field,
+		plan.OldValue,
+		plan.NewValue,
+		plan.TypeHint,
+		boolToInt(plan.Changed),
+		boolToInt(verification.Matched),
+	)
+	return result, 0
+}
+
+type setVerification struct {
+	Matched bool
+	Actual  string
+}
+
+func (s *Service) verifySetValue(path string, args SetArgs) setVerification {
+	loaded, err := s.load(path)
+	if err != nil {
+		return setVerification{Actual: "UNREADABLE"}
+	}
+
+	target, err := resolveSetTarget(loaded.blocks, loaded.doc, args.HasID, args.ID)
+	if err != nil {
+		return setVerification{Actual: "NOT_RESOLVED"}
+	}
+
+	value, ok := document.ResolveField(target.Fields, args.Field)
+	if !ok {
+		return setVerification{Actual: "FIELD_NOT_FOUND"}
+	}
+
+	actual := formatValue(value)
+	return setVerification{
+		Matched: matchesSetValue(value, args.Value),
+		Actual:  actual,
+	}
 }
 
 func (s *Service) Index(namespace, path string, view core.View, jsonOut bool, args IndexArgs) (core.Result, int) {
@@ -366,13 +558,13 @@ func staleIndexPrefix(outPath, sourcePath string) (string, error) {
 
 func countQueryArgs(args QueryArgs) int {
 	count := 0
-	if args.ID != 0 {
+	if args.HasID || args.ID != 0 {
 		count++
 	}
-	if args.Name != "" {
+	if args.HasName || args.Name != "" {
 		count++
 	}
-	if args.Type != "" {
+	if args.HasType || args.Type != "" {
 		count++
 	}
 	return count
@@ -444,7 +636,7 @@ func (s *Service) resolveInspectBlock(namespace, path string, args InspectArgs) 
 	}
 
 	if args.Component != "" {
-		if args.ID != 0 || args.Name != "" {
+		if hasID || hasName {
 			targetID, err := s.resolveObjectID(loaded.doc, hasID, args.ID, hasName, args.Name)
 			if err != nil {
 				return parser.Block{}, err
@@ -470,7 +662,7 @@ func (s *Service) resolveInspectBlock(namespace, path string, args InspectArgs) 
 		return block, nil
 	}
 
-	if args.ID != 0 || args.Name != "" {
+	if hasID || hasName {
 		targetID, err := s.resolveObjectID(loaded.doc, hasID, args.ID, hasName, args.Name)
 		if err != nil {
 			return parser.Block{}, err
@@ -571,6 +763,22 @@ func samePath(left, right string) bool {
 		rightAbs = resolved
 	}
 	return filepath.Clean(leftAbs) == filepath.Clean(rightAbs)
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+type committedWriter interface {
+	WriteCommitted() bool
+}
+
+func writeCommitted(err error) bool {
+	var committedErr committedWriter
+	return errors.As(err, &committedErr) && committedErr.WriteCommitted()
 }
 
 func formatInspectBlock(block parser.Block, view core.View) string {
@@ -693,6 +901,51 @@ func asInt64(value any) (int64, bool) {
 		return int64(typed), true
 	default:
 		return 0, false
+	}
+}
+
+func resolveSetTarget(blocks []parser.Block, doc *document.Doc, hasID bool, id int64) (parser.Block, error) {
+	if hasID {
+		block, ok := doc.FindByFileID(id)
+		if !ok {
+			return parser.Block{}, fmt.Errorf("NOT_FOUND fileID=%d", id)
+		}
+		return block, nil
+	}
+
+	if len(blocks) == 0 {
+		return parser.Block{}, fmt.Errorf("NOT_FOUND asset_block")
+	}
+	if len(blocks) > 1 {
+		return parser.Block{}, fmt.Errorf("NEED_RULE fileID matches=%d", len(blocks))
+	}
+	return blocks[0], nil
+}
+
+func matchesSetValue(current any, raw string) bool {
+	switch typed := current.(type) {
+	case string:
+		return typed == raw
+	case int64:
+		want, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		return err == nil && typed == want
+	case int:
+		want, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		return err == nil && int64(typed) == want
+	case float64:
+		want, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+		if err != nil {
+			return false
+		}
+		if math.IsNaN(typed) && math.IsNaN(want) {
+			return true
+		}
+		return typed == want
+	case bool:
+		want, err := strconv.ParseBool(strings.TrimSpace(raw))
+		return err == nil && typed == want
+	default:
+		return false
 	}
 }
 

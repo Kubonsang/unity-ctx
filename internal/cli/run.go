@@ -39,10 +39,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	fileID := flagSet.Int64("id", 0, "")
 	component := flagSet.String("component", "", "")
 	field := flagSet.String("field", "", "")
+	value := flagSet.String("value", "", "")
 	out := flagSet.String("out", "", "")
 	task := flagSet.String("task", "", "")
 	focus := flagSet.String("focus", "", "")
 	maxTokens := flagSet.Int("max-tokens", 256, "")
+	writeFlag := flagSet.Bool("write", false, "")
 
 	if err := flagSet.Parse(args[3:]); err != nil {
 		_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
@@ -58,6 +60,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	selectedView := core.View(*view)
 	if !selectedView.Valid() {
 		_, _ = fmt.Fprintf(stderr, "ERROR invalid view %q\n", *view)
+		return 2
+	}
+	if command != "set" && seenFlags["write"] {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --write\n", command)
+		return 2
+	}
+	if command != "set" && seenFlags["value"] {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --value\n", command)
 		return 2
 	}
 
@@ -78,8 +88,20 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if command == "query" && countQueryFlags(*fileID, *name, *typeName) != 1 {
+	if command == "query" && countVisitedFlags(seenFlags, "id", "name", "type") != 1 {
 		_, _ = io.WriteString(stderr, "ERROR query requires exactly one of --id, --name, or --type\n")
+		return 2
+	}
+	if command == "query" && seenFlags["id"] && *fileID == 0 {
+		_, _ = io.WriteString(stderr, "ERROR query requires non-zero --id\n")
+		return 2
+	}
+	if command == "query" && seenFlags["name"] && strings.TrimSpace(*name) == "" {
+		_, _ = io.WriteString(stderr, "ERROR query requires non-empty --name\n")
+		return 2
+	}
+	if command == "query" && seenFlags["type"] && strings.TrimSpace(*typeName) == "" {
+		_, _ = io.WriteString(stderr, "ERROR query requires non-empty --type\n")
 		return 2
 	}
 	if command == "query" && anyFlagVisited(seenFlags, "component", "field") {
@@ -150,6 +172,26 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = io.WriteString(stderr, "ERROR get does not accept --task, --focus, or --max-tokens\n")
 		return 2
 	}
+	if command == "set" && namespace != "asset" {
+		_, _ = fmt.Fprintf(stderr, "ERROR set not implemented for namespace=%s\n", namespace)
+		return 2
+	}
+	if command == "set" && anyFlagVisited(seenFlags, "name", "type", "component", "out", "task", "focus", "max-tokens") {
+		_, _ = io.WriteString(stderr, "ERROR set does not accept --name, --type, --component, --out, --task, --focus, or --max-tokens\n")
+		return 2
+	}
+	if command == "set" && strings.TrimSpace(*field) == "" {
+		_, _ = io.WriteString(stderr, "ERROR set requires --field\n")
+		return 2
+	}
+	if command == "set" && !seenFlags["value"] {
+		_, _ = io.WriteString(stderr, "ERROR set requires --value\n")
+		return 2
+	}
+	if command == "set" && seenFlags["id"] && *fileID == 0 {
+		_, _ = io.WriteString(stderr, "ERROR set requires non-zero --id\n")
+		return 2
+	}
 	if command == "index" && strings.TrimSpace(*out) == "" {
 		_, _ = io.WriteString(stderr, "ERROR index requires --out\n")
 		return 2
@@ -208,9 +250,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		result, exitCode = service.Summarize(namespace, file, selectedView, *jsonOutput)
 	case "query":
 		result, exitCode = service.Query(namespace, file, selectedView, *jsonOutput, app.QueryArgs{
-			ID:   *fileID,
-			Name: *name,
-			Type: *typeName,
+			HasID:   seenFlags["id"],
+			HasName: seenFlags["name"],
+			HasType: seenFlags["type"],
+			ID:      *fileID,
+			Name:    *name,
+			Type:    *typeName,
 		})
 	case "inspect":
 		result, exitCode = service.Inspect(namespace, file, selectedView, *jsonOutput, app.InspectArgs{
@@ -228,6 +273,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			Name:      *name,
 			Component: *component,
 			Field:     *field,
+		})
+	case "set":
+		result, exitCode = service.Set(namespace, file, selectedView, *jsonOutput, app.SetArgs{
+			HasID:    seenFlags["id"],
+			HasValue: seenFlags["value"],
+			ID:       *fileID,
+			Field:    *field,
+			Value:    *value,
+			Write:    *writeFlag,
 		})
 	case "index":
 		result, exitCode = service.Index(namespace, file, selectedView, *jsonOutput, app.IndexArgs{
@@ -271,24 +325,6 @@ func notImplementedBody(namespace, command, file string, view core.View) string 
 	builder.WriteString(" view=")
 	builder.WriteString(string(view))
 	return builder.String()
-}
-
-func hasQueryFlags(fileID int64, name, typeName string) bool {
-	return fileID != 0 || name != "" || typeName != ""
-}
-
-func countQueryFlags(fileID int64, name, typeName string) int {
-	count := 0
-	if fileID != 0 {
-		count++
-	}
-	if name != "" {
-		count++
-	}
-	if typeName != "" {
-		count++
-	}
-	return count
 }
 
 func visitedFlags(flagSet *flag.FlagSet) map[string]bool {

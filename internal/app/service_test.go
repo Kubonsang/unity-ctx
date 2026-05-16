@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"unity-ctx/internal/app"
 	"unity-ctx/internal/contextpack"
@@ -128,6 +129,39 @@ func TestQueryByNameSuccessQuotesNameWithSpaces(t *testing.T) {
 	}
 }
 
+func TestQueryRejectsExplicitInvalidSelectorPresence(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+
+	tests := []struct {
+		name string
+		args app.QueryArgs
+	}{
+		{
+			name: "zero id with type",
+			args: app.QueryArgs{HasID: true, ID: 0, HasType: true, Type: "GameObject"},
+		},
+		{
+			name: "empty name with type",
+			args: app.QueryArgs{HasName: true, Name: "", HasType: true, Type: "GameObject"},
+		},
+	}
+
+	svc := app.New()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, code := svc.Query("scene", path, core.ViewCompact, false, tc.args)
+			if code != 1 {
+				t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+			}
+
+			want := "ERROR query requires exactly one of --id, --name, or --type"
+			if got.Body != want {
+				t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+			}
+		})
+	}
+}
+
 func TestSummarizeSceneCompactUnknownDoesNotCountAsComponent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "unknown_scene.unity")
 	content := "" +
@@ -194,6 +228,310 @@ func TestGetFieldNotFound(t *testing.T) {
 	}
 
 	want := "ERROR FIELD_NOT_FOUND field=armor"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestSetAssetDryRunDoesNotWriteFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enemy_config.asset")
+	content := "" +
+		"%YAML 1.1\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: EnemyConfig\n" +
+		"  maxHealth: 200\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	svc := app.New()
+	got, code := svc.Set("asset", path, core.ViewCompact, false, app.SetArgs{
+		Field: "maxHealth",
+		Value: "300",
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(data) != content {
+		t.Fatal("dry-run should not modify file")
+	}
+}
+
+func TestSetAssetWriteCreatesBackupAndVerifies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enemy_config.asset")
+	content := "" +
+		"%YAML 1.1\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: EnemyConfig\n" +
+		"  maxHealth: 200\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	svc := app.New()
+	got, code := svc.Set("asset", path, core.ViewCompact, false, app.SetArgs{
+		Field: "maxHealth",
+		Value: "300",
+		Write: true,
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "WRITE backup=" + path + ".bak field=maxHealth old=200 new=300 type_hint=int changed=1 verified=1"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if !strings.Contains(string(data), "  maxHealth: 300\n") {
+		t.Fatalf("updated file mismatch:\n%s", string(data))
+	}
+
+	backup, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatalf("ReadFile(.bak) error = %v", err)
+	}
+	if string(backup) != content {
+		t.Fatalf("backup mismatch: got %q want %q", string(backup), content)
+	}
+}
+
+func TestSetAssetWriteNoOpDoesNotWriteOrCreateBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enemy_config.asset")
+	content := "" +
+		"%YAML 1.1\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: EnemyConfig\n" +
+		"  maxHealth: 200\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	wantTime := time.Unix(1_700_000_000, 123_000_000)
+	if err := os.Chtimes(path, wantTime, wantTime); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat() before error = %v", err)
+	}
+
+	svc := app.New()
+	got, code := svc.Set("asset", path, core.ViewCompact, false, app.SetArgs{
+		Field: "maxHealth",
+		Value: "200",
+		Write: true,
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "OK field=maxHealth old=200 new=200 type_hint=int changed=0 verified=1"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat() after error = %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("mtime changed: got %v want %v", after.ModTime(), before.ModTime())
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(data) != content {
+		t.Fatal("no-op write should not modify file")
+	}
+
+	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("expected no backup file, got err=%v", err)
+	}
+}
+
+func TestSetAssetWriteVerifiesStringValuesSemantically(t *testing.T) {
+	tests := []struct {
+		name        string
+		initialLine string
+		value       string
+		wantLine    string
+		wantBodyNew string
+	}{
+		{
+			name:        "empty string",
+			initialLine: "  label: starter\n",
+			value:       "",
+			wantLine:    "  label: \"\"\n",
+			wantBodyNew: `new=""`,
+		},
+		{
+			name:        "string looking scalar",
+			initialLine: "  label: starter\n",
+			value:       "001",
+			wantLine:    "  label: \"001\"\n",
+			wantBodyNew: `new="001"`,
+		},
+		{
+			name:        "quoted string",
+			initialLine: "  label: starter\n",
+			value:       "needs:quote",
+			wantLine:    "  label: \"needs:quote\"\n",
+			wantBodyNew: `new="needs:quote"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "enemy_config.asset")
+			content := "" +
+				"%YAML 1.1\n" +
+				"--- !u!114 &11400000\n" +
+				"MonoBehaviour:\n" +
+				"  m_Name: EnemyConfig\n" +
+				tc.initialLine
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+
+			svc := app.New()
+			got, code := svc.Set("asset", path, core.ViewCompact, false, app.SetArgs{
+				Field:    "label",
+				Value:    tc.value,
+				HasValue: true,
+				Write:    true,
+			})
+			if code != 0 {
+				t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+			}
+
+			wantPrefix := "WRITE backup=" + path + ".bak field=label old=starter " + tc.wantBodyNew + " type_hint=string changed=1 verified=1"
+			if got.Body != wantPrefix {
+				t.Fatalf("body mismatch: got %q want %q", got.Body, wantPrefix)
+			}
+
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("ReadFile() error = %v", err)
+			}
+			if !strings.Contains(string(data), tc.wantLine) {
+				t.Fatalf("updated file mismatch:\n%s", string(data))
+			}
+		})
+	}
+}
+
+func TestSetAssetWriteVerifiesNaNSemantically(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enemy_config.asset")
+	content := "" +
+		"%YAML 1.1\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: EnemyConfig\n" +
+		"  speed: 1.5\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	svc := app.New()
+	got, code := svc.Set("asset", path, core.ViewCompact, false, app.SetArgs{
+		Field:    "speed",
+		Value:    "NaN",
+		HasValue: true,
+		Write:    true,
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "WRITE backup=" + path + ".bak field=speed old=1.5 new=NaN type_hint=float changed=1 verified=1"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if !strings.Contains(string(data), "  speed: NaN\n") {
+		t.Fatalf("updated file mismatch:\n%s", string(data))
+	}
+
+	backup, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatalf("ReadFile(.bak) error = %v", err)
+	}
+	if string(backup) != content {
+		t.Fatalf("backup mismatch: got %q want %q", string(backup), content)
+	}
+}
+
+func TestSetRejectsUnsupportedNamespace(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+
+	svc := app.New()
+	got, code := svc.Set("scene", path, core.ViewCompact, false, app.SetArgs{
+		Field: "m_Name",
+		Value: "Chair_02",
+	})
+	if code != 1 {
+		t.Fatalf("expected error, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "ERROR set not implemented for namespace=scene"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestSetAssetSupportsIDSelection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "multi.asset")
+	content := "" +
+		"%YAML 1.1\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: ConfigA\n" +
+		"  maxHealth: 100\n" +
+		"--- !u!114 &11400001\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: ConfigB\n" +
+		"  maxHealth: 200\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	svc := app.New()
+	got, code := svc.Set("asset", path, core.ViewCompact, false, app.SetArgs{
+		HasID: true,
+		ID:    11400001,
+		Field: "maxHealth",
+		Value: "300",
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
@@ -403,9 +741,9 @@ func TestGetRejectsExplicitZeroIDSelector(t *testing.T) {
 
 	svc := app.New()
 	got, code := svc.Get("asset", path, core.ViewCompact, false, app.GetArgs{
-		HasID:     true,
-		ID:        0,
-		Field:     "maxHealth",
+		HasID: true,
+		ID:    0,
+		Field: "maxHealth",
 	})
 	if code != 1 {
 		t.Fatalf("expected error, got code=%d body=%q", code, got.Body)
@@ -413,6 +751,92 @@ func TestGetRejectsExplicitZeroIDSelector(t *testing.T) {
 	want := "ERROR inspect/get requires non-zero --id"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestInspectRejectsExplicitInvalidSelectorPresenceWithComponent(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "prefabs", "enemy.prefab")
+
+	tests := []struct {
+		name string
+		args app.InspectArgs
+		want string
+	}{
+		{
+			name: "zero id with component",
+			args: app.InspectArgs{
+				HasID:     true,
+				ID:        0,
+				Component: "NavMeshAgent",
+			},
+			want: "ERROR inspect/get requires non-zero --id",
+		},
+		{
+			name: "empty name with component",
+			args: app.InspectArgs{
+				HasName:   true,
+				Name:      "",
+				Component: "NavMeshAgent",
+			},
+			want: "ERROR inspect/get requires non-empty --name",
+		},
+	}
+
+	svc := app.New()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, code := svc.Inspect("prefab", path, core.ViewCompact, false, tc.args)
+			if code != 1 {
+				t.Fatalf("expected error, got code=%d body=%q", code, got.Body)
+			}
+			if got.Body != tc.want {
+				t.Fatalf("body mismatch: got %q want %q", got.Body, tc.want)
+			}
+		})
+	}
+}
+
+func TestGetRejectsExplicitInvalidSelectorPresenceWithComponent(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "assets", "enemy_config.asset")
+
+	tests := []struct {
+		name string
+		args app.GetArgs
+		want string
+	}{
+		{
+			name: "zero id with component",
+			args: app.GetArgs{
+				HasID:     true,
+				ID:        0,
+				Component: "MonoBehaviour",
+				Field:     "maxHealth",
+			},
+			want: "ERROR inspect/get requires non-zero --id",
+		},
+		{
+			name: "empty name with component",
+			args: app.GetArgs{
+				HasName:   true,
+				Name:      "",
+				Component: "MonoBehaviour",
+				Field:     "maxHealth",
+			},
+			want: "ERROR inspect/get requires non-empty --name",
+		},
+	}
+
+	svc := app.New()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, code := svc.Get("asset", path, core.ViewCompact, false, tc.args)
+			if code != 1 {
+				t.Fatalf("expected error, got code=%d body=%q", code, got.Body)
+			}
+			if got.Body != tc.want {
+				t.Fatalf("body mismatch: got %q want %q", got.Body, tc.want)
+			}
+		})
 	}
 }
 
