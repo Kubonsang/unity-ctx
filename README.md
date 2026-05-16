@@ -15,7 +15,7 @@ Recommended first prompt:
 
 ```text
 Read AGENTS.md and docs/SRS.md first.
-Implement v0.1 only.
-Do not implement mutation yet.
+Start from the read-only commands first.
+`asset set` is the only mutation slice currently implemented.
 Run go test ./... before final response.
 ```
