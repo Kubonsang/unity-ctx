@@ -27,6 +27,12 @@ func TestParseFileSimpleScenePreservesBlockIdentity(t *testing.T) {
 	if first.TypeName != "GameObject" {
 		t.Fatalf("first TypeName mismatch: got %q want %q", first.TypeName, "GameObject")
 	}
+	if first.StartLine != 3 {
+		t.Fatalf("first StartLine mismatch: got %d want 3", first.StartLine)
+	}
+	if first.EndLine != 6 {
+		t.Fatalf("first EndLine mismatch: got %d want 6", first.EndLine)
+	}
 }
 
 func TestParseFileUnknownComponentPreservesTypeName(t *testing.T) {
@@ -58,6 +64,21 @@ func TestParseRejectsUnexpectedContentOutsideHeader(t *testing.T) {
 
 	if _, err := Parse(input); err == nil {
 		t.Fatal("expected Parse() to reject unexpected content")
+	}
+}
+
+func TestParseRejectsBrokenHeaderInsideDocument(t *testing.T) {
+	input := []byte("" +
+		"%YAML 1.1\n" +
+		"%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!1 &1000\n" +
+		"GameObject:\n" +
+		"  m_Name: Root\n" +
+		"--- broken header\n" +
+		"  m_IsActive: 1\n")
+
+	if _, err := Parse(input); err == nil {
+		t.Fatal("expected Parse() to reject broken header inside document")
 	}
 }
 
@@ -189,7 +210,7 @@ Material:
 	}
 }
 
-func TestParseEmptyContainerPreservesSiblingAtSameIndent(t *testing.T) {
+func TestParseEmptyScalarPreservesSiblingAtSameIndent(t *testing.T) {
 	input := []byte(`%YAML 1.1
 %TAG !u! tag:unity3d.com,2011:
 --- !u!21 &2100000
@@ -214,12 +235,8 @@ Material:
 		t.Fatalf("m_SavedProperties type mismatch: got %T want map[string]any", blocks[0].Fields["m_SavedProperties"])
 	}
 
-	emptyValue, ok := savedProperties["m_Empty"].(map[string]any)
-	if !ok {
-		t.Fatalf("m_Empty type mismatch: got %T want map[string]any", savedProperties["m_Empty"])
-	}
-	if len(emptyValue) != 0 {
-		t.Fatalf("m_Empty length mismatch: got %d want 0", len(emptyValue))
+	if savedProperties["m_Empty"] != "" {
+		t.Fatalf("m_Empty mismatch: got %#v want empty string", savedProperties["m_Empty"])
 	}
 
 	floats, ok := savedProperties["m_Floats"].([]any)
@@ -276,6 +293,62 @@ func TestParseEscapedSingleQuotedString(t *testing.T) {
 
 	if blocks[0].Fields["m_Name"] != "it's" {
 		t.Fatalf("m_Name mismatch: got %#v want %q", blocks[0].Fields["m_Name"], "it's")
+	}
+}
+
+func TestParseFinalBlockEndLineIgnoresTrailingNewline(t *testing.T) {
+	input := []byte("%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!1 &1000\nGameObject:\n  m_Name: Root\n--- !u!4 &1001\nTransform:\n  m_GameObject: {fileID: 1000}\n")
+
+	blocks, err := Parse(input)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	if len(blocks) != 2 {
+		t.Fatalf("block count mismatch: got %d want 2", len(blocks))
+	}
+
+	last := blocks[1]
+	if last.StartLine != 6 {
+		t.Fatalf("last StartLine mismatch: got %d want 6", last.StartLine)
+	}
+	if last.EndLine != 8 {
+		t.Fatalf("last EndLine mismatch: got %d want 8", last.EndLine)
+	}
+}
+
+func TestParseBlankScalarPreservesSiblingField(t *testing.T) {
+	input := []byte("%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &11400000\nMonoBehaviour:\n  m_EditorClassIdentifier:\n  m_Name: Example\n")
+
+	blocks, err := Parse(input)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	if blocks[0].Fields["m_EditorClassIdentifier"] != "" {
+		t.Fatalf("m_EditorClassIdentifier mismatch: got %#v want empty string", blocks[0].Fields["m_EditorClassIdentifier"])
+	}
+	if blocks[0].Fields["m_Name"] != "Example" {
+		t.Fatalf("m_Name mismatch: got %#v want %q", blocks[0].Fields["m_Name"], "Example")
+	}
+}
+
+func TestParseHeaderAcceptsStrippedObjectSuffix(t *testing.T) {
+	input := []byte("%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!1 &123 stripped\nGameObject:\n  m_Name: Child\n")
+
+	blocks, err := Parse(input)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	if len(blocks) != 1 {
+		t.Fatalf("block count mismatch: got %d want 1", len(blocks))
+	}
+	if blocks[0].ClassID != 1 {
+		t.Fatalf("ClassID mismatch: got %d want 1", blocks[0].ClassID)
+	}
+	if blocks[0].FileID != 123 {
+		t.Fatalf("FileID mismatch: got %d want 123", blocks[0].FileID)
 	}
 }
 

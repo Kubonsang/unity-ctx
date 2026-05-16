@@ -9,14 +9,16 @@ import (
 	"strings"
 )
 
-var headerPattern = regexp.MustCompile(`^--- !u!(\d+) &(-?\d+)\s*$`)
+var headerPattern = regexp.MustCompile(`^--- !u!(\d+) &(-?\d+)(?:\s+stripped)?\s*$`)
 
 type Block struct {
-	ClassID  int
-	FileID   int64
-	TypeName string
-	Fields   map[string]any
-	RawBody  string
+	ClassID   int
+	FileID    int64
+	TypeName  string
+	Fields    map[string]any
+	RawBody   string
+	StartLine int
+	EndLine   int
 }
 
 func ParseFile(path string) ([]Block, error) {
@@ -66,11 +68,19 @@ func Parse(data []byte) ([]Block, error) {
 		}
 
 		bodyLines := lines[i+1 : j]
+		endLine := j
+		if j == len(lines) {
+			for endLine > i+1 && strings.TrimSpace(lines[endLine-1]) == "" {
+				endLine--
+			}
+		}
 		block := Block{
-			ClassID: classID,
-			FileID:  fileID,
-			Fields:  make(map[string]any),
-			RawBody: strings.Join(bodyLines, "\n"),
+			ClassID:   classID,
+			FileID:    fileID,
+			Fields:    make(map[string]any),
+			RawBody:   strings.Join(bodyLines, "\n"),
+			StartLine: i + 1,
+			EndLine:   endLine,
 		}
 		parseBody(bodyLines, &block)
 		blocks = append(blocks, block)
@@ -188,7 +198,7 @@ func parseMap(lines []string, start, indent int) (map[string]any, int) {
 
 		next := nextContentLine(lines, i+1)
 		if next == -1 {
-			result[key] = map[string]any{}
+			result[key] = ""
 			i++
 			continue
 		}
@@ -197,7 +207,7 @@ func parseMap(lines []string, start, indent int) (map[string]any, int) {
 		nextIndent := leadingSpaces(nextLine)
 		nextTrimmed := strings.TrimSpace(nextLine)
 		if nextIndent < currentIndent || (nextIndent == currentIndent && !strings.HasPrefix(nextTrimmed, "- ")) {
-			result[key] = map[string]any{}
+			result[key] = ""
 			i++
 			continue
 		}
@@ -305,7 +315,7 @@ func parseList(lines []string, start, indent int) ([]any, int) {
 				continue
 			}
 
-			item[key] = map[string]any{}
+			item[key] = ""
 			result = append(result, item)
 			i++
 			continue
