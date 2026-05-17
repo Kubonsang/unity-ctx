@@ -17,5 +17,6 @@ Recommended first prompt:
 Read AGENTS.md and docs/SRS.md first.
 Start from the read-only commands first.
 `asset set` is the only mutation slice currently implemented.
+`scene check` is available as a read-only bounds validation foundation.
 Run go test ./... before final response.
 ```

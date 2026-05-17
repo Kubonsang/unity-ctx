@@ -118,6 +118,53 @@ Committed-write failure output:
 ERROR WRITE_COMMITTED backup=EnemyConfig.asset.bak field=maxHealth old=200 new=300 type_hint=int changed=1 verified=0 err=...
 ```
 
+## v0.4 Foundation Slice
+
+### scene check
+
+```bash
+unity-ctx scene check Stage01.unity --manifest Stage01.bounds.json --prefab Assets/Prefabs/Chair.prefab --position 5,0,0
+unity-ctx scene check Stage01.unity --manifest Stage01.bounds.json --prefab Assets/Prefabs/Chair.prefab --position 0.8,0,0 --json
+```
+
+Required flags:
+
+- `--manifest`
+- `--prefab`
+- `--position`
+
+Optional flags:
+
+- `--json`
+
+Rules:
+
+- `check` is implemented only for the `scene` namespace.
+- `check` supports only compact output.
+- `<file>` must point to a readable scene file.
+- `--position` must be exactly `x,y,z` with finite numeric values.
+- The manifest scene reference must match the requested scene by exact path when possible, otherwise by normalized scene filename plus extension.
+- Irrelevant flags are rejected.
+
+Compact output:
+
+```text
+OK manifest=Stage01.bounds.json prefab=Assets/Prefabs/Chair.prefab position=5,0,0 overlap_ids=none
+WARN manifest=Stage01.bounds.json prefab=Assets/Prefabs/Chair.prefab position=0.8,0,0 overlap_ids=1000,2000,3000
+```
+
+Error output:
+
+```text
+ERROR check requires --manifest
+ERROR check requires --prefab
+ERROR check requires --position
+ERROR check requires --position as x,y,z
+ERROR check requires finite --position values
+ERROR check supports only --view compact
+ERROR manifest scene mismatch file=Stage01.unity manifest_scene=OtherScene.unity
+```
+
 ## Output Stability Rules
 
 - No timestamps in default output.
