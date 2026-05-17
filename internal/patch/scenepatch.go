@@ -62,7 +62,7 @@ func PlanPlacePrefab(req PlacePrefabRequest) (PlacePrefabPlan, error) {
 		PrefabPath: req.PrefabPath,
 		PrefabGUID: strings.TrimSpace(req.PrefabRef.GUID),
 		Position:   req.Position,
-		OverlapIDs: append([]int64(nil), checkResult.OverlapIDs...),
+		OverlapIDs: append([]int64{}, checkResult.OverlapIDs...),
 		ReservedFileIDs: []int64{
 			gameObjectID,
 			transformID,

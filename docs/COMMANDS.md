@@ -165,6 +165,72 @@ ERROR check supports only --view compact
 ERROR manifest scene mismatch file=Stage01.unity manifest_scene=OtherScene.unity
 ```
 
+## v0.4b Patch Planning Slice
+
+### scene patch
+
+```bash
+unity-ctx scene patch Stage01.unity --op place_prefab --manifest Stage01.bounds.json --prefab Assets/Prefabs/Chair.prefab --position 5,0,0
+unity-ctx scene patch Stage01.unity --op place_prefab --manifest Stage01.bounds.json --prefab Assets/Prefabs/Chair.prefab --position 5,0,0 --json
+unity-ctx scene patch Stage01.unity --op place_prefab --manifest Stage01.bounds.json --prefab Assets/Prefabs/Chair.prefab --prefab-guid guid-chair --position 5,0,0
+```
+
+Required flags:
+
+- `--op`
+- `--manifest`
+- `--prefab`
+- `--position`
+
+Optional flags:
+
+- `--json`
+- `--prefab-guid`
+
+Rules:
+
+- `patch` is implemented only for the `scene` namespace.
+- `patch` supports only `--op place_prefab`.
+- `patch` supports only compact output.
+- `<file>` must point to a readable scene file.
+- `--position` must be exactly `x,y,z` with finite numeric values.
+- The manifest scene reference must match the requested scene by exact path when possible, otherwise by normalized scene filename plus extension.
+- `patch` is currently a read-only patch-plan generator. It does not write scene files.
+- Without `--prefab-guid`, the planner returns `UNKNOWN ... NEED_PREFAB_GUID` and does not guess a GUID.
+- With `--prefab-guid`, the planner can return `OK` for clear placement or `WARN` when overlaps are detected.
+- `scene apply` and `scene diff` are still deferred.
+
+Compact output examples:
+
+```text
+UNKNOWN op=place_prefab manifest=Stage01.bounds.json prefab=Assets/Prefabs/Chair.prefab position=5,0,0 reason=NEED_PREFAB_GUID overlap_ids=none reserved_fileIDs=2002,2003
+PLAN prefab_guid=UNKNOWN append_ops=append:1:2002:GameObject,append:4:2003:Transform
+
+OK op=place_prefab manifest=Stage01.bounds.json prefab=Assets/Prefabs/Chair.prefab position=5,0,0 overlap_ids=none reserved_fileIDs=2002,2003
+PLAN prefab_guid="guid-chair" append_ops=append:1:2002:GameObject,append:4:2003:Transform
+
+WARN op=place_prefab manifest=Stage01.bounds.json prefab=Assets/Prefabs/Chair.prefab position=2.1,0,-1.25 overlap_ids=2000 reserved_fileIDs=2002,2003
+PLAN prefab_guid="guid-chair" append_ops=append:1:2002:GameObject,append:4:2003:Transform
+```
+
+JSON note:
+
+- `--json` returns the normal command envelope plus a `patch_plan` field for later tooling/CLI consumers.
+
+Error output:
+
+```text
+ERROR patch requires --op
+ERROR patch supports only --op place_prefab
+ERROR patch requires --manifest
+ERROR patch requires --prefab
+ERROR patch requires --position
+ERROR patch requires --position as x,y,z
+ERROR patch requires finite --position values
+ERROR patch supports only --view compact
+ERROR manifest scene mismatch file=Stage01.unity manifest_scene=OtherScene.unity
+```
+
 ## Output Stability Rules
 
 - No timestamps in default output.

@@ -18,5 +18,9 @@ Read AGENTS.md and docs/SRS.md first.
 Start from the read-only commands first.
 `asset set` is the only mutation slice currently implemented.
 `scene check` is available as a read-only bounds validation foundation.
+`scene patch --op place_prefab` is available as a read-only patch-plan generator.
+Without `--prefab-guid` it returns UNKNOWN NEED_PREFAB_GUID instead of guessing a GUID.
+With `--prefab-guid` it can return OK or WARN planning results.
+`scene apply` and `scene diff` are still deferred.
 Run go test ./... before final response.
 ```
