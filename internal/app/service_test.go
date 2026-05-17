@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -693,6 +694,216 @@ func TestCheckSceneRejectsManifestSceneMismatch(t *testing.T) {
 	}
 
 	want := "ERROR manifest scene mismatch file=" + scenePath + " manifest_scene=testdata/scenes/other_scene.unity"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestPatchRejectsNonSceneNamespace(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "prefabs", "enemy.prefab")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	svc := app.New()
+	got, code := svc.Patch("prefab", path, core.ViewCompact, false, app.PatchArgs{
+		Op:          "place_prefab",
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		PrefabGUID:  "guid-chair",
+		HasPosition: true,
+		Position:    [3]float64{5, 0, 0},
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR patch not implemented for namespace=prefab"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestPatchRejectsNonCompactView(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	svc := app.New()
+	got, code := svc.Patch("scene", scenePath, core.ViewDetail, false, app.PatchArgs{
+		Op:          "place_prefab",
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		PrefabGUID:  "guid-chair",
+		HasPosition: true,
+		Position:    [3]float64{5, 0, 0},
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR patch supports only --view compact"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestPatchRejectsMissingOp(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	svc := app.New()
+	got, code := svc.Patch("scene", scenePath, core.ViewCompact, false, app.PatchArgs{
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		PrefabGUID:  "guid-chair",
+		HasPosition: true,
+		Position:    [3]float64{5, 0, 0},
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR patch requires --op"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestPatchRejectsUnsupportedOp(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	svc := app.New()
+	got, code := svc.Patch("scene", scenePath, core.ViewCompact, false, app.PatchArgs{
+		Op:          "move_object",
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		PrefabGUID:  "guid-chair",
+		HasPosition: true,
+		Position:    [3]float64{5, 0, 0},
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR patch supports only --op place_prefab"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestPatchClearPlacementReturnsOKSummaryPlusPlan(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	svc := app.New()
+	got, code := svc.Patch("scene", scenePath, core.ViewCompact, false, app.PatchArgs{
+		Op:          "place_prefab",
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		PrefabGUID:  "guid-chair",
+		HasPosition: true,
+		Position:    [3]float64{5, 0, 0},
+	})
+	if code != 0 {
+		t.Fatalf("expected success exit code, got %d body=%q", code, got.Body)
+	}
+	if got.Status != "OK" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "OK")
+	}
+	if got.PatchPlan == nil {
+		t.Fatal("PatchPlan = nil, want populated plan")
+	}
+	if got.PatchPlan.Status != "OK" {
+		t.Fatalf("PatchPlan.Status mismatch: got %q want %q", got.PatchPlan.Status, "OK")
+	}
+
+	want := "OK op=place_prefab manifest=" + manifestPath + " prefab=Assets/Prefabs/chair.prefab position=5,0,0 overlap_ids=none reserved_fileIDs=2002,2003\n" +
+		"PLAN prefab_guid=\"guid-chair\" append_ops=append:1:2002:GameObject,append:4:2003:Transform"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+
+	jsonGot, jsonCode := svc.Patch("scene", scenePath, core.ViewCompact, true, app.PatchArgs{
+		Op:          "place_prefab",
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		PrefabGUID:  "guid-chair",
+		HasPosition: true,
+		Position:    [3]float64{5, 0, 0},
+	})
+	if jsonCode != 0 {
+		t.Fatalf("expected json success exit code, got %d body=%q", jsonCode, jsonGot.Body)
+	}
+	if jsonGot.Result != got.Result {
+		t.Fatalf("json patch result mismatch: got %#v want %#v", jsonGot.Result, got.Result)
+	}
+	if jsonGot.PatchPlan == nil || got.PatchPlan == nil {
+		t.Fatalf("expected PatchPlan in both results: json=%#v text=%#v", jsonGot.PatchPlan, got.PatchPlan)
+	}
+	if !reflect.DeepEqual(*jsonGot.PatchPlan, *got.PatchPlan) {
+		t.Fatalf("json patch plan mismatch: got %#v want %#v", *jsonGot.PatchPlan, *got.PatchPlan)
+	}
+}
+
+func TestPatchOverlapPlacementReturnsWARNSummaryPlusPlan(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	svc := app.New()
+	got, code := svc.Patch("scene", scenePath, core.ViewCompact, false, app.PatchArgs{
+		Op:          "place_prefab",
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		PrefabGUID:  "guid-chair",
+		HasPosition: true,
+		Position:    [3]float64{2.1, 0, -1.25},
+	})
+	if code != 0 {
+		t.Fatalf("expected warn success exit code, got %d body=%q", code, got.Body)
+	}
+	if got.Status != "WARN" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "WARN")
+	}
+	if got.PatchPlan == nil {
+		t.Fatal("PatchPlan = nil, want populated plan")
+	}
+	if got.PatchPlan.Status != "WARN" {
+		t.Fatalf("PatchPlan.Status mismatch: got %q want %q", got.PatchPlan.Status, "WARN")
+	}
+
+	want := "WARN op=place_prefab manifest=" + manifestPath + " prefab=Assets/Prefabs/chair.prefab position=2.1,0,-1.25 overlap_ids=2000 reserved_fileIDs=2002,2003\n" +
+		"PLAN prefab_guid=\"guid-chair\" append_ops=append:1:2002:GameObject,append:4:2003:Transform"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestPatchUnresolvedPrefabReferenceReturnsUnknown(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	svc := app.New()
+	got, code := svc.Patch("scene", scenePath, core.ViewCompact, false, app.PatchArgs{
+		Op:          "place_prefab",
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		HasPosition: true,
+		Position:    [3]float64{5, 0, 0},
+	})
+	if code != 0 {
+		t.Fatalf("expected unknown success exit code, got %d body=%q", code, got.Body)
+	}
+	if got.Status != "UNKNOWN" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "UNKNOWN")
+	}
+	if got.PatchPlan == nil {
+		t.Fatal("PatchPlan = nil, want populated plan")
+	}
+	if got.PatchPlan.Reason != "NEED_PREFAB_GUID" {
+		t.Fatalf("PatchPlan.Reason mismatch: got %q want %q", got.PatchPlan.Reason, "NEED_PREFAB_GUID")
+	}
+
+	want := "UNKNOWN op=place_prefab manifest=" + manifestPath + " prefab=Assets/Prefabs/chair.prefab position=5,0,0 reason=NEED_PREFAB_GUID overlap_ids=none reserved_fileIDs=2002,2003\n" +
+		"PLAN prefab_guid=UNKNOWN append_ops=append:1:2002:GameObject,append:4:2003:Transform"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}

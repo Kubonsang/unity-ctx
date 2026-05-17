@@ -18,6 +18,7 @@ import (
 	"unity-ctx/internal/index"
 	"unity-ctx/internal/mutation"
 	"unity-ctx/internal/parser"
+	scenepatch "unity-ctx/internal/patch"
 )
 
 type Service struct{}
@@ -72,6 +73,20 @@ type CheckArgs struct {
 	Prefab      string
 	HasPosition bool
 	Position    [3]float64
+}
+
+type PatchArgs struct {
+	Op          string
+	Manifest    string
+	Prefab      string
+	PrefabGUID  string
+	HasPosition bool
+	Position    [3]float64
+}
+
+type PatchResult struct {
+	core.Result
+	PatchPlan *scenepatch.PlacePrefabPlan `json:"patch_plan,omitempty"`
 }
 
 type loadedDoc struct {
@@ -605,6 +620,99 @@ func (s *Service) Check(namespace, path string, view core.View, jsonOut bool, ar
 	return result, 0
 }
 
+func (s *Service) Patch(namespace, path string, view core.View, jsonOut bool, args PatchArgs) (PatchResult, int) {
+	_ = jsonOut
+
+	result := PatchResult{
+		Result: core.Result{
+			Namespace: namespace,
+			Command:   "patch",
+			File:      path,
+			View:      view,
+		},
+	}
+
+	if namespace != "scene" {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR patch not implemented for namespace=%s", namespace)
+		return result, 1
+	}
+	if view != core.ViewCompact {
+		result.Status = "ERROR"
+		result.Body = "ERROR patch supports only --view compact"
+		return result, 1
+	}
+	if strings.TrimSpace(args.Op) == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR patch requires --op"
+		return result, 1
+	}
+	if args.Op != "place_prefab" {
+		result.Status = "ERROR"
+		result.Body = "ERROR patch supports only --op place_prefab"
+		return result, 1
+	}
+	if strings.TrimSpace(args.Manifest) == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR patch requires --manifest"
+		return result, 1
+	}
+	if strings.TrimSpace(args.Prefab) == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR patch requires --prefab"
+		return result, 1
+	}
+	if !args.HasPosition {
+		result.Status = "ERROR"
+		result.Body = "ERROR patch requires --position"
+		return result, 1
+	}
+	if !positionIsFinite(args.Position) {
+		result.Status = "ERROR"
+		result.Body = "ERROR patch requires finite --position values"
+		return result, 1
+	}
+
+	loaded, err := s.load(path)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	manifest, err := bounds.Load(args.Manifest)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	if !sameSceneReference(path, manifest.Scene) {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR manifest scene mismatch file=%s manifest_scene=%s", path, manifest.Scene)
+		return result, 1
+	}
+
+	plan, err := scenepatch.PlanPlacePrefab(scenepatch.PlacePrefabRequest{
+		SceneBlocks: loaded.blocks,
+		Manifest:    manifest,
+		PrefabPath:  args.Prefab,
+		PrefabRef: scenepatch.PrefabReference{
+			GUID: args.PrefabGUID,
+		},
+		Position: bounds.Vec3(args.Position),
+	})
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	result.Status = string(plan.Status)
+	result.Body = formatPatchBody(plan.Status, args.Op, args.Manifest, args.Prefab, args.Position, plan)
+	result.PatchPlan = &plan
+	return result, 0
+}
+
 func (s *Service) load(path string) (*loadedDoc, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -903,6 +1011,60 @@ func formatCheckBody(prefix, manifestPath, prefabPath string, position [3]float6
 		builder.WriteString(strconv.FormatInt(id, 10))
 	}
 	return builder.String()
+}
+
+func formatPatchBody(status scenepatch.Status, op, manifestPath, prefabPath string, position [3]float64, plan scenepatch.PlacePrefabPlan) string {
+	var builder strings.Builder
+	builder.WriteString(string(status))
+	builder.WriteString(" op=")
+	builder.WriteString(op)
+	builder.WriteString(" manifest=")
+	builder.WriteString(manifestPath)
+	builder.WriteString(" prefab=")
+	builder.WriteString(prefabPath)
+	builder.WriteString(" position=")
+	builder.WriteString(formatPosition(position))
+	if plan.Reason != "" {
+		builder.WriteString(" reason=")
+		builder.WriteString(plan.Reason)
+	}
+	builder.WriteString(" overlap_ids=")
+	builder.WriteString(formatPatchIDList(plan.OverlapIDs))
+	builder.WriteString(" reserved_fileIDs=")
+	builder.WriteString(formatPatchIDList(plan.ReservedFileIDs))
+	builder.WriteString("\nPLAN prefab_guid=")
+	if plan.PrefabGUID == "" {
+		builder.WriteString("UNKNOWN")
+	} else {
+		builder.WriteString(strconv.Quote(plan.PrefabGUID))
+	}
+	builder.WriteString(" append_ops=")
+	builder.WriteString(formatAppendOps(plan.Appends))
+	return builder.String()
+}
+
+func formatPatchIDList(ids []int64) string {
+	if len(ids) == 0 {
+		return "none"
+	}
+
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, strconv.FormatInt(id, 10))
+	}
+	return strings.Join(parts, ",")
+}
+
+func formatAppendOps(appends []scenepatch.AppendIntent) string {
+	if len(appends) == 0 {
+		return "none"
+	}
+
+	parts := make([]string, 0, len(appends))
+	for _, appendOp := range appends {
+		parts = append(parts, fmt.Sprintf("%s:%d:%d:%s", appendOp.Op, appendOp.ClassID, appendOp.FileID, appendOp.TypeName))
+	}
+	return strings.Join(parts, ",")
 }
 
 func formatPosition(position [3]float64) string {
