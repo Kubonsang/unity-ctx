@@ -1,0 +1,12 @@
+{
+  "scene": "Assets/Scenes/SimpleScene.unity",
+  "source": "editor",
+  "version": 1,
+  "objects": [
+    {
+      "fileID": 1000,
+      "name": "Table_01"
+    }
+  ],
+  "prefabs": []
+}

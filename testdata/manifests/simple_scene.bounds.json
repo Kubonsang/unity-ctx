@@ -1,0 +1,39 @@
+{
+  "scene": "Assets/Scenes/SimpleScene.unity",
+  "source": "editor",
+  "version": 1,
+  "objects": [
+    {
+      "fileID": 1000,
+      "name": "Table_01",
+      "bounds": {
+        "center": [0.0, 0.5, 0.0],
+        "size": [2.0, 1.0, 1.2]
+      }
+    },
+    {
+      "fileID": 2000,
+      "name": "Chair_01",
+      "bounds": {
+        "center": [2.1, 0.5, -1.25],
+        "size": [0.8, 1.0, 0.8]
+      }
+    }
+  ],
+  "prefabs": [
+    {
+      "path": "Assets/Prefabs/chair.prefab",
+      "bounds": {
+        "center": [0.0, 0.5, 0.0],
+        "size": [0.8, 1.0, 0.8]
+      }
+    },
+    {
+      "path": "Assets/Prefabs/table.prefab",
+      "bounds": {
+        "center": [0.0, 0.5, 0.0],
+        "size": [2.0, 1.0, 1.2]
+      }
+    }
+  ]
+}
