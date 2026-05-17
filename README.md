@@ -21,6 +21,7 @@ Start from the read-only commands first.
 `scene patch --op place_prefab` is available as a read-only patch-plan generator.
 Without `--prefab-guid` it returns UNKNOWN NEED_PREFAB_GUID instead of guessing a GUID.
 With `--prefab-guid` it can return OK or WARN planning results.
-`scene apply` and `scene diff` are still deferred.
+`scene diff` can summarize persisted patch plans.
+`scene apply` can dry-run or `--write` the current append-only place_prefab patch contract.
 Run go test ./... before final response.
 ```

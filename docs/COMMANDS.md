@@ -198,7 +198,7 @@ Rules:
 - `patch` is currently a read-only patch-plan generator. It does not write scene files.
 - Without `--prefab-guid`, the planner returns `UNKNOWN ... NEED_PREFAB_GUID` and does not guess a GUID.
 - With `--prefab-guid`, the planner can return `OK` for clear placement or `WARN` when overlaps are detected.
-- `scene apply` and `scene diff` are still deferred.
+- `--json` returns a deterministic envelope including `schema_version` and `patch_plan`.
 
 Compact output examples:
 
@@ -229,6 +229,92 @@ ERROR patch requires --position as x,y,z
 ERROR patch requires finite --position values
 ERROR patch supports only --view compact
 ERROR manifest scene mismatch file=Stage01.unity manifest_scene=OtherScene.unity
+```
+
+## v0.4c Apply + Diff Foundation Slice
+
+### scene diff
+
+```bash
+unity-ctx scene diff Stage01.unity --patch patches/chair_place_ok.patch.json
+unity-ctx scene diff Stage01.unity --patch patches/chair_place_ok.patch.json --json
+```
+
+Required flags:
+
+- `--patch`
+
+Optional flags:
+
+- `--json`
+
+Rules:
+
+- `diff` is implemented only for the `scene` namespace.
+- `diff` supports only compact output.
+- `diff` reads the persisted JSON emitted by `scene patch --json`.
+- The patch file must have `schema_version=1`.
+- The patch file scene reference must match the requested scene by exact path when possible, otherwise by normalized scene filename plus extension.
+
+Compact output examples:
+
+```text
+OK patch=patches/chair_place_ok.patch.json op=place_prefab append_ops=2 reserved_fileIDs=2002,2003
+WARN patch=patches/chair_place_warn.patch.json op=place_prefab overlap_ids=2000 append_ops=2 reserved_fileIDs=2002,2003
+UNKNOWN patch=patches/chair_place_unknown.patch.json op=place_prefab reason=NEED_PREFAB_GUID append_ops=2 reserved_fileIDs=2002,2003
+```
+
+Error output:
+
+```text
+ERROR diff requires --patch
+ERROR diff supports only --view compact
+ERROR patch scene mismatch file=Stage01.unity patch_file=OtherScene.unity
+ERROR invalid patch file: schema_version must be 1
+```
+
+### scene apply
+
+```bash
+unity-ctx scene apply Stage01.unity --patch patches/chair_place_ok.patch.json
+unity-ctx scene apply Stage01.unity --patch patches/chair_place_ok.patch.json --write
+unity-ctx scene apply Stage01.unity --patch patches/chair_place_ok.patch.json --json
+```
+
+Required flags:
+
+- `--patch`
+
+Optional flags:
+
+- `--write`
+- `--json`
+
+Rules:
+
+- `apply` is implemented only for the `scene` namespace.
+- `apply` supports only compact output.
+- `apply` is dry-run-first. It does not write unless `--write` is provided.
+- `apply` accepts only the current append-only `place_prefab` patch contract.
+- `apply` creates `<scene>.bak` before any committed write.
+- `apply` reparses the written scene and verifies the appended object fileIDs before reporting success.
+- `apply` does not proceed on `UNKNOWN` patch status.
+
+Compact output examples:
+
+```text
+DRY_RUN patch=patches/chair_place_ok.patch.json op=place_prefab append_ops=2 changed=1 verified=1
+WRITE backup=Stage01.unity.bak patch=patches/chair_place_ok.patch.json op=place_prefab append_ops=2 changed=1 verified=1
+```
+
+Error output:
+
+```text
+ERROR apply requires --patch
+ERROR apply supports only --view compact
+ERROR PATCH_STATUS_UNRESOLVED status=UNKNOWN reason=NEED_PREFAB_GUID
+ERROR APPLY_VERIFY_FAILED expected_objects=2 actual_objects=1
+ERROR patch scene mismatch file=Stage01.unity patch_file=OtherScene.unity
 ```
 
 ## Output Stability Rules
