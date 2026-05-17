@@ -84,7 +84,17 @@ type PatchArgs struct {
 	Position    [3]float64
 }
 
+type DiffArgs struct {
+	Patch string
+}
+
+type ApplyArgs struct {
+	Patch string
+	Write bool
+}
+
 type PatchResult struct {
+	SchemaVersion int `json:"schema_version,omitempty"`
 	core.Result
 	PatchPlan *scenepatch.PlacePrefabPlan `json:"patch_plan,omitempty"`
 }
@@ -624,6 +634,7 @@ func (s *Service) Patch(namespace, path string, view core.View, jsonOut bool, ar
 	_ = jsonOut
 
 	result := PatchResult{
+		SchemaVersion: scenepatch.FileSchemaVersion,
 		Result: core.Result{
 			Namespace: namespace,
 			Command:   "patch",
@@ -710,6 +721,183 @@ func (s *Service) Patch(namespace, path string, view core.View, jsonOut bool, ar
 	result.Status = string(plan.Status)
 	result.Body = formatPatchBody(plan.Status, args.Op, args.Manifest, args.Prefab, args.Position, plan)
 	result.PatchPlan = &plan
+	return result, 0
+}
+
+func (s *Service) Diff(namespace, path string, view core.View, jsonOut bool, args DiffArgs) (PatchResult, int) {
+	_ = jsonOut
+
+	result := PatchResult{
+		SchemaVersion: scenepatch.FileSchemaVersion,
+		Result: core.Result{
+			Namespace: namespace,
+			Command:   "diff",
+			File:      path,
+			View:      view,
+		},
+	}
+
+	if namespace != "scene" {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR diff not implemented for namespace=%s", namespace)
+		return result, 1
+	}
+	if view != core.ViewCompact {
+		result.Status = "ERROR"
+		result.Body = "ERROR diff supports only --view compact"
+		return result, 1
+	}
+	if strings.TrimSpace(args.Patch) == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR diff requires --patch"
+		return result, 1
+	}
+
+	envelope, err := scenepatch.LoadFile(args.Patch)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	if !sameSceneReference(path, envelope.File) {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR patch scene mismatch file=%s patch_file=%s", path, envelope.File)
+		return result, 1
+	}
+
+	diffResult, err := mutation.DescribeScenePatch(mutation.SceneApplyRequest{
+		ScenePath: path,
+		PatchPath: args.Patch,
+		Envelope:  envelope,
+	})
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	plan := envelope.PatchPlan
+	result.Status = string(diffResult.Status)
+	result.Body = formatDiffBody(diffResult.Status, args.Patch, diffResult)
+	result.PatchPlan = &plan
+	return result, 0
+}
+
+func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, args ApplyArgs) (PatchResult, int) {
+	_ = jsonOut
+
+	result := PatchResult{
+		SchemaVersion: scenepatch.FileSchemaVersion,
+		Result: core.Result{
+			Namespace: namespace,
+			Command:   "apply",
+			File:      path,
+			View:      view,
+		},
+	}
+
+	if namespace != "scene" {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR apply not implemented for namespace=%s", namespace)
+		return result, 1
+	}
+	if view != core.ViewCompact {
+		result.Status = "ERROR"
+		result.Body = "ERROR apply supports only --view compact"
+		return result, 1
+	}
+	if strings.TrimSpace(args.Patch) == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR apply requires --patch"
+		return result, 1
+	}
+
+	envelope, err := scenepatch.LoadFile(args.Patch)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	if !sameSceneReference(path, envelope.File) {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR patch scene mismatch file=%s patch_file=%s", path, envelope.File)
+		return result, 1
+	}
+
+	loaded, err := s.load(path)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	plan, err := mutation.PlanSceneApply(loaded.data, mutation.SceneApplyRequest{
+		ScenePath: path,
+		PatchPath: args.Patch,
+		Envelope:  envelope,
+		Write:     args.Write,
+	})
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	applied := plan
+	if args.Write {
+		applied, err = mutation.ApplyScene(mutation.SceneApplyRequest{
+			ScenePath: path,
+			PatchPath: args.Patch,
+			Envelope:  envelope,
+			Write:     true,
+		}, plan)
+		if err != nil {
+			result.Status = "ERROR"
+			if strings.HasPrefix(err.Error(), "APPLY_VERIFY_FAILED") {
+				result.Body = fmt.Sprintf("ERROR %s", err)
+			} else if writeCommitted(err) {
+				result.Body = fmt.Sprintf(
+					"ERROR WRITE_COMMITTED backup=%s patch=%s op=%s append_ops=%d changed=%d verified=%d err=%v",
+					applied.BackupPath,
+					args.Patch,
+					applied.Operation,
+					applied.AppendOps,
+					boolToInt(applied.Changed),
+					boolToInt(applied.Verified),
+					err,
+				)
+			} else {
+				result.Body = fmt.Sprintf("ERROR %v", err)
+			}
+			planCopy := envelope.PatchPlan
+			result.PatchPlan = &planCopy
+			return result, 1
+		}
+	}
+
+	result.Status = "OK"
+	if args.Write {
+		result.Body = fmt.Sprintf(
+			"WRITE backup=%s patch=%s op=%s append_ops=%d changed=%d verified=%d",
+			applied.BackupPath,
+			args.Patch,
+			applied.Operation,
+			applied.AppendOps,
+			boolToInt(applied.Changed),
+			boolToInt(applied.Verified),
+		)
+	} else {
+		result.Body = fmt.Sprintf(
+			"DRY_RUN patch=%s op=%s append_ops=%d changed=%d verified=%d",
+			args.Patch,
+			applied.Operation,
+			applied.AppendOps,
+			boolToInt(applied.Changed),
+			boolToInt(applied.Verified),
+		)
+	}
+	planCopy := envelope.PatchPlan
+	result.PatchPlan = &planCopy
 	return result, 0
 }
 
@@ -1040,6 +1228,28 @@ func formatPatchBody(status scenepatch.Status, op, manifestPath, prefabPath stri
 	}
 	builder.WriteString(" append_ops=")
 	builder.WriteString(formatAppendOps(plan.Appends))
+	return builder.String()
+}
+
+func formatDiffBody(status scenepatch.Status, patchPath string, diffResult mutation.SceneDiffResult) string {
+	var builder strings.Builder
+	builder.WriteString(string(status))
+	builder.WriteString(" patch=")
+	builder.WriteString(patchPath)
+	builder.WriteString(" op=")
+	builder.WriteString(diffResult.Operation)
+	if diffResult.Reason != "" {
+		builder.WriteString(" reason=")
+		builder.WriteString(diffResult.Reason)
+	}
+	if len(diffResult.OverlapIDs) > 0 {
+		builder.WriteString(" overlap_ids=")
+		builder.WriteString(formatPatchIDList(diffResult.OverlapIDs))
+	}
+	builder.WriteString(" append_ops=")
+	builder.WriteString(strconv.Itoa(diffResult.AppendOps))
+	builder.WriteString(" reserved_fileIDs=")
+	builder.WriteString(formatPatchIDList(diffResult.ReservedIDs))
 	return builder.String()
 }
 

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "status": "OK",
+  "namespace": "scene",
+  "command": "patch",
+  "file": "testdata/scenes/simple_scene.unity",
+  "view": "compact",
+  "body": "OK op=place_prefab manifest=testdata/manifests/simple_scene.bounds.json prefab=Assets/Prefabs/chair.prefab position=5,0,0 overlap_ids=none reserved_fileIDs=2002,2003\nPLAN prefab_guid=\"guid-chair\" append_ops=append:1:2002:GameObject,append:4:2003:Transform",
+  "patch_plan": {
+    "status": "OK",
+    "prefab_path": "Assets/Prefabs/chair.prefab",
+    "prefab_guid": "guid-chair",
+    "position": [5, 0, 0],
+    "overlap_ids": [],
+    "reserved_file_ids": [2002, 2003],
+    "appends": [
+      {"op": "append", "class_id": 1, "file_id": 2002, "type_name": "GameObject"},
+      {"op": "append", "class_id": 4, "file_id": 2003, "type_name": "Transform"}
+    ]
+  }
+}

@@ -342,12 +342,13 @@ func TestQueryJSONReturnsResultEnvelope(t *testing.T) {
 	}
 
 	var got struct {
-		Status    string `json:"status"`
-		Namespace string `json:"namespace"`
-		Command   string `json:"command"`
-		File      string `json:"file"`
-		View      string `json:"view"`
-		Body      string `json:"body"`
+		SchemaVersion int    `json:"schema_version"`
+		Status        string `json:"status"`
+		Namespace     string `json:"namespace"`
+		Command       string `json:"command"`
+		File          string `json:"file"`
+		View          string `json:"view"`
+		Body          string `json:"body"`
 	}
 	if err := json.Unmarshal([]byte(result.stdout), &got); err != nil {
 		t.Fatalf("parse stdout json: %v\nstdout=%q", err, result.stdout)
@@ -986,13 +987,14 @@ func TestScenePatchJSONReturnsDeterministicEnvelopeWithPatchPlan(t *testing.T) {
 	}
 
 	var got struct {
-		Status    string `json:"status"`
-		Namespace string `json:"namespace"`
-		Command   string `json:"command"`
-		File      string `json:"file"`
-		View      string `json:"view"`
-		Body      string `json:"body"`
-		PatchPlan *struct {
+		SchemaVersion int    `json:"schema_version"`
+		Status        string `json:"status"`
+		Namespace     string `json:"namespace"`
+		Command       string `json:"command"`
+		File          string `json:"file"`
+		View          string `json:"view"`
+		Body          string `json:"body"`
+		PatchPlan     *struct {
 			Status          string     `json:"status"`
 			Reason          string     `json:"reason"`
 			PrefabPath      string     `json:"prefab_path"`
@@ -1014,6 +1016,9 @@ func TestScenePatchJSONReturnsDeterministicEnvelopeWithPatchPlan(t *testing.T) {
 
 	if got.Status != "OK" {
 		t.Fatalf("status mismatch: got %q want %q", got.Status, "OK")
+	}
+	if got.SchemaVersion != 1 {
+		t.Fatalf("schema_version mismatch: got %d want %d", got.SchemaVersion, 1)
 	}
 	if got.Command != "patch" {
 		t.Fatalf("command mismatch: got %q want %q", got.Command, "patch")
@@ -1090,6 +1095,130 @@ func TestSetAssetDryRunReturnsPlanAndDoesNotWrite(t *testing.T) {
 	}
 	if string(data) != content {
 		t.Fatal("dry-run should not modify file")
+	}
+}
+
+func TestDiffRequiresPatch(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"diff",
+		"testdata/scenes/simple_scene.unity",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR diff requires --patch\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestDiffReturnsCompactSummary(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"diff",
+		"testdata/scenes/simple_scene.unity",
+		"--patch",
+		"testdata/patches/chair_place_ok.patch.json",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	want := "OK patch=testdata/patches/chair_place_ok.patch.json op=place_prefab append_ops=2 reserved_fileIDs=2002,2003\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestApplyDryRunReturnsCompactSummary(t *testing.T) {
+	scenePath := copyFixtureToTemp(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), "simple_scene.unity")
+
+	result := runCLI(
+		t,
+		"scene",
+		"apply",
+		scenePath,
+		"--patch",
+		"testdata/patches/chair_place_ok.patch.json",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	want := "DRY_RUN patch=testdata/patches/chair_place_ok.patch.json op=place_prefab append_ops=2 changed=1 verified=1\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestApplyWriteCreatesBackup(t *testing.T) {
+	scenePath := copyFixtureToTemp(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), "simple_scene.unity")
+
+	result := runCLI(
+		t,
+		"scene",
+		"apply",
+		scenePath,
+		"--patch",
+		"testdata/patches/chair_place_ok.patch.json",
+		"--write",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	want := "WRITE backup=" + scenePath + ".bak patch=testdata/patches/chair_place_ok.patch.json op=place_prefab append_ops=2 changed=1 verified=1\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+
+	if _, err := os.Stat(scenePath + ".bak"); err != nil {
+		t.Fatalf("backup stat error = %v", err)
+	}
+}
+
+func TestApplyRejectsUnknownPatchStatus(t *testing.T) {
+	scenePath := copyFixtureToTemp(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), "simple_scene.unity")
+
+	result := runCLI(
+		t,
+		"scene",
+		"apply",
+		scenePath,
+		"--patch",
+		"testdata/patches/chair_place_unknown.patch.json",
+	)
+
+	if result.exitCode != 1 {
+		t.Fatalf("exit code mismatch: got %d want 1 stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	want := "ERROR PATCH_STATUS_UNRESOLVED status=UNKNOWN reason=NEED_PREFAB_GUID\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
 	}
 }
 
@@ -1259,6 +1388,21 @@ func TestSetRejectsUnsupportedNamespace(t *testing.T) {
 	if result.stderr != want {
 		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
 	}
+}
+
+func copyFixtureToTemp(t *testing.T, source, name string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatalf("ReadFile() source error = %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
 }
 
 func TestSetRequiresField(t *testing.T) {
