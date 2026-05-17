@@ -22,7 +22,7 @@ const (
 )
 
 type PrefabReference struct {
-	GUID string
+	GUID string `json:"guid"`
 }
 
 type PlacePrefabRequest struct {
@@ -34,21 +34,21 @@ type PlacePrefabRequest struct {
 }
 
 type AppendIntent struct {
-	Op       string
-	ClassID  int
-	FileID   int64
-	TypeName string
+	Op       string `json:"op"`
+	ClassID  int    `json:"class_id"`
+	FileID   int64  `json:"file_id"`
+	TypeName string `json:"type_name"`
 }
 
 type PlacePrefabPlan struct {
-	Status          Status
-	Reason          string
-	PrefabPath      string
-	PrefabGUID      string
-	Position        bounds.Vec3
-	OverlapIDs      []int64
-	ReservedFileIDs []int64
-	Appends         []AppendIntent
+	Status          Status         `json:"status"`
+	Reason          string         `json:"reason,omitempty"`
+	PrefabPath      string         `json:"prefab_path"`
+	PrefabGUID      string         `json:"prefab_guid,omitempty"`
+	Position        bounds.Vec3    `json:"position"`
+	OverlapIDs      []int64        `json:"overlap_ids"`
+	ReservedFileIDs []int64        `json:"reserved_file_ids"`
+	Appends         []AppendIntent `json:"appends"`
 }
 
 func PlanPlacePrefab(req PlacePrefabRequest) (PlacePrefabPlan, error) {

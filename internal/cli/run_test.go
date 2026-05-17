@@ -725,6 +725,330 @@ func TestSceneCheckRejectsManifestSceneMismatch(t *testing.T) {
 	}
 }
 
+func TestScenePatchRequiresOp(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"patch",
+		"testdata/scenes/simple_scene.unity",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR patch requires --op\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestScenePatchRejectsUnsupportedOp(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"patch",
+		"testdata/scenes/simple_scene.unity",
+		"--op",
+		"move_object",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR patch supports only --op place_prefab\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestScenePatchRequiresManifest(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"patch",
+		"testdata/scenes/simple_scene.unity",
+		"--op",
+		"place_prefab",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR patch requires --manifest\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestScenePatchRequiresPrefab(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"patch",
+		"testdata/scenes/simple_scene.unity",
+		"--op",
+		"place_prefab",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR patch requires --prefab\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestScenePatchRequiresPosition(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"patch",
+		"testdata/scenes/simple_scene.unity",
+		"--op",
+		"place_prefab",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR patch requires --position\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestScenePatchRejectsWrite(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"patch",
+		"testdata/scenes/simple_scene.unity",
+		"--write",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR patch does not accept --write\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestScenePatchRejectsSelectorFlags(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"patch",
+		"testdata/scenes/simple_scene.unity",
+		"--op",
+		"place_prefab",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--position",
+		"5,0,0",
+		"--id",
+		"2000",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR patch does not accept --id, --name, --type, --component, --field, --out, --task, --focus, or --max-tokens\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestScenePatchCompactOutputMatchesExpectedText(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"patch",
+		"testdata/scenes/simple_scene.unity",
+		"--op",
+		"place_prefab",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--position",
+		"5,0,0",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	want := "UNKNOWN op=place_prefab manifest=testdata/manifests/simple_scene.bounds.json prefab=Assets/Prefabs/chair.prefab position=5,0,0 reason=NEED_PREFAB_GUID overlap_ids=none reserved_fileIDs=2002,2003\n" +
+		"PLAN prefab_guid=UNKNOWN append_ops=append:1:2002:GameObject,append:4:2003:Transform\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestScenePatchWithPrefabGUIDReturnsOK(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"patch",
+		"testdata/scenes/simple_scene.unity",
+		"--op",
+		"place_prefab",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--prefab-guid",
+		"guid-chair",
+		"--position",
+		"5,0,0",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	want := "OK op=place_prefab manifest=testdata/manifests/simple_scene.bounds.json prefab=Assets/Prefabs/chair.prefab position=5,0,0 overlap_ids=none reserved_fileIDs=2002,2003\n" +
+		"PLAN prefab_guid=\"guid-chair\" append_ops=append:1:2002:GameObject,append:4:2003:Transform\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestScenePatchJSONReturnsDeterministicEnvelopeWithPatchPlan(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"patch",
+		"testdata/scenes/simple_scene.unity",
+		"--op",
+		"place_prefab",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--prefab-guid",
+		"guid-chair",
+		"--position",
+		"5,0,0",
+		"--json",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	var got struct {
+		Status    string `json:"status"`
+		Namespace string `json:"namespace"`
+		Command   string `json:"command"`
+		File      string `json:"file"`
+		View      string `json:"view"`
+		Body      string `json:"body"`
+		PatchPlan *struct {
+			Status          string     `json:"status"`
+			Reason          string     `json:"reason"`
+			PrefabPath      string     `json:"prefab_path"`
+			PrefabGUID      string     `json:"prefab_guid"`
+			OverlapIDs      []int64    `json:"overlap_ids"`
+			ReservedFileIDs []int64    `json:"reserved_file_ids"`
+			Position        [3]float64 `json:"position"`
+			Appends         []struct {
+				Op       string `json:"op"`
+				ClassID  int    `json:"class_id"`
+				FileID   int64  `json:"file_id"`
+				TypeName string `json:"type_name"`
+			} `json:"appends"`
+		} `json:"patch_plan"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &got); err != nil {
+		t.Fatalf("parse stdout json: %v\nstdout=%q", err, result.stdout)
+	}
+
+	if got.Status != "OK" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "OK")
+	}
+	if got.Command != "patch" {
+		t.Fatalf("command mismatch: got %q want %q", got.Command, "patch")
+	}
+	wantBody := "OK op=place_prefab manifest=testdata/manifests/simple_scene.bounds.json prefab=Assets/Prefabs/chair.prefab position=5,0,0 overlap_ids=none reserved_fileIDs=2002,2003\nPLAN prefab_guid=\"guid-chair\" append_ops=append:1:2002:GameObject,append:4:2003:Transform"
+	if got.Body != wantBody {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, wantBody)
+	}
+	if got.PatchPlan == nil {
+		t.Fatal("patch_plan is nil, want populated plan")
+	}
+	if got.PatchPlan.Status != "OK" {
+		t.Fatalf("patch_plan.status mismatch: got %q want %q", got.PatchPlan.Status, "OK")
+	}
+	if got.PatchPlan.Reason != "" {
+		t.Fatalf("patch_plan.reason mismatch: got %q want empty", got.PatchPlan.Reason)
+	}
+	if got.PatchPlan.PrefabPath != "Assets/Prefabs/chair.prefab" {
+		t.Fatalf("patch_plan.prefab_path mismatch: got %q", got.PatchPlan.PrefabPath)
+	}
+	if got.PatchPlan.PrefabGUID != "guid-chair" {
+		t.Fatalf("patch_plan.prefab_guid mismatch: got %q want %q", got.PatchPlan.PrefabGUID, "guid-chair")
+	}
+	if len(got.PatchPlan.OverlapIDs) != 0 {
+		t.Fatalf("patch_plan.overlap_ids mismatch: got %v want none", got.PatchPlan.OverlapIDs)
+	}
+	wantReserved := []int64{2002, 2003}
+	if fmt.Sprintf("%v", got.PatchPlan.ReservedFileIDs) != fmt.Sprintf("%v", wantReserved) {
+		t.Fatalf("patch_plan.reserved_file_ids mismatch: got %v want %v", got.PatchPlan.ReservedFileIDs, wantReserved)
+	}
+	if len(got.PatchPlan.Appends) != 2 {
+		t.Fatalf("patch_plan.appends mismatch: got %d want 2", len(got.PatchPlan.Appends))
+	}
+}
+
 func TestSetAssetDryRunReturnsPlanAndDoesNotWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "enemy_config.asset")
 	content := "" +

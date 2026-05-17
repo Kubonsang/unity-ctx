@@ -50,7 +50,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	writeFlag := flagSet.Bool("write", false, "")
 	manifest := flagSet.String("manifest", "", "")
 	prefab := flagSet.String("prefab", "", "")
+	prefabGUID := flagSet.String("prefab-guid", "", "")
 	position := flagSet.String("position", "", "")
+	op := flagSet.String("op", "", "")
 
 	if err := flagSet.Parse(args[3:]); err != nil {
 		_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
@@ -76,8 +78,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --value\n", command)
 		return 2
 	}
-	if command != "check" && anyFlagVisited(seenFlags, "manifest", "prefab", "position") {
+	if command != "check" && command != "patch" && anyFlagVisited(seenFlags, "manifest", "prefab", "position") {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --manifest, --prefab, or --position\n", command)
+		return 2
+	}
+	if command != "patch" && seenFlags["op"] {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --op\n", command)
+		return 2
+	}
+	if command != "patch" && seenFlags["prefab-guid"] {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --prefab-guid\n", command)
 		return 2
 	}
 
@@ -284,6 +294,51 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
+	if command == "patch" {
+		if namespace != "scene" {
+			_, _ = fmt.Fprintf(stderr, "ERROR patch not implemented for namespace=%s\n", namespace)
+			return 2
+		}
+		if selectedView != core.ViewCompact {
+			_, _ = io.WriteString(stderr, "ERROR patch supports only --view compact\n")
+			return 2
+		}
+		if strings.TrimSpace(*op) == "" {
+			_, _ = io.WriteString(stderr, "ERROR patch requires --op\n")
+			return 2
+		}
+		if *op != "place_prefab" {
+			_, _ = io.WriteString(stderr, "ERROR patch supports only --op place_prefab\n")
+			return 2
+		}
+		if strings.TrimSpace(*manifest) == "" {
+			_, _ = io.WriteString(stderr, "ERROR patch requires --manifest\n")
+			return 2
+		}
+		if strings.TrimSpace(*prefab) == "" {
+			_, _ = io.WriteString(stderr, "ERROR patch requires --prefab\n")
+			return 2
+		}
+		if !seenFlags["position"] {
+			_, _ = io.WriteString(stderr, "ERROR patch requires --position\n")
+			return 2
+		}
+		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "out", "task", "focus", "max-tokens") {
+			_, _ = io.WriteString(stderr, "ERROR patch does not accept --id, --name, --type, --component, --field, --out, --task, --focus, or --max-tokens\n")
+			return 2
+		}
+
+		var err error
+		parsedPosition, err = parsePosition(*position)
+		if err != nil {
+			_, _ = io.WriteString(stderr, "ERROR patch requires --position as x,y,z\n")
+			return 2
+		}
+		if !positionIsFinite(parsedPosition) {
+			_, _ = io.WriteString(stderr, "ERROR patch requires finite --position values\n")
+			return 2
+		}
+	}
 
 	result := core.Result{
 		Namespace: namespace,
@@ -293,6 +348,30 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	service := app.New()
 	exitCode := 1
+
+	if command == "patch" {
+		patchResult, patchExitCode := service.Patch(namespace, file, selectedView, *jsonOutput, app.PatchArgs{
+			Op:          *op,
+			Manifest:    *manifest,
+			Prefab:      *prefab,
+			PrefabGUID:  *prefabGUID,
+			HasPosition: seenFlags["position"],
+			Position:    parsedPosition,
+		})
+
+		if *jsonOutput {
+			encoder := json.NewEncoder(stdout)
+			encoder.SetEscapeHTML(false)
+			if err := encoder.Encode(patchResult); err != nil {
+				_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
+				return 2
+			}
+			return patchExitCode
+		}
+
+		_, _ = io.WriteString(stdout, patchResult.Body+"\n")
+		return patchExitCode
+	}
 
 	switch command {
 	case "summarize":
