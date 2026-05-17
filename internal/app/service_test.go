@@ -909,6 +909,115 @@ func TestPatchUnresolvedPrefabReferenceReturnsUnknown(t *testing.T) {
 	}
 }
 
+func TestDiffReturnsPatchSummaryAndPlan(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	patchPath := filepath.Join("..", "..", "testdata", "patches", "chair_place_ok.patch.json")
+
+	svc := app.New()
+	got, code := svc.Diff("scene", scenePath, core.ViewCompact, false, app.DiffArgs{
+		Patch: patchPath,
+	})
+	if code != 0 {
+		t.Fatalf("expected success exit code, got %d body=%q", code, got.Body)
+	}
+	if got.Status != "OK" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "OK")
+	}
+	if got.SchemaVersion != 1 {
+		t.Fatalf("SchemaVersion mismatch: got %d want %d", got.SchemaVersion, 1)
+	}
+	if got.PatchPlan == nil {
+		t.Fatal("PatchPlan = nil, want populated plan")
+	}
+
+	want := "OK patch=" + patchPath + " op=place_prefab append_ops=2 reserved_fileIDs=2002,2003"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestApplyDryRunReturnsVerifiedSummaryWithoutWriting(t *testing.T) {
+	scenePath := copyFixtureFile(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), "simple_scene.unity")
+	patchPath := filepath.Join("..", "..", "testdata", "patches", "chair_place_ok.patch.json")
+
+	before, err := os.ReadFile(scenePath)
+	if err != nil {
+		t.Fatalf("ReadFile() before error = %v", err)
+	}
+
+	svc := app.New()
+	got, code := svc.Apply("scene", scenePath, core.ViewCompact, false, app.ApplyArgs{
+		Patch: patchPath,
+	})
+	if code != 0 {
+		t.Fatalf("expected success exit code, got %d body=%q", code, got.Body)
+	}
+	if got.Status != "OK" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "OK")
+	}
+
+	want := "DRY_RUN patch=" + patchPath + " op=place_prefab append_ops=2 changed=1 verified=1"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+
+	after, err := os.ReadFile(scenePath)
+	if err != nil {
+		t.Fatalf("ReadFile() after error = %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("dry-run changed scene file bytes")
+	}
+}
+
+func TestApplyWriteCreatesBackupAndWritesScene(t *testing.T) {
+	scenePath := copyFixtureFile(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), "simple_scene.unity")
+	patchPath := filepath.Join("..", "..", "testdata", "patches", "chair_place_ok.patch.json")
+
+	svc := app.New()
+	got, code := svc.Apply("scene", scenePath, core.ViewCompact, false, app.ApplyArgs{
+		Patch: patchPath,
+		Write: true,
+	})
+	if code != 0 {
+		t.Fatalf("expected success exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "WRITE backup=" + scenePath + ".bak patch=" + patchPath + " op=place_prefab append_ops=2 changed=1 verified=1"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+
+	if _, err := os.Stat(scenePath + ".bak"); err != nil {
+		t.Fatalf("backup stat error = %v", err)
+	}
+	updated, err := os.ReadFile(scenePath)
+	if err != nil {
+		t.Fatalf("ReadFile() updated error = %v", err)
+	}
+	if !strings.Contains(string(updated), "--- !u!1 &2002\nGameObject:\n  m_Name: chair\n") {
+		t.Fatalf("updated scene missing appended block:\n%s", string(updated))
+	}
+}
+
+func TestApplyRejectsUnknownPatchStatus(t *testing.T) {
+	scenePath := copyFixtureFile(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), "simple_scene.unity")
+	patchPath := filepath.Join("..", "..", "testdata", "patches", "chair_place_unknown.patch.json")
+
+	svc := app.New()
+	got, code := svc.Apply("scene", scenePath, core.ViewCompact, false, app.ApplyArgs{
+		Patch: patchPath,
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR PATCH_STATUS_UNRESOLVED status=UNKNOWN reason=NEED_PREFAB_GUID"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
 func TestSetAssetSupportsIDSelection(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "multi.asset")
 	content := "" +
@@ -940,6 +1049,21 @@ func TestSetAssetSupportsIDSelection(t *testing.T) {
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
+}
+
+func copyFixtureFile(t *testing.T, source, name string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatalf("ReadFile() source error = %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
 }
 
 func TestIndexReportsStaleSnapshotAndRewritesOutput(t *testing.T) {
