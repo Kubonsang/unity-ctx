@@ -53,6 +53,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	prefabGUID := flagSet.String("prefab-guid", "", "")
 	position := flagSet.String("position", "", "")
 	op := flagSet.String("op", "", "")
+	patchPath := flagSet.String("patch", "", "")
 
 	if err := flagSet.Parse(args[3:]); err != nil {
 		_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
@@ -70,7 +71,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "ERROR invalid view %q\n", *view)
 		return 2
 	}
-	if command != "set" && seenFlags["write"] {
+	if command != "set" && command != "apply" && seenFlags["write"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --write\n", command)
 		return 2
 	}
@@ -88,6 +89,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	if command != "patch" && seenFlags["prefab-guid"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --prefab-guid\n", command)
+		return 2
+	}
+	if command != "diff" && command != "apply" && seenFlags["patch"] {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --patch\n", command)
 		return 2
 	}
 
@@ -339,6 +344,42 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
+	if command == "diff" {
+		if namespace != "scene" {
+			_, _ = fmt.Fprintf(stderr, "ERROR diff not implemented for namespace=%s\n", namespace)
+			return 2
+		}
+		if selectedView != core.ViewCompact {
+			_, _ = io.WriteString(stderr, "ERROR diff supports only --view compact\n")
+			return 2
+		}
+		if strings.TrimSpace(*patchPath) == "" {
+			_, _ = io.WriteString(stderr, "ERROR diff requires --patch\n")
+			return 2
+		}
+		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "out", "task", "focus", "max-tokens", "manifest", "prefab", "position", "op", "prefab-guid") {
+			_, _ = io.WriteString(stderr, "ERROR diff does not accept --id, --name, --type, --component, --field, --out, --task, --focus, --max-tokens, --manifest, --prefab, --position, --op, or --prefab-guid\n")
+			return 2
+		}
+	}
+	if command == "apply" {
+		if namespace != "scene" {
+			_, _ = fmt.Fprintf(stderr, "ERROR apply not implemented for namespace=%s\n", namespace)
+			return 2
+		}
+		if selectedView != core.ViewCompact {
+			_, _ = io.WriteString(stderr, "ERROR apply supports only --view compact\n")
+			return 2
+		}
+		if strings.TrimSpace(*patchPath) == "" {
+			_, _ = io.WriteString(stderr, "ERROR apply requires --patch\n")
+			return 2
+		}
+		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "out", "task", "focus", "max-tokens", "manifest", "prefab", "position", "op", "prefab-guid") {
+			_, _ = io.WriteString(stderr, "ERROR apply does not accept --id, --name, --type, --component, --field, --out, --task, --focus, --max-tokens, --manifest, --prefab, --position, --op, or --prefab-guid\n")
+			return 2
+		}
+	}
 
 	result := core.Result{
 		Namespace: namespace,
@@ -371,6 +412,43 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 		_, _ = io.WriteString(stdout, patchResult.Body+"\n")
 		return patchExitCode
+	}
+	if command == "diff" {
+		diffResult, diffExitCode := service.Diff(namespace, file, selectedView, *jsonOutput, app.DiffArgs{
+			Patch: *patchPath,
+		})
+
+		if *jsonOutput {
+			encoder := json.NewEncoder(stdout)
+			encoder.SetEscapeHTML(false)
+			if err := encoder.Encode(diffResult); err != nil {
+				_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
+				return 2
+			}
+			return diffExitCode
+		}
+
+		_, _ = io.WriteString(stdout, diffResult.Body+"\n")
+		return diffExitCode
+	}
+	if command == "apply" {
+		applyResult, applyExitCode := service.Apply(namespace, file, selectedView, *jsonOutput, app.ApplyArgs{
+			Patch: *patchPath,
+			Write: *writeFlag,
+		})
+
+		if *jsonOutput {
+			encoder := json.NewEncoder(stdout)
+			encoder.SetEscapeHTML(false)
+			if err := encoder.Encode(applyResult); err != nil {
+				_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
+				return 2
+			}
+			return applyExitCode
+		}
+
+		_, _ = io.WriteString(stdout, applyResult.Body+"\n")
+		return applyExitCode
 	}
 
 	switch command {
