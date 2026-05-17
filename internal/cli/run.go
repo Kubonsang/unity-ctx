@@ -5,10 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"unity-ctx/internal/app"
+	"unity-ctx/internal/bounds"
 	"unity-ctx/internal/contextpack"
 	"unity-ctx/internal/core"
 	"unity-ctx/internal/parser"
@@ -22,7 +25,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	if len(args) < 3 {
 		_, _ = io.WriteString(stderr, "ERROR missing file argument\n")
-		return 1
+		return 2
 	}
 
 	namespace := args[0]
@@ -45,6 +48,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	focus := flagSet.String("focus", "", "")
 	maxTokens := flagSet.Int("max-tokens", 256, "")
 	writeFlag := flagSet.Bool("write", false, "")
+	manifest := flagSet.String("manifest", "", "")
+	prefab := flagSet.String("prefab", "", "")
+	position := flagSet.String("position", "", "")
 
 	if err := flagSet.Parse(args[3:]); err != nil {
 		_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
@@ -68,6 +74,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	if command != "set" && seenFlags["value"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --value\n", command)
+		return 2
+	}
+	if command != "check" && anyFlagVisited(seenFlags, "manifest", "prefab", "position") {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --manifest, --prefab, or --position\n", command)
 		return 2
 	}
 
@@ -236,6 +246,45 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	parsedPosition := [3]float64{}
+	if command == "check" {
+		if namespace != "scene" {
+			_, _ = fmt.Fprintf(stderr, "ERROR check not implemented for namespace=%s\n", namespace)
+			return 2
+		}
+		if selectedView != core.ViewCompact {
+			_, _ = io.WriteString(stderr, "ERROR check supports only --view compact\n")
+			return 2
+		}
+		if strings.TrimSpace(*manifest) == "" {
+			_, _ = io.WriteString(stderr, "ERROR check requires --manifest\n")
+			return 2
+		}
+		if strings.TrimSpace(*prefab) == "" {
+			_, _ = io.WriteString(stderr, "ERROR check requires --prefab\n")
+			return 2
+		}
+		if !seenFlags["position"] {
+			_, _ = io.WriteString(stderr, "ERROR check requires --position\n")
+			return 2
+		}
+		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "out", "task", "focus", "max-tokens") {
+			_, _ = io.WriteString(stderr, "ERROR check does not accept --id, --name, --type, --component, --field, --out, --task, --focus, or --max-tokens\n")
+			return 2
+		}
+
+		var err error
+		parsedPosition, err = parsePosition(*position)
+		if err != nil {
+			_, _ = io.WriteString(stderr, "ERROR check requires --position as x,y,z\n")
+			return 2
+		}
+		if !positionIsFinite(parsedPosition) {
+			_, _ = io.WriteString(stderr, "ERROR check requires finite --position values\n")
+			return 2
+		}
+	}
+
 	result := core.Result{
 		Namespace: namespace,
 		File:      file,
@@ -293,6 +342,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			Focus:     *focus,
 			MaxTokens: *maxTokens,
 		})
+	case "check":
+		result, exitCode = service.Check(namespace, file, selectedView, *jsonOutput, app.CheckArgs{
+			Manifest:    *manifest,
+			Prefab:      *prefab,
+			HasPosition: seenFlags["position"],
+			Position:    parsedPosition,
+		})
 	default:
 		result.Status = "ERROR"
 		result.Command = command
@@ -325,6 +381,37 @@ func notImplementedBody(namespace, command, file string, view core.View) string 
 	builder.WriteString(" view=")
 	builder.WriteString(string(view))
 	return builder.String()
+}
+
+func parsePosition(raw string) ([3]float64, error) {
+	parts := strings.Split(raw, ",")
+	if len(parts) != 3 {
+		return [3]float64{}, fmt.Errorf("position must contain exactly 3 comma-separated floats")
+	}
+
+	var position bounds.Vec3
+	for i, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			return [3]float64{}, fmt.Errorf("position value %d is empty", i)
+		}
+		number, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return [3]float64{}, err
+		}
+		position[i] = number
+	}
+
+	return [3]float64(position), nil
+}
+
+func positionIsFinite(position [3]float64) bool {
+	for _, value := range position {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return false
+		}
+	}
+	return true
 }
 
 func visitedFlags(flagSet *flag.FlagSet) map[string]bool {

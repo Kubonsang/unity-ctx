@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 
+	"unity-ctx/internal/bounds"
+	"unity-ctx/internal/check"
 	"unity-ctx/internal/contextpack"
 	"unity-ctx/internal/core"
 	"unity-ctx/internal/document"
@@ -63,6 +65,13 @@ type ContextPackArgs struct {
 	Task      string
 	Focus     string
 	MaxTokens int
+}
+
+type CheckArgs struct {
+	Manifest    string
+	Prefab      string
+	HasPosition bool
+	Position    [3]float64
 }
 
 type loadedDoc struct {
@@ -519,6 +528,83 @@ func (s *Service) ContextPack(namespace, path string, view core.View, jsonOut bo
 	return result, 0
 }
 
+func (s *Service) Check(namespace, path string, view core.View, jsonOut bool, args CheckArgs) (core.Result, int) {
+	_ = jsonOut
+
+	result := core.Result{
+		Namespace: namespace,
+		Command:   "check",
+		File:      path,
+		View:      view,
+	}
+
+	if namespace != "scene" {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR check not implemented for namespace=%s", namespace)
+		return result, 1
+	}
+	if view != core.ViewCompact {
+		result.Status = "ERROR"
+		result.Body = "ERROR check supports only --view compact"
+		return result, 1
+	}
+	if strings.TrimSpace(args.Manifest) == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR check requires --manifest"
+		return result, 1
+	}
+	if strings.TrimSpace(args.Prefab) == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR check requires --prefab"
+		return result, 1
+	}
+	if !args.HasPosition {
+		result.Status = "ERROR"
+		result.Body = "ERROR check requires --position"
+		return result, 1
+	}
+	if !positionIsFinite(args.Position) {
+		result.Status = "ERROR"
+		result.Body = "ERROR check requires finite --position values"
+		return result, 1
+	}
+
+	if _, err := s.load(path); err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	manifest, err := bounds.Load(args.Manifest)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	if !sameSceneReference(path, manifest.Scene) {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR manifest scene mismatch file=%s manifest_scene=%s", path, manifest.Scene)
+		return result, 1
+	}
+
+	checkResult, err := check.CheckPlacement(manifest, args.Prefab, bounds.Vec3(args.Position))
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	if checkResult.Clear {
+		result.Status = "OK"
+		result.Body = formatCheckBody("OK", args.Manifest, args.Prefab, args.Position, nil)
+		return result, 0
+	}
+
+	result.Status = "WARN"
+	result.Body = formatCheckBody("WARN", args.Manifest, args.Prefab, args.Position, checkResult.OverlapIDs)
+	return result, 0
+}
+
 func (s *Service) load(path string) (*loadedDoc, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -763,6 +849,78 @@ func samePath(left, right string) bool {
 		rightAbs = resolved
 	}
 	return filepath.Clean(leftAbs) == filepath.Clean(rightAbs)
+}
+
+func sameSceneReference(left, right string) bool {
+	if samePath(left, right) {
+		return true
+	}
+
+	leftBase := strings.TrimSuffix(filepath.Base(left), filepath.Ext(left))
+	rightBase := strings.TrimSuffix(filepath.Base(right), filepath.Ext(right))
+	return normalizeSceneReference(leftBase) == normalizeSceneReference(rightBase) &&
+		strings.EqualFold(filepath.Ext(left), filepath.Ext(right))
+}
+
+func normalizeSceneReference(value string) string {
+	var builder strings.Builder
+	builder.Grow(len(value))
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			builder.WriteRune(r)
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			builder.WriteRune(r + ('a' - 'A'))
+		}
+	}
+	return builder.String()
+}
+
+func formatCheckBody(prefix, manifestPath, prefabPath string, position [3]float64, overlapIDs []int64) string {
+	var builder strings.Builder
+	builder.WriteString(prefix)
+	builder.WriteString(" manifest=")
+	builder.WriteString(manifestPath)
+	builder.WriteString(" prefab=")
+	builder.WriteString(prefabPath)
+	builder.WriteString(" position=")
+	builder.WriteString(formatPosition(position))
+	builder.WriteString(" overlap_ids=")
+	if len(overlapIDs) == 0 {
+		builder.WriteString("none")
+		return builder.String()
+	}
+
+	ids := append([]int64(nil), overlapIDs...)
+	sort.Slice(ids, func(i, j int) bool {
+		return ids[i] < ids[j]
+	})
+	for i, id := range ids {
+		if i > 0 {
+			builder.WriteByte(',')
+		}
+		builder.WriteString(strconv.FormatInt(id, 10))
+	}
+	return builder.String()
+}
+
+func formatPosition(position [3]float64) string {
+	parts := [3]string{
+		strconv.FormatFloat(position[0], 'f', -1, 64),
+		strconv.FormatFloat(position[1], 'f', -1, 64),
+		strconv.FormatFloat(position[2], 'f', -1, 64),
+	}
+	return strings.Join(parts[:], ",")
+}
+
+func positionIsFinite(position [3]float64) bool {
+	for _, value := range position {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return false
+		}
+	}
+	return true
 }
 
 func boolToInt(value bool) int {

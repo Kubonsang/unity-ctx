@@ -19,8 +19,8 @@ import (
 func TestMainMissingFileArgument(t *testing.T) {
 	result := runCLI(t, "scene", "summarize")
 
-	if result.exitCode != 1 {
-		t.Fatalf("exit code mismatch: got %d want 1", result.exitCode)
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
 	}
 
 	if result.stdout != "" {
@@ -417,6 +417,309 @@ func TestGetReturnsAssetField(t *testing.T) {
 	}
 
 	want := "OK field=maxHealth value=200\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestSceneCheckWarnsWithSortedOverlapIDs(t *testing.T) {
+	scenePath := "testdata/scenes/simple_scene.unity"
+	manifestPath := filepath.Join(t.TempDir(), "scene.bounds.json")
+	manifest := "" +
+		"{\n" +
+		"  \"scene\": \"" + scenePath + "\",\n" +
+		"  \"source\": \"editor\",\n" +
+		"  \"version\": 1,\n" +
+		"  \"objects\": [\n" +
+		"    {\n" +
+		"      \"fileID\": 3000,\n" +
+		"      \"name\": \"ObjectC\",\n" +
+		"      \"bounds\": {\"center\": [1.6, 0.5, 0.0], \"size\": [1.0, 1.0, 1.0]}\n" +
+		"    },\n" +
+		"    {\n" +
+		"      \"fileID\": 1000,\n" +
+		"      \"name\": \"ObjectA\",\n" +
+		"      \"bounds\": {\"center\": [0.0, 0.5, 0.0], \"size\": [1.0, 1.0, 1.0]}\n" +
+		"    },\n" +
+		"    {\n" +
+		"      \"fileID\": 2000,\n" +
+		"      \"name\": \"ObjectB\",\n" +
+		"      \"bounds\": {\"center\": [0.8, 0.5, 0.0], \"size\": [1.0, 1.0, 1.0]}\n" +
+		"    }\n" +
+		"  ],\n" +
+		"  \"prefabs\": [\n" +
+		"    {\n" +
+		"      \"path\": \"Assets/Prefabs/chair.prefab\",\n" +
+		"      \"bounds\": {\"center\": [0.0, 0.5, 0.0], \"size\": [1.2, 1.0, 1.0]}\n" +
+		"    }\n" +
+		"  ]\n" +
+		"}\n"
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	result := runCLI(
+		t,
+		"scene",
+		"check",
+		scenePath,
+		"--manifest",
+		manifestPath,
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--position",
+		"0.8,0,0",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	want := "WARN manifest=" + manifestPath + " prefab=Assets/Prefabs/chair.prefab position=0.8,0,0 overlap_ids=1000,2000,3000\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestSceneCheckJSONReturnsResultEnvelope(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"check",
+		"testdata/scenes/simple_scene.unity",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--position",
+		"5,0,0",
+		"--json",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	var got struct {
+		Status    string `json:"status"`
+		Namespace string `json:"namespace"`
+		Command   string `json:"command"`
+		File      string `json:"file"`
+		View      string `json:"view"`
+		Body      string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &got); err != nil {
+		t.Fatalf("parse stdout json: %v\nstdout=%q", err, result.stdout)
+	}
+
+	if got.Status != "OK" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "OK")
+	}
+	if got.Namespace != "scene" {
+		t.Fatalf("namespace mismatch: got %q want %q", got.Namespace, "scene")
+	}
+	if got.Command != "check" {
+		t.Fatalf("command mismatch: got %q want %q", got.Command, "check")
+	}
+	if got.File != "testdata/scenes/simple_scene.unity" {
+		t.Fatalf("file mismatch: got %q want %q", got.File, "testdata/scenes/simple_scene.unity")
+	}
+	if got.View != "compact" {
+		t.Fatalf("view mismatch: got %q want %q", got.View, "compact")
+	}
+	wantBody := "OK manifest=testdata/manifests/simple_scene.bounds.json prefab=Assets/Prefabs/chair.prefab position=5,0,0 overlap_ids=none"
+	if got.Body != wantBody {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, wantBody)
+	}
+}
+
+func TestSceneCheckRequiresStrictPositionFormat(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"check",
+		"testdata/scenes/simple_scene.unity",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--position",
+		"1,2",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR check requires --position as x,y,z\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSceneCheckRejectsIrrelevantFlags(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"check",
+		"testdata/scenes/simple_scene.unity",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--position",
+		"5,0,0",
+		"--write",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR check does not accept --write\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSceneCheckMissingFileReturnsError(t *testing.T) {
+	scenePath := filepath.Join(t.TempDir(), "missing_scene.unity")
+
+	result := runCLI(
+		t,
+		"scene",
+		"check",
+		scenePath,
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--position",
+		"5,0,0",
+	)
+
+	if result.exitCode != 1 {
+		t.Fatalf("exit code mismatch: got %d want 1 stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	want := "ERROR open " + scenePath + ": no such file or directory\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestSceneCheckRejectsNonCompactView(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"check",
+		"testdata/scenes/simple_scene.unity",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--position",
+		"5,0,0",
+		"--view",
+		"tiny",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR check supports only --view compact\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSceneCheckRejectsNonFinitePosition(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"check",
+		"testdata/scenes/simple_scene.unity",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--position",
+		"NaN,0,0",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+
+	want := "ERROR check requires finite --position values\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSceneCheckRejectsManifestSceneMismatch(t *testing.T) {
+	manifestPath := filepath.Join(t.TempDir(), "mismatch.bounds.json")
+	manifest := "" +
+		"{\n" +
+		"  \"scene\": \"testdata/scenes/other_scene.unity\",\n" +
+		"  \"source\": \"editor\",\n" +
+		"  \"version\": 1,\n" +
+		"  \"objects\": [],\n" +
+		"  \"prefabs\": [\n" +
+		"    {\n" +
+		"      \"path\": \"Assets/Prefabs/chair.prefab\",\n" +
+		"      \"bounds\": {\"center\": [0.0, 0.5, 0.0], \"size\": [0.8, 1.0, 0.8]}\n" +
+		"    }\n" +
+		"  ]\n" +
+		"}\n"
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	scenePath := "testdata/scenes/simple_scene.unity"
+	result := runCLI(
+		t,
+		"scene",
+		"check",
+		scenePath,
+		"--manifest",
+		manifestPath,
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--position",
+		"5,0,0",
+	)
+
+	if result.exitCode != 1 {
+		t.Fatalf("exit code mismatch: got %d want 1 stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	want := "ERROR manifest scene mismatch file=" + scenePath + " manifest_scene=testdata/scenes/other_scene.unity\n"
 	if result.stdout != want {
 		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
 	}

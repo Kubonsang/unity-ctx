@@ -1,6 +1,7 @@
 package app_test
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -230,6 +231,99 @@ func TestGetFieldNotFound(t *testing.T) {
 	want := "ERROR FIELD_NOT_FOUND field=armor"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestCheckSceneWarnsWithSortedOverlapIDs(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join(t.TempDir(), "scene.bounds.json")
+	manifest := "" +
+		"{\n" +
+		"  \"scene\": \"" + scenePath + "\",\n" +
+		"  \"source\": \"editor\",\n" +
+		"  \"version\": 1,\n" +
+		"  \"objects\": [\n" +
+		"    {\n" +
+		"      \"fileID\": 3000,\n" +
+		"      \"name\": \"ObjectC\",\n" +
+		"      \"bounds\": {\"center\": [1.6, 0.5, 0.0], \"size\": [1.0, 1.0, 1.0]}\n" +
+		"    },\n" +
+		"    {\n" +
+		"      \"fileID\": 1000,\n" +
+		"      \"name\": \"ObjectA\",\n" +
+		"      \"bounds\": {\"center\": [0.0, 0.5, 0.0], \"size\": [1.0, 1.0, 1.0]}\n" +
+		"    },\n" +
+		"    {\n" +
+		"      \"fileID\": 2000,\n" +
+		"      \"name\": \"ObjectB\",\n" +
+		"      \"bounds\": {\"center\": [0.8, 0.5, 0.0], \"size\": [1.0, 1.0, 1.0]}\n" +
+		"    }\n" +
+		"  ],\n" +
+		"  \"prefabs\": [\n" +
+		"    {\n" +
+		"      \"path\": \"Assets/Prefabs/chair.prefab\",\n" +
+		"      \"bounds\": {\"center\": [0.0, 0.5, 0.0], \"size\": [1.2, 1.0, 1.0]}\n" +
+		"    }\n" +
+		"  ]\n" +
+		"}\n"
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	svc := app.New()
+	got, code := svc.Check("scene", scenePath, core.ViewCompact, false, app.CheckArgs{
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		HasPosition: true,
+		Position:    [3]float64{0.8, 0, 0},
+	})
+	if code != 0 {
+		t.Fatalf("expected warn success, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "WARN manifest=" + manifestPath + " prefab=Assets/Prefabs/chair.prefab position=0.8,0,0 overlap_ids=1000,2000,3000"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+	if got.Status != "WARN" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "WARN")
+	}
+}
+
+func TestCheckSceneOKAndJSONMatches(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	svc := app.New()
+	got, code := svc.Check("scene", scenePath, core.ViewCompact, false, app.CheckArgs{
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		HasPosition: true,
+		Position:    [3]float64{5, 0, 0},
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "OK manifest=" + manifestPath + " prefab=Assets/Prefabs/chair.prefab position=5,0,0 overlap_ids=none"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+	if got.Status != "OK" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "OK")
+	}
+
+	jsonGot, jsonCode := svc.Check("scene", scenePath, core.ViewCompact, true, app.CheckArgs{
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		HasPosition: true,
+		Position:    [3]float64{5, 0, 0},
+	})
+	if jsonCode != 0 {
+		t.Fatalf("expected json success, got code=%d body=%q", jsonCode, jsonGot.Body)
+	}
+	if jsonGot != got {
+		t.Fatalf("json check mismatch: got %#v want %#v", jsonGot, got)
 	}
 }
 
@@ -499,6 +593,106 @@ func TestSetRejectsUnsupportedNamespace(t *testing.T) {
 	}
 
 	want := "ERROR set not implemented for namespace=scene"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestCheckSceneMissingFileReturnsError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	svc := app.New()
+	got, code := svc.Check("scene", path, core.ViewCompact, false, app.CheckArgs{
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		HasPosition: true,
+		Position:    [3]float64{5, 0, 0},
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR open " + path + ": no such file or directory"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestCheckSceneRejectsNonCompactView(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	svc := app.New()
+	got, code := svc.Check("scene", scenePath, core.ViewTiny, false, app.CheckArgs{
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		HasPosition: true,
+		Position:    [3]float64{5, 0, 0},
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR check supports only --view compact"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestCheckSceneRejectsNonFinitePosition(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	svc := app.New()
+	got, code := svc.Check("scene", scenePath, core.ViewCompact, false, app.CheckArgs{
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		HasPosition: true,
+		Position:    [3]float64{math.NaN(), 0, 0},
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR check requires finite --position values"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestCheckSceneRejectsManifestSceneMismatch(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join(t.TempDir(), "mismatch.bounds.json")
+	manifest := "" +
+		"{\n" +
+		"  \"scene\": \"testdata/scenes/other_scene.unity\",\n" +
+		"  \"source\": \"editor\",\n" +
+		"  \"version\": 1,\n" +
+		"  \"objects\": [],\n" +
+		"  \"prefabs\": [\n" +
+		"    {\n" +
+		"      \"path\": \"Assets/Prefabs/chair.prefab\",\n" +
+		"      \"bounds\": {\"center\": [0.0, 0.5, 0.0], \"size\": [0.8, 1.0, 0.8]}\n" +
+		"    }\n" +
+		"  ]\n" +
+		"}\n"
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	svc := app.New()
+	got, code := svc.Check("scene", scenePath, core.ViewCompact, false, app.CheckArgs{
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		HasPosition: true,
+		Position:    [3]float64{5, 0, 0},
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR manifest scene mismatch file=" + scenePath + " manifest_scene=testdata/scenes/other_scene.unity"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
