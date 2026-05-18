@@ -34,7 +34,7 @@ Done when:
 - type hints
 - get-based verification
 
-## v0.4 — Scene Placement Mutation
+## v0.4 — Scene Placement Mutation (complete)
 
 - scan --mode editor
 - bounds manifest

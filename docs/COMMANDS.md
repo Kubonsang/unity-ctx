@@ -120,6 +120,53 @@ ERROR WRITE_COMMITTED backup=EnemyConfig.asset.bak field=maxHealth old=200 new=3
 
 ## v0.4 Foundation Slice
 
+### scene scan
+
+```bash
+unity-ctx scene scan Stage01.unity --mode editor --project /Users/me/MyUnityProject --out /private/tmp/Stage01.bounds.json
+unity-ctx scene scan Stage01.unity --mode editor --project /Users/me/MyUnityProject --prefabs Assets/Prefabs/Chair.prefab,Assets/Prefabs/Table.prefab --out /private/tmp/Stage01.bounds.json --json
+```
+
+Required flags:
+
+- `--mode`
+- `--project`
+- `--out`
+
+Optional flags:
+
+- `--prefabs`
+- `--json`
+
+Rules:
+
+- `scan` is implemented only for the `scene` namespace.
+- `scan` supports only `--mode editor`.
+- `scan` supports only compact output.
+- `<file>` must point to a scene file under the provided Unity project `Assets/` tree.
+- `--prefabs` is optional and comma-separated. Duplicates are ignored after normalization.
+- The Editor payload scene must exactly match the resolved requested `Assets/...` scene path.
+- `--json` returns the normal envelope only. The manifest artifact is written to `--out`.
+
+Compact output:
+
+```text
+OK mode=editor project=/Users/me/MyUnityProject scene=Assets/Scenes/Stage01.unity out=/private/tmp/Stage01.bounds.json objects=2 prefabs=2 source=editor
+```
+
+Error output:
+
+```text
+ERROR scan requires --mode
+ERROR scan supports only --mode editor
+ERROR scan requires --project
+ERROR scan requires --out
+ERROR scan supports only --view compact
+ERROR scene must be under project Assets/ file=/tmp/OutsideScene.unity project=/Users/me/MyUnityProject
+ERROR scan payload scene mismatch requested=Assets/Scenes/Stage01.unity payload=Assets/Scenes/OtherScene.unity
+ERROR SCAN_EDITOR_FAILED project=/Users/me/MyUnityProject scene=Assets/Scenes/Stage01.unity err=...
+```
+
 ### scene check
 
 ```bash
