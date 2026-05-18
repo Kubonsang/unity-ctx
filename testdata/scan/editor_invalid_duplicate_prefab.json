@@ -1,0 +1,23 @@
+{
+  "scene": "Assets/Scenes/SimpleScene.unity",
+  "objects": [
+    {
+      "fileID": 1000,
+      "name": "Table_01",
+      "center": [5.0, 0.5, 3.0],
+      "size": [2.0, 1.0, 1.0]
+    }
+  ],
+  "prefabs": [
+    {
+      "path": "Assets/Prefabs/chair.prefab",
+      "center": [0.0, 0.5, 0.0],
+      "size": [0.8, 1.0, 0.8]
+    },
+    {
+      "path": "  Assets/Prefabs/chair.prefab  ",
+      "center": [1.0, 0.5, 0.0],
+      "size": [0.8, 1.0, 0.8]
+    }
+  ]
+}
