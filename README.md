@@ -24,13 +24,17 @@ Without `--prefab-guid` it returns UNKNOWN NEED_PREFAB_GUID instead of guessing 
 With `--prefab-guid` it can return OK or WARN planning results.
 `scene diff` can summarize persisted patch plans.
 `scene apply` can dry-run or `--write` the current append-only place_prefab patch contract.
+`prefab impact --project <project>` is available as a read-only impact scan for scene and nested prefab references.
+It supports compact output only, optional `--scenes` scoping, and `--json` with a nested `impact` payload.
+When nested prefab traversal exceeds the current depth cap, it returns `WARN` and adds `WARN IMPACT_DEPTH_LIMIT ...`.
 Run go test ./... before final response.
 ```
 
-Current `v0.4` surface:
+Current `v0.5a` surface:
 
 - `scene scan --mode editor`
 - `scene check`
 - `scene patch --op place_prefab`
 - `scene diff`
 - `scene apply`
+- `prefab impact --project <project>`

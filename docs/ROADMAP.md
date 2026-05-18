@@ -45,7 +45,7 @@ Done when:
 
 ## v0.5 — Prefab Impact & Basic Suggest
 
-- prefab impact
+- prefab impact foundation
 - prefab set impact-first
 - nested prefab warning
 - suggest near/grid/floor

@@ -260,6 +260,104 @@ WARN op=place_prefab manifest=Stage01.bounds.json prefab=Assets/Prefabs/Chair.pr
 PLAN prefab_guid="guid-chair" append_ops=append:1:2002:GameObject,append:4:2003:Transform
 ```
 
+## v0.5a Prefab Impact Foundation
+
+### prefab impact
+
+```bash
+unity-ctx prefab impact Assets/Prefabs/Enemy.prefab --project /Users/me/MyUnityProject
+unity-ctx prefab impact Assets/Prefabs/Enemy.prefab --project /Users/me/MyUnityProject --scenes Assets/Scenes/BossRoom.unity,Assets/Scenes/Stage01.unity
+unity-ctx prefab impact Assets/Prefabs/Enemy.prefab --project /Users/me/MyUnityProject --json
+```
+
+Required flags:
+
+- `--project`
+
+Optional flags:
+
+- `--scenes`
+- `--json`
+
+Rules:
+
+- `impact` is implemented only for the `prefab` namespace.
+- `impact` supports only compact output.
+- `impact` is read-only impact analysis. It does not mutate prefab, scene, or asset files.
+- `<file>` must point to a prefab file under the provided Unity project `Assets/` tree.
+- `--scenes` is optional and comma-separated. When provided, impact analysis limits scene hits to that scope.
+- `--json` returns the normal envelope plus a nested `impact` payload.
+- Nested prefab traversal is capped at depth `3`.
+- When nested traversal reaches the cap and more nested references may exist, status becomes `WARN` and an additional depth-limit warning line is emitted.
+
+Compact output examples:
+
+```text
+OK prefab=Assets/Prefabs/Enemy.prefab guid=fake_enemy_guid scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1
+SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000
+PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001
+```
+
+Depth-limit warning suffix:
+
+```text
+WARN prefab=Assets/Prefabs/Enemy.prefab guid=fake_enemy_guid scenes=2 scene_refs=3 prefabs=4 prefab_refs=5 nested_depth=3
+SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000
+PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001 Assets/Prefabs/EnemyBoss.prefab refs=1 fileIDs=3000 Assets/Prefabs/EnemyUltra.prefab refs=1 fileIDs=3000 Assets/Prefabs/EnemyLegend.prefab refs=1 fileIDs=3000
+WARN IMPACT_DEPTH_LIMIT prefab=Assets/Prefabs/Enemy.prefab depth=3 more_possible=true
+```
+
+JSON shape:
+
+```json
+{
+  "namespace": "prefab",
+  "command": "impact",
+  "file": "Assets/Prefabs/Enemy.prefab",
+  "view": "compact",
+  "status": "OK",
+  "body": "OK prefab=Assets/Prefabs/Enemy.prefab guid=fake_enemy_guid scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1\nSCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000\nPREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001",
+  "impact": {
+    "status": "OK",
+    "prefab_path": "Assets/Prefabs/Enemy.prefab",
+    "prefab_guid": "fake_enemy_guid",
+    "scene_hits": [
+      {
+        "path": "Assets/Scenes/BossRoom.unity",
+        "references": 1,
+        "file_ids": [4000]
+      },
+      {
+        "path": "Assets/Scenes/Stage01.unity",
+        "references": 2,
+        "file_ids": [1000, 2000]
+      }
+    ],
+    "prefab_hits": [
+      {
+        "path": "Assets/Prefabs/EnemyElite.prefab",
+        "references": 2,
+        "file_ids": [3000, 3001]
+      }
+    ],
+    "depth_limit_hit": false,
+    "max_nested_depth": 1
+  }
+}
+```
+
+Error output:
+
+```text
+ERROR impact not implemented for namespace=scene
+ERROR impact supports only --view compact
+ERROR impact requires --project
+ERROR impact does not accept --id, --name, --type, --component, --field, --value, --write, --manifest, --prefab, --position, --op, --prefab-guid, --task, --focus, --max-tokens, --out, --mode, --prefabs, or --patch
+ERROR prefab must be under project Assets/ file=/tmp/Outside.prefab project=/Users/me/MyUnityProject
+ERROR prefab file not found: /Users/me/MyUnityProject/Assets/Prefabs/Missing.prefab
+ERROR prefab meta not found file=/Users/me/MyUnityProject/Assets/Prefabs/Enemy.prefab
+```
+
 JSON note:
 
 - `--json` returns the normal command envelope plus a `patch_plan` field for later tooling/CLI consumers.
