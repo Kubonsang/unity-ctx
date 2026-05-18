@@ -15,6 +15,7 @@ import (
 type Request struct {
 	ProjectPath string
 	TargetPath  string
+	SceneScope  []string
 	MaxDepth    int
 }
 
@@ -25,6 +26,7 @@ type FileHit struct {
 }
 
 type Result struct {
+	Status         string
 	PrefabPath     string
 	PrefabGUID     string
 	SceneHits      []FileHit
@@ -87,6 +89,10 @@ func ScanPrefabImpact(req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	sceneScope, err := normalizeSceneScope(projectRoot, req.SceneScope)
+	if err != nil {
+		return Result{}, err
+	}
 
 	info, err := os.Stat(targetRoot)
 	if err != nil {
@@ -105,12 +111,14 @@ func ScanPrefabImpact(req Request) (Result, error) {
 	}
 
 	result := Result{
+		Status:     "OK",
 		PrefabPath: targetAssetPath,
 		PrefabGUID: guid,
 	}
 
 	var sceneHits []FileHit
 	var prefabHits []FileHit
+	reversePrefabRefs := make(map[string][]string)
 
 	err = filepath.WalkDir(assetsRoot, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -135,16 +143,36 @@ func ScanPrefabImpact(req Request) (Result, error) {
 			return err
 		}
 
-		hit := collectFileHit(assetPath, blocks, guid)
-		if hit == nil {
-			return nil
-		}
-
 		if ext == ".unity" {
+			hit := collectFileHit(assetPath, blocks, guid)
+			if hit == nil {
+				return nil
+			}
+			if len(sceneScope) > 0 {
+				if _, ok := sceneScope[assetPath]; !ok {
+					return nil
+				}
+			}
 			sceneHits = append(sceneHits, *hit)
 			return nil
 		}
 
+		ownGUID, err := LoadPrefabGUID(path)
+		if err != nil {
+			return err
+		}
+		referencedGUIDs := collectReferencedGUIDs(blocks)
+		for referencedGUID := range referencedGUIDs {
+			if referencedGUID == ownGUID {
+				continue
+			}
+			reversePrefabRefs[referencedGUID] = append(reversePrefabRefs[referencedGUID], ownGUID)
+		}
+
+		hit := collectFileHit(assetPath, blocks, guid)
+		if hit == nil {
+			return nil
+		}
 		if assetPath == targetAssetPath {
 			return nil
 		}
@@ -157,8 +185,15 @@ func ScanPrefabImpact(req Request) (Result, error) {
 
 	sortFileHits(sceneHits)
 	sortFileHits(prefabHits)
+	sortReversePrefabRefs(reversePrefabRefs)
+	maxNestedDepth, depthLimitHit := computeNestedDepth(guid, reversePrefabRefs, req.MaxDepth)
 	result.SceneHits = sceneHits
 	result.PrefabHits = prefabHits
+	result.MaxNestedDepth = maxNestedDepth
+	result.DepthLimitHit = depthLimitHit
+	if depthLimitHit {
+		result.Status = "WARN"
+	}
 
 	return result, nil
 }
@@ -224,6 +259,7 @@ func containsGUID(value any, guid string) bool {
 				if stringValue, ok := child.(string); ok && stringValue == guid {
 					return true
 				}
+				continue
 			}
 			if containsGUID(child, guid) {
 				return true
@@ -244,4 +280,139 @@ func sortFileHits(hits []FileHit) {
 	sort.Slice(hits, func(i, j int) bool {
 		return hits[i].Path < hits[j].Path
 	})
+}
+
+func normalizeSceneScope(projectRoot string, raw []string) (map[string]struct{}, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	scope := make(map[string]struct{}, len(raw))
+	for _, entry := range raw {
+		scene := strings.TrimSpace(entry)
+		if scene == "" {
+			continue
+		}
+
+		normalized, err := normalizeScenePath(projectRoot, scene)
+		if err != nil {
+			return nil, err
+		}
+		scope[normalized] = struct{}{}
+	}
+
+	if len(scope) == 0 {
+		return nil, nil
+	}
+	return scope, nil
+}
+
+func normalizeScenePath(projectRoot, scene string) (string, error) {
+	if strings.HasPrefix(scene, "Assets/") {
+		cleaned := filepath.ToSlash(filepath.Clean(scene))
+		if !strings.HasPrefix(cleaned, "Assets/") || !strings.HasSuffix(cleaned, ".unity") {
+			return "", fmt.Errorf("scene must be under project Assets/ file=%s project=%s", filepath.Clean(scene), projectRoot)
+		}
+		if cleaned == "Assets" || strings.HasPrefix(cleaned, "../") || strings.HasPrefix(cleaned, "/") {
+			return "", fmt.Errorf("scene must be under project Assets/ file=%s project=%s", filepath.Clean(scene), projectRoot)
+		}
+		return cleaned, nil
+	}
+
+	sceneRoot, err := filepath.Abs(scene)
+	if err != nil {
+		return "", err
+	}
+	sceneRoot = filepath.Clean(sceneRoot)
+
+	assetsRoot := filepath.Join(projectRoot, "Assets")
+	relative, err := filepath.Rel(assetsRoot, sceneRoot)
+	if err != nil {
+		return "", fmt.Errorf("scene must be under project Assets/ file=%s project=%s", sceneRoot, projectRoot)
+	}
+	if relative == "." || relative == "" || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.Ext(relative) != ".unity" {
+		return "", fmt.Errorf("scene must be under project Assets/ file=%s project=%s", sceneRoot, projectRoot)
+	}
+	return filepath.ToSlash(filepath.Join("Assets", relative)), nil
+}
+
+func computeNestedDepth(targetGUID string, reversePrefabRefs map[string][]string, maxDepth int) (int, bool) {
+	if targetGUID == "" {
+		return 0, false
+	}
+
+	maxFound := 0
+	depthLimitHit := false
+	stack := map[string]struct{}{targetGUID: {}}
+
+	var visit func(currentGUID string, depth int)
+	visit = func(currentGUID string, depth int) {
+		for _, nextGUID := range reversePrefabRefs[currentGUID] {
+			if _, ok := stack[nextGUID]; ok {
+				continue
+			}
+
+			nextDepth := depth + 1
+			if nextDepth > maxFound {
+				maxFound = nextDepth
+			}
+			if maxDepth > 0 && nextDepth > maxDepth {
+				depthLimitHit = true
+			}
+
+			stack[nextGUID] = struct{}{}
+			visit(nextGUID, nextDepth)
+			delete(stack, nextGUID)
+		}
+	}
+	visit(targetGUID, 0)
+
+	if maxDepth > 0 && maxFound > maxDepth {
+		return maxDepth, depthLimitHit
+	}
+	return maxFound, depthLimitHit
+}
+
+func collectReferencedGUIDs(blocks []parser.Block) map[string]struct{} {
+	referenced := make(map[string]struct{})
+	for _, block := range blocks {
+		collectGUIDs(block.Fields, referenced)
+	}
+	return referenced
+}
+
+func collectGUIDs(value any, referenced map[string]struct{}) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if key == "guid" {
+				if stringValue, ok := child.(string); ok && stringValue != "" {
+					referenced[stringValue] = struct{}{}
+				}
+				continue
+			}
+			collectGUIDs(child, referenced)
+		}
+	case []any:
+		for _, child := range typed {
+			collectGUIDs(child, referenced)
+		}
+	}
+}
+
+func sortReversePrefabRefs(reversePrefabRefs map[string][]string) {
+	for guid, referrers := range reversePrefabRefs {
+		if len(referrers) == 0 {
+			continue
+		}
+		sort.Strings(referrers)
+		out := referrers[:0]
+		for _, referrer := range referrers {
+			if len(out) > 0 && out[len(out)-1] == referrer {
+				continue
+			}
+			out = append(out, referrer)
+		}
+		reversePrefabRefs[guid] = out
+	}
 }
