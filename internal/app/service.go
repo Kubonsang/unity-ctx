@@ -59,6 +59,8 @@ type SetArgs struct {
 	ID       int64
 	Field    string
 	Value    string
+	Project  string
+	AckImpact bool
 	Write    bool
 }
 
@@ -132,6 +134,11 @@ type PatchResult struct {
 }
 
 type ImpactResult struct {
+	core.Result
+	Impact *ImpactPayload `json:"impact,omitempty"`
+}
+
+type SetResult struct {
 	core.Result
 	Impact *ImpactPayload `json:"impact,omitempty"`
 }
@@ -327,17 +334,17 @@ func (s *Service) Get(namespace, path string, view core.View, jsonOut bool, args
 	return result, 0
 }
 
-func (s *Service) Set(namespace, path string, view core.View, jsonOut bool, args SetArgs) (core.Result, int) {
-	_ = jsonOut
-
-	result := core.Result{
-		Namespace: namespace,
-		Command:   "set",
-		File:      path,
-		View:      view,
+func (s *Service) Set(namespace, path string, view core.View, jsonOut bool, args SetArgs) (SetResult, int) {
+	result := SetResult{
+		Result: core.Result{
+			Namespace: namespace,
+			Command:   "set",
+			File:      path,
+			View:      view,
+		},
 	}
 
-	if namespace != "asset" {
+	if namespace != "asset" && namespace != "prefab" {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR set not implemented for namespace=%s", namespace)
 		return result, 1
@@ -358,6 +365,13 @@ func (s *Service) Set(namespace, path string, view core.View, jsonOut bool, args
 		return result, 1
 	}
 
+	if namespace == "asset" {
+		return s.setAsset(path, args, result)
+	}
+	return s.setPrefab(path, jsonOut, args, result)
+}
+
+func (s *Service) setAsset(path string, args SetArgs, result SetResult) (SetResult, int) {
 	loaded, err := s.load(path)
 	if err != nil {
 		result.Status = "ERROR"
@@ -459,6 +473,115 @@ func (s *Service) Set(namespace, path string, view core.View, jsonOut bool, args
 		boolToInt(plan.Changed),
 		boolToInt(verification.Matched),
 	)
+	return result, 0
+}
+
+func (s *Service) setPrefab(path string, jsonOut bool, args SetArgs, result SetResult) (SetResult, int) {
+	project := strings.TrimSpace(args.Project)
+	if project == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR set requires --project"
+		return result, 1
+	}
+	if !args.HasID {
+		result.Status = "ERROR"
+		result.Body = "ERROR set requires --id"
+		return result, 1
+	}
+
+	loaded, err := s.load(path)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	plan, err := mutation.PlanPrefabSet(loaded.data, loaded.blocks, mutation.PrefabSetRequest{
+		Path:    path,
+		HasID:   args.HasID,
+		ID:      args.ID,
+		Field:   args.Field,
+		Value:   args.Value,
+		Rewrite: args.Write && args.AckImpact,
+	})
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	impactResult, err := impactscan.ScanPrefabImpact(impactscan.Request{
+		ProjectPath: project,
+		TargetPath:  path,
+		MaxDepth:    3,
+	})
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	if jsonOut {
+		result.Impact = impactPayloadFromScanResult(impactResult)
+	}
+
+	if !args.Write {
+		result.Status = impactResult.Status
+		result.Body = formatPrefabSetBody("DRY_RUN", "", plan, impactResult, 0, plan.Changed)
+		return result, 0
+	}
+	if !plan.Changed {
+		result.Status = impactResult.Status
+		result.Body = formatPrefabSetBody("OK", "", plan, impactResult, 1, false)
+		return result, 0
+	}
+	if !args.AckImpact {
+		result.Status = "ERROR"
+		result.Body = "ERROR set requires --ack-impact for prefab writes"
+		return result, 1
+	}
+
+	backupPath, writeErr := mutation.WriteWithBackup(path, plan.UpdatedData)
+	verification := setVerification{}
+	if writeErr == nil || writeCommitted(writeErr) {
+		verification = s.verifySetValue(path, args)
+	}
+	if writeErr != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf(
+			"ERROR WRITE_COMMITTED backup=%s field=%s old=%s new=%s type_hint=%s changed=%d verified=%d err=%v",
+			backupPath,
+			plan.Field,
+			plan.OldValue,
+			plan.NewValue,
+			plan.TypeHint,
+			boolToInt(plan.Changed),
+			boolToInt(verification.Matched),
+			writeErr,
+		)
+		if !writeCommitted(writeErr) {
+			result.Body = fmt.Sprintf("ERROR %v", writeErr)
+		}
+		return result, 1
+	}
+	if !verification.Matched {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf(
+			"ERROR WRITE_COMMITTED backup=%s field=%s old=%s new=%s type_hint=%s changed=%d verified=%d err=VERIFY_FAILED expected=%s actual=%s",
+			backupPath,
+			plan.Field,
+			plan.OldValue,
+			plan.NewValue,
+			plan.TypeHint,
+			boolToInt(plan.Changed),
+			0,
+			plan.NewValue,
+			verification.Actual,
+		)
+		return result, 1
+	}
+
+	result.Status = impactResult.Status
+	result.Body = formatPrefabSetBody("WRITE", backupPath, plan, impactResult, 1, false)
 	return result, 0
 }
 
@@ -1415,6 +1538,48 @@ func formatImpactBody(result impactscan.Result) string {
 	}
 	if result.DepthLimitHit {
 		lines = append(lines, fmt.Sprintf("WARN IMPACT_DEPTH_LIMIT prefab=%s depth=%d more_possible=true", result.PrefabPath, result.MaxNestedDepth))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatPrefabSetBody(prefix, backupPath string, plan mutation.PrefabSetResult, impactResult impactscan.Result, verified int, ackRequired bool) string {
+	summary := prefix
+	if backupPath != "" {
+		summary = fmt.Sprintf("%s backup=%s", summary, backupPath)
+	}
+	summary = fmt.Sprintf(
+		"%s field=%s old=%s new=%s type_hint=%s changed=%d",
+		summary,
+		plan.Field,
+		plan.OldValue,
+		plan.NewValue,
+		plan.TypeHint,
+		boolToInt(plan.Changed),
+	)
+	if prefix != "DRY_RUN" {
+		summary = fmt.Sprintf("%s verified=%d", summary, verified)
+	}
+	summary = fmt.Sprintf(
+		"%s impact_status=%s scenes=%d scene_refs=%d prefabs=%d prefab_refs=%d nested_depth=%d",
+		summary,
+		impactResult.Status,
+		len(impactResult.SceneHits),
+		sumImpactReferences(impactResult.SceneHits),
+		len(impactResult.PrefabHits),
+		sumImpactReferences(impactResult.PrefabHits),
+		impactResult.MaxNestedDepth,
+	)
+	if prefix == "DRY_RUN" {
+		summary = fmt.Sprintf("%s ack_required=%d", summary, boolToInt(ackRequired))
+	}
+
+	lines := []string{
+		summary,
+		"SCENES " + formatImpactHits(impactResult.SceneHits),
+		"PREFABS " + formatImpactHits(impactResult.PrefabHits),
+	}
+	if impactResult.DepthLimitHit {
+		lines = append(lines, fmt.Sprintf("WARN IMPACT_DEPTH_LIMIT prefab=%s depth=%d more_possible=true", impactResult.PrefabPath, impactResult.MaxNestedDepth))
 	}
 	return strings.Join(lines, "\n")
 }

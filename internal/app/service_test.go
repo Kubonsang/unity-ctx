@@ -1031,6 +1031,175 @@ func TestSetAssetWriteVerifiesNaNSemantically(t *testing.T) {
 	}
 }
 
+func TestSetPrefabDryRunReturnsImpactSummary(t *testing.T) {
+	project := copyImpactProjectForService(t)
+	target := filepath.Join(project, "Assets", "Prefabs", "Enemy.prefab")
+	writePrefabSetTarget(t, target, "fake_enemy_guid")
+
+	svc := app.New()
+	got, code := svc.Set("prefab", target, core.ViewCompact, false, app.SetArgs{
+		HasID:   true,
+		ID:      11400000,
+		Field:   "moveSpeed",
+		Value:   "4.0",
+		Project: project,
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 ack_required=1\n" +
+		"SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000\n" +
+		"PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+	if got.Impact != nil {
+		t.Fatalf("expected nil impact payload for non-json dry-run, got %#v", got.Impact)
+	}
+}
+
+func TestSetPrefabWriteRequiresAckImpact(t *testing.T) {
+	project := copyImpactProjectForService(t)
+	target := filepath.Join(project, "Assets", "Prefabs", "Enemy.prefab")
+	writePrefabSetTarget(t, target, "fake_enemy_guid")
+
+	before, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile() before error = %v", err)
+	}
+
+	svc := app.New()
+	got, code := svc.Set("prefab", target, core.ViewCompact, false, app.SetArgs{
+		HasID:   true,
+		ID:      11400000,
+		Field:   "moveSpeed",
+		Value:   "4.0",
+		Project: project,
+		Write:   true,
+	})
+	if code != 1 {
+		t.Fatalf("expected error, got code=%d body=%q", code, got.Body)
+	}
+	if got.Body != "ERROR set requires --ack-impact for prefab writes" {
+		t.Fatalf("body mismatch: got %q", got.Body)
+	}
+
+	after, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile() after error = %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("write without ack-impact should not modify file")
+	}
+	if _, err := os.Stat(target + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("expected no backup file, got err=%v", err)
+	}
+}
+
+func TestSetPrefabWriteCreatesBackupAndVerifies(t *testing.T) {
+	project := copyImpactProjectForService(t)
+	target := filepath.Join(project, "Assets", "Prefabs", "Enemy.prefab")
+	writePrefabSetTarget(t, target, "fake_enemy_guid")
+
+	svc := app.New()
+	got, code := svc.Set("prefab", target, core.ViewCompact, true, app.SetArgs{
+		HasID:     true,
+		ID:        11400000,
+		Field:     "moveSpeed",
+		Value:     "4.0",
+		Project:   project,
+		Write:     true,
+		AckImpact: true,
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "WRITE backup=" + target + ".bak field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 verified=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1\n" +
+		"SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000\n" +
+		"PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+	if got.Impact == nil {
+		t.Fatal("expected Impact payload for jsonOut=true")
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if !strings.Contains(string(data), "  moveSpeed: 4.0\n") {
+		t.Fatalf("updated file mismatch:\n%s", string(data))
+	}
+	backup, err := os.ReadFile(target + ".bak")
+	if err != nil {
+		t.Fatalf("ReadFile(.bak) error = %v", err)
+	}
+	if !strings.Contains(string(backup), "  moveSpeed: 3.5\n") {
+		t.Fatalf("backup mismatch:\n%s", string(backup))
+	}
+}
+
+func TestSetPrefabWriteNoOpDoesNotCreateBackup(t *testing.T) {
+	project := copyImpactProjectForService(t)
+	target := filepath.Join(project, "Assets", "Prefabs", "Enemy.prefab")
+	writePrefabSetTarget(t, target, "fake_enemy_guid")
+
+	svc := app.New()
+	got, code := svc.Set("prefab", target, core.ViewCompact, false, app.SetArgs{
+		HasID:   true,
+		ID:      11400000,
+		Field:   "moveSpeed",
+		Value:   "3.5",
+		Project: project,
+		Write:   true,
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "OK field=moveSpeed old=3.5 new=3.5 type_hint=float changed=0 verified=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1\n" +
+		"SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000\n" +
+		"PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+	if _, err := os.Stat(target + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("expected no backup file, got err=%v", err)
+	}
+}
+
+func TestSetPrefabWarnsWithImpactDepthLimit(t *testing.T) {
+	project := copyImpactProjectForService(t)
+	target := filepath.Join(project, "Assets", "Prefabs", "Enemy.prefab")
+	writePrefabSetTarget(t, target, "fake_enemy_guid")
+	writeImpactPrefabAsset(t, filepath.Join(project, "Assets", "Prefabs", "EnemyElite.prefab"), "fake_enemy_elite_guid", "fake_enemy_guid")
+	writeImpactPrefabAsset(t, filepath.Join(project, "Assets", "Prefabs", "EnemyBoss.prefab"), "fake_enemy_boss_guid", "fake_enemy_elite_guid")
+	writeImpactPrefabAsset(t, filepath.Join(project, "Assets", "Prefabs", "EnemyUltra.prefab"), "fake_enemy_ultra_guid", "fake_enemy_boss_guid")
+	writeImpactPrefabAsset(t, filepath.Join(project, "Assets", "Prefabs", "EnemyLegend.prefab"), "fake_enemy_legend_guid", "fake_enemy_ultra_guid")
+
+	svc := app.New()
+	got, code := svc.Set("prefab", target, core.ViewCompact, false, app.SetArgs{
+		HasID:   true,
+		ID:      11400000,
+		Field:   "moveSpeed",
+		Value:   "4.0",
+		Project: project,
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+	want := "DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=WARN scenes=2 scene_refs=3 prefabs=1 prefab_refs=1 nested_depth=3 ack_required=1\n" +
+		"SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000\n" +
+		"PREFABS Assets/Prefabs/EnemyElite.prefab refs=1 fileIDs=3000\n" +
+		"WARN IMPACT_DEPTH_LIMIT prefab=Assets/Prefabs/Enemy.prefab depth=3 more_possible=true"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
 func TestSetRejectsUnsupportedNamespace(t *testing.T) {
 	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
 
@@ -2007,6 +2176,34 @@ func writeImpactPrefabAsset(t *testing.T, prefabPath, guid, referencedGUID strin
 		"--- !u!1001 &3000\n" +
 		"PrefabInstance:\n" +
 		"  m_SourcePrefab: {fileID: 100100000, guid: " + referencedGUID + ", type: 3}\n"
+	if err := os.WriteFile(prefabPath, []byte(prefab), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", prefabPath, err)
+	}
+
+	meta := "" +
+		"fileFormatVersion: 2\n" +
+		"guid: " + guid + "\n" +
+		"PrefabImporter:\n" +
+		"  externalObjects: {}\n"
+	if err := os.WriteFile(prefabPath+".meta", []byte(meta), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s.meta) error = %v", prefabPath, err)
+	}
+}
+
+func writePrefabSetTarget(t *testing.T, prefabPath, guid string) {
+	t.Helper()
+
+	prefab := "" +
+		"%YAML 1.1\n" +
+		"%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!1 &1000\n" +
+		"GameObject:\n" +
+		"  m_Name: Enemy\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_GameObject: {fileID: 1000}\n" +
+		"  m_Script: {fileID: 11500000, guid: fake_enemy_controller_guid, type: 3}\n" +
+		"  moveSpeed: 3.5\n"
 	if err := os.WriteFile(prefabPath, []byte(prefab), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", prefabPath, err)
 	}
