@@ -2445,7 +2445,7 @@ func TestSceneSuggestRejectsIrrelevantFlags(t *testing.T) {
 	if result.stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", result.stdout)
 	}
-	want := "ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --project, --scenes, --prefabs, --position, --op, --prefab-guid, --out, --task, --focus, --max-tokens, --patch, or --ack-impact\n"
+	want := "ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --project, --scenes, --prefabs, --position, --op, --prefab-guid, --out, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode\n"
 	if result.stderr != want {
 		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
 	}
