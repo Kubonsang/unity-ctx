@@ -55,6 +55,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	prefabs := flagSet.String("prefabs", "", "")
 	manifest := flagSet.String("manifest", "", "")
 	prefab := flagSet.String("prefab", "", "")
+	near := flagSet.String("near", "", "")
+	count := flagSet.Int("count", 4, "")
+	align := flagSet.String("align", "floor", "")
 	prefabGUID := flagSet.String("prefab-guid", "", "")
 	position := flagSet.String("position", "", "")
 	op := flagSet.String("op", "", "")
@@ -76,36 +79,40 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "ERROR invalid view %q\n", *view)
 		return 2
 	}
-	if command != "set" && command != "apply" && command != "scan" && seenFlags["write"] {
+	if command != "set" && command != "apply" && command != "scan" && command != "suggest" && seenFlags["write"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --write\n", command)
 		return 2
 	}
-	if command != "set" && command != "scan" && seenFlags["value"] {
+	if command != "set" && command != "scan" && command != "suggest" && seenFlags["value"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --value\n", command)
 		return 2
 	}
-	if command != "check" && command != "patch" && command != "scan" && anyFlagVisited(seenFlags, "manifest", "prefab", "position") {
+	if command != "check" && command != "patch" && command != "scan" && command != "suggest" && anyFlagVisited(seenFlags, "manifest", "prefab", "position") {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --manifest, --prefab, or --position\n", command)
 		return 2
 	}
-	if command != "patch" && command != "scan" && seenFlags["op"] {
+	if command != "patch" && command != "scan" && command != "suggest" && seenFlags["op"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --op\n", command)
 		return 2
 	}
-	if command != "patch" && command != "scan" && seenFlags["prefab-guid"] {
+	if command != "patch" && command != "scan" && command != "suggest" && seenFlags["prefab-guid"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --prefab-guid\n", command)
 		return 2
 	}
-	if command != "scan" && command != "impact" && !(command == "set" && namespace == "prefab") && anyFlagVisited(seenFlags, "mode", "project", "scenes", "prefabs") {
+	if command != "scan" && command != "impact" && command != "suggest" && !(command == "set" && namespace == "prefab") && anyFlagVisited(seenFlags, "mode", "project", "scenes", "prefabs") {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --mode, --project, --scenes, or --prefabs\n", command)
 		return 2
 	}
-	if command != "diff" && command != "apply" && seenFlags["patch"] {
+	if command != "diff" && command != "apply" && command != "suggest" && seenFlags["patch"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --patch\n", command)
 		return 2
 	}
-	if command != "set" && seenFlags["ack-impact"] {
+	if command != "set" && command != "suggest" && seenFlags["ack-impact"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --ack-impact\n", command)
+		return 2
+	}
+	if command != "suggest" && anyFlagVisited(seenFlags, "near", "count", "align") {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --near, --count, or --align\n", command)
 		return 2
 	}
 
@@ -461,6 +468,40 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
+	if command == "suggest" {
+		if namespace != "scene" {
+			_, _ = fmt.Fprintf(stderr, "ERROR suggest not implemented for namespace=%s\n", namespace)
+			return 2
+		}
+		if selectedView != core.ViewCompact {
+			_, _ = io.WriteString(stderr, "ERROR suggest supports only --view compact\n")
+			return 2
+		}
+		if strings.TrimSpace(*manifest) == "" {
+			_, _ = io.WriteString(stderr, "ERROR suggest requires --manifest\n")
+			return 2
+		}
+		if strings.TrimSpace(*prefab) == "" {
+			_, _ = io.WriteString(stderr, "ERROR suggest requires --prefab\n")
+			return 2
+		}
+		if strings.TrimSpace(*near) == "" {
+			_, _ = io.WriteString(stderr, "ERROR suggest requires --near\n")
+			return 2
+		}
+		if *count < 1 {
+			_, _ = io.WriteString(stderr, "ERROR suggest requires --count >= 1\n")
+			return 2
+		}
+		if *align != "floor" && *align != "grid" {
+			_, _ = io.WriteString(stderr, "ERROR suggest supports only --align floor|grid\n")
+			return 2
+		}
+		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "value", "write", "project", "scenes", "prefabs", "position", "op", "prefab-guid", "out", "task", "focus", "max-tokens", "patch", "ack-impact", "mode") {
+			_, _ = io.WriteString(stderr, "ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --project, --scenes, --prefabs, --position, --op, --prefab-guid, --out, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode\n")
+			return 2
+		}
+	}
 
 	result := core.Result{
 		Namespace: namespace,
@@ -550,6 +591,28 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = io.WriteString(stdout, impactResult.Body+"\n")
 		return impactExitCode
 	}
+	if command == "suggest" {
+		suggestResult, suggestExitCode := service.Suggest(namespace, file, selectedView, *jsonOutput, app.SuggestArgs{
+			Manifest: *manifest,
+			Prefab:   *prefab,
+			Near:     *near,
+			Count:    *count,
+			Align:    *align,
+		})
+
+		if *jsonOutput {
+			encoder := json.NewEncoder(stdout)
+			encoder.SetEscapeHTML(false)
+			if err := encoder.Encode(suggestResult); err != nil {
+				_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
+				return 2
+			}
+			return suggestExitCode
+		}
+
+		_, _ = io.WriteString(stdout, suggestResult.Body+"\n")
+		return suggestExitCode
+	}
 
 	switch command {
 	case "summarize":
@@ -582,14 +645,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		})
 	case "set":
 		setResult, setExitCode := service.Set(namespace, file, selectedView, *jsonOutput, app.SetArgs{
-			HasID:    seenFlags["id"],
-			HasValue: seenFlags["value"],
-			ID:       *fileID,
-			Field:    *field,
-			Value:    *value,
-			Project:  *project,
+			HasID:     seenFlags["id"],
+			HasValue:  seenFlags["value"],
+			ID:        *fileID,
+			Field:     *field,
+			Value:     *value,
+			Project:   *project,
 			AckImpact: *ackImpact,
-			Write:    *writeFlag,
+			Write:     *writeFlag,
 		})
 		if *jsonOutput {
 			encoder := json.NewEncoder(stdout)

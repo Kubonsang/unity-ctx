@@ -2293,6 +2293,263 @@ func TestSceneScanCompactOutputMatchesExpectedText(t *testing.T) {
 	}
 }
 
+func TestSceneSuggestRejectsUnsupportedNamespace(t *testing.T) {
+	result := runCLI(
+		t,
+		"prefab",
+		"suggest",
+		"testdata/prefabs/enemy.prefab",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--near",
+		"1000",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+	if result.stderr != "ERROR suggest not implemented for namespace=prefab\n" {
+		t.Fatalf("stderr mismatch: got %q", result.stderr)
+	}
+}
+
+func TestSceneSuggestRequiresManifestPrefabAndNear(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "manifest",
+			args: []string{
+				"scene", "suggest", "testdata/scenes/simple_scene.unity",
+				"--prefab", "Assets/Prefabs/chair.prefab",
+				"--near", "1000",
+			},
+			want: "ERROR suggest requires --manifest\n",
+		},
+		{
+			name: "prefab",
+			args: []string{
+				"scene", "suggest", "testdata/scenes/simple_scene.unity",
+				"--manifest", "testdata/manifests/simple_scene.bounds.json",
+				"--near", "1000",
+			},
+			want: "ERROR suggest requires --prefab\n",
+		},
+		{
+			name: "near",
+			args: []string{
+				"scene", "suggest", "testdata/scenes/simple_scene.unity",
+				"--manifest", "testdata/manifests/simple_scene.bounds.json",
+				"--prefab", "Assets/Prefabs/chair.prefab",
+			},
+			want: "ERROR suggest requires --near\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := runCLI(t, tt.args...)
+			if result.exitCode != 2 {
+				t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+			}
+			if result.stdout != "" {
+				t.Fatalf("expected empty stdout, got %q", result.stdout)
+			}
+			if result.stderr != tt.want {
+				t.Fatalf("stderr mismatch: got %q want %q", result.stderr, tt.want)
+			}
+		})
+	}
+}
+
+func TestSceneSuggestRejectsInvalidCount(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"suggest",
+		"testdata/scenes/simple_scene.unity",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--near",
+		"1000",
+		"--count",
+		"0",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+	if result.stderr != "ERROR suggest requires --count >= 1\n" {
+		t.Fatalf("stderr mismatch: got %q", result.stderr)
+	}
+}
+
+func TestSceneSuggestRejectsInvalidAlign(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"suggest",
+		"testdata/scenes/simple_scene.unity",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--near",
+		"1000",
+		"--align",
+		"wall",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+	if result.stderr != "ERROR suggest supports only --align floor|grid\n" {
+		t.Fatalf("stderr mismatch: got %q", result.stderr)
+	}
+}
+
+func TestSceneSuggestRejectsIrrelevantFlags(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"suggest",
+		"testdata/scenes/simple_scene.unity",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--near",
+		"1000",
+		"--id",
+		"1000",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+	want := "ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --project, --scenes, --prefabs, --position, --op, --prefab-guid, --out, --task, --focus, --max-tokens, --patch, or --ack-impact\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSceneSuggestReturnsCompactOutput(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"suggest",
+		"testdata/scenes/simple_scene.unity",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--near",
+		"1000",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q", result.exitCode, result.stderr)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+	want := "OK manifest=testdata/manifests/simple_scene.bounds.json prefab=Assets/Prefabs/chair.prefab near=1000 align=floor count=4 candidates=4 clear=4 warn=0\n" +
+		"CANDIDATE rank=1 direction=east position=1.4,0,0 status=OK overlap_ids=none anchor_id=1000 anchor_name=Table_01\n" +
+		"CANDIDATE rank=2 direction=west position=-1.4,0,0 status=OK overlap_ids=none anchor_id=1000 anchor_name=Table_01\n" +
+		"CANDIDATE rank=3 direction=north position=0,0,1 status=OK overlap_ids=none anchor_id=1000 anchor_name=Table_01\n" +
+		"CANDIDATE rank=4 direction=south position=0,0,-1 status=OK overlap_ids=none anchor_id=1000 anchor_name=Table_01\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestSceneSuggestJSONReturnsEnvelopePlusSuggestPayload(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"suggest",
+		"testdata/scenes/simple_scene.unity",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--near",
+		"1000",
+		"--align",
+		"grid",
+		"--count",
+		"2",
+		"--json",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q", result.exitCode, result.stderr)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	var got struct {
+		Status    string `json:"status"`
+		Namespace string `json:"namespace"`
+		Command   string `json:"command"`
+		File      string `json:"file"`
+		View      string `json:"view"`
+		Body      string `json:"body"`
+		Suggest   struct {
+			Status   string `json:"status"`
+			Manifest string `json:"manifest"`
+			Prefab   string `json:"prefab"`
+			Anchor   struct {
+				ID   int64  `json:"id"`
+				Name string `json:"name"`
+			} `json:"anchor"`
+			Align      string `json:"align"`
+			Count      int    `json:"count"`
+			Candidates []struct {
+				Rank      int       `json:"rank"`
+				Direction string    `json:"direction"`
+				Position  []float64 `json:"position"`
+				Status    string    `json:"status"`
+			} `json:"candidates"`
+		} `json:"suggest"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &got); err != nil {
+		t.Fatalf("parse stdout json: %v\nstdout=%q", err, result.stdout)
+	}
+
+	if got.Status != "OK" || got.Namespace != "scene" || got.Command != "suggest" || got.View != "compact" {
+		t.Fatalf("envelope mismatch: %#v", got)
+	}
+	if got.Suggest.Manifest != "testdata/manifests/simple_scene.bounds.json" || got.Suggest.Prefab != "Assets/Prefabs/chair.prefab" {
+		t.Fatalf("suggest payload mismatch: %#v", got.Suggest)
+	}
+	if got.Suggest.Anchor.ID != 1000 || got.Suggest.Anchor.Name != "Table_01" {
+		t.Fatalf("anchor mismatch: %#v", got.Suggest.Anchor)
+	}
+	if got.Suggest.Align != "grid" || got.Suggest.Count != 2 || len(got.Suggest.Candidates) != 2 {
+		t.Fatalf("suggest metadata mismatch: %#v", got.Suggest)
+	}
+}
+
 func TestPrefabImpactRequiresProject(t *testing.T) {
 	result := runCLI(
 		t,
