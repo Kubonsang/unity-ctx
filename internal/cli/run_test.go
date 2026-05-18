@@ -1962,6 +1962,33 @@ func TestSceneScanRejectsIrrelevantFlags(t *testing.T) {
 	}
 }
 
+func TestSceneScanRejectsScenesFlag(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"scan",
+		"testdata/scenes/simple_scene.unity",
+		"--mode",
+		"editor",
+		"--project",
+		"/tmp/project",
+		"--out",
+		"/private/tmp/simple_scene.bounds.json",
+		"--scenes",
+		"Assets/Scenes/BossRoom.unity",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+	if result.stderr != "ERROR scan does not accept --scenes\n" {
+		t.Fatalf("stderr mismatch: got %q", result.stderr)
+	}
+}
+
 func TestSceneScanJSONReturnsDeterministicEnvelope(t *testing.T) {
 	project := t.TempDir()
 	scenePath := filepath.Join(project, "Assets", "Scenes", "SimpleScene.unity")
@@ -2090,6 +2117,131 @@ func TestSceneScanCompactOutputMatchesExpectedText(t *testing.T) {
 	want := "OK mode=editor project=" + project + " scene=Assets/Scenes/SimpleScene.unity out=" + outPath + " objects=2 prefabs=2 source=editor\n"
 	if result.stdout != want {
 		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestPrefabImpactRequiresProject(t *testing.T) {
+	result := runCLI(
+		t,
+		"prefab",
+		"impact",
+		"testdata/impact/project/Assets/Prefabs/Enemy.prefab",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+	if result.stderr != "ERROR impact requires --project\n" {
+		t.Fatalf("stderr mismatch: got %q", result.stderr)
+	}
+}
+
+func TestPrefabImpactRejectsIrrelevantFlags(t *testing.T) {
+	result := runCLI(
+		t,
+		"prefab",
+		"impact",
+		"testdata/impact/project/Assets/Prefabs/Enemy.prefab",
+		"--project",
+		"testdata/impact/project",
+		"--id",
+		"1000",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+	want := "ERROR impact does not accept --id, --name, --type, --component, --field, --value, --write, --manifest, --prefab, --position, --op, --prefab-guid, --task, --focus, --max-tokens, --out, --mode, --prefabs, or --patch\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestPrefabImpactReturnsCompactOutput(t *testing.T) {
+	result := runCLI(
+		t,
+		"prefab",
+		"impact",
+		"testdata/impact/project/Assets/Prefabs/Enemy.prefab",
+		"--project",
+		"testdata/impact/project",
+		"--scenes",
+		"Assets/Scenes/BossRoom.unity",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q", result.exitCode, result.stderr)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+	want := "OK prefab=Assets/Prefabs/Enemy.prefab guid=fake_enemy_guid scenes=1 scene_refs=1 prefabs=1 prefab_refs=2 nested_depth=1\nSCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000\nPREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestPrefabImpactJSONReturnsEnvelopePlusImpactPayload(t *testing.T) {
+	result := runCLI(
+		t,
+		"prefab",
+		"impact",
+		"testdata/impact/project/Assets/Prefabs/Enemy.prefab",
+		"--project",
+		"testdata/impact/project",
+		"--json",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q", result.exitCode, result.stderr)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	var got struct {
+		Status    string `json:"status"`
+		Namespace string `json:"namespace"`
+		Command   string `json:"command"`
+		File      string `json:"file"`
+		View      string `json:"view"`
+		Body      string `json:"body"`
+		Impact    struct {
+			Status         string `json:"status"`
+			PrefabPath     string `json:"prefab_path"`
+			PrefabGUID     string `json:"prefab_guid"`
+			DepthLimitHit  bool   `json:"depth_limit_hit"`
+			MaxNestedDepth int    `json:"max_nested_depth"`
+			SceneHits      []struct {
+				Path       string  `json:"path"`
+				References int     `json:"references"`
+				FileIDs    []int64 `json:"file_ids"`
+			} `json:"scene_hits"`
+			PrefabHits []struct {
+				Path       string  `json:"path"`
+				References int     `json:"references"`
+				FileIDs    []int64 `json:"file_ids"`
+			} `json:"prefab_hits"`
+		} `json:"impact"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &got); err != nil {
+		t.Fatalf("parse stdout json: %v\nstdout=%q", err, result.stdout)
+	}
+
+	if got.Status != "OK" || got.Namespace != "prefab" || got.Command != "impact" || got.View != "compact" {
+		t.Fatalf("envelope mismatch: %#v", got)
+	}
+	if got.Impact.PrefabPath != "Assets/Prefabs/Enemy.prefab" || got.Impact.PrefabGUID != "fake_enemy_guid" {
+		t.Fatalf("impact payload mismatch: %#v", got.Impact)
+	}
+	if len(got.Impact.SceneHits) != 2 || len(got.Impact.PrefabHits) != 1 {
+		t.Fatalf("impact hit counts mismatch: %#v", got.Impact)
 	}
 }
 

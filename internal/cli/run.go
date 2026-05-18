@@ -50,6 +50,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	writeFlag := flagSet.Bool("write", false, "")
 	mode := flagSet.String("mode", "", "")
 	project := flagSet.String("project", "", "")
+	scenes := flagSet.String("scenes", "", "")
 	prefabs := flagSet.String("prefabs", "", "")
 	manifest := flagSet.String("manifest", "", "")
 	prefab := flagSet.String("prefab", "", "")
@@ -94,8 +95,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --prefab-guid\n", command)
 		return 2
 	}
-	if command != "scan" && anyFlagVisited(seenFlags, "mode", "project", "prefabs") {
-		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --mode, --project, or --prefabs\n", command)
+	if command != "scan" && command != "impact" && anyFlagVisited(seenFlags, "mode", "project", "scenes", "prefabs") {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --mode, --project, --scenes, or --prefabs\n", command)
 		return 2
 	}
 	if command != "diff" && command != "apply" && seenFlags["patch"] {
@@ -412,8 +413,30 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			_, _ = io.WriteString(stderr, "ERROR scan requires --out\n")
 			return 2
 		}
+		if seenFlags["scenes"] {
+			_, _ = io.WriteString(stderr, "ERROR scan does not accept --scenes\n")
+			return 2
+		}
 		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "value", "write", "manifest", "prefab", "position", "op", "prefab-guid", "task", "focus", "max-tokens") {
 			_, _ = io.WriteString(stderr, "ERROR scan does not accept --id, --name, --type, --component, --field, --value, --write, --manifest, --prefab, --position, --op, --prefab-guid, --task, --focus, or --max-tokens\n")
+			return 2
+		}
+	}
+	if command == "impact" {
+		if namespace != "prefab" {
+			_, _ = fmt.Fprintf(stderr, "ERROR impact not implemented for namespace=%s\n", namespace)
+			return 2
+		}
+		if selectedView != core.ViewCompact {
+			_, _ = io.WriteString(stderr, "ERROR impact supports only --view compact\n")
+			return 2
+		}
+		if strings.TrimSpace(*project) == "" {
+			_, _ = io.WriteString(stderr, "ERROR impact requires --project\n")
+			return 2
+		}
+		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "value", "write", "manifest", "prefab", "position", "op", "prefab-guid", "task", "focus", "max-tokens", "out", "mode", "prefabs", "patch") {
+			_, _ = io.WriteString(stderr, "ERROR impact does not accept --id, --name, --type, --component, --field, --value, --write, --manifest, --prefab, --position, --op, --prefab-guid, --task, --focus, --max-tokens, --out, --mode, --prefabs, or --patch\n")
 			return 2
 		}
 	}
@@ -486,6 +509,25 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 		_, _ = io.WriteString(stdout, applyResult.Body+"\n")
 		return applyExitCode
+	}
+	if command == "impact" {
+		impactResult, impactExitCode := service.Impact(namespace, file, selectedView, *jsonOutput, app.ImpactArgs{
+			Project: *project,
+			Scenes:  *scenes,
+		})
+
+		if *jsonOutput {
+			encoder := json.NewEncoder(stdout)
+			encoder.SetEscapeHTML(false)
+			if err := encoder.Encode(impactResult); err != nil {
+				_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
+				return 2
+			}
+			return impactExitCode
+		}
+
+		_, _ = io.WriteString(stdout, impactResult.Body+"\n")
+		return impactExitCode
 	}
 
 	switch command {
