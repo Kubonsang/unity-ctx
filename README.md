@@ -20,6 +20,10 @@ Implemented mutation slices are `asset set` and `prefab set`.
 `scene scan --mode editor` can generate a deterministic bounds manifest through a Unity Editor edge.
 `scene check` is available as a read-only bounds validation foundation.
 `scene patch --op place_prefab` is available as a read-only patch-plan generator.
+`scene suggest` is available as a read-only planner for ranked near/grid/floor placement candidates from a bounds manifest.
+It supports `--manifest`, `--prefab`, `--near`, optional `--count`, `--align floor|grid`, and `--json` with a nested `suggest` payload.
+`--align wall` is intentionally excluded from the v0.5c slice.
+Choosing a suggestion does not place anything by itself; actual placement still flows through `scene patch` and `scene apply`.
 Without `--prefab-guid` it returns UNKNOWN NEED_PREFAB_GUID instead of guessing a GUID.
 With `--prefab-guid` it can return OK or WARN planning results.
 `scene diff` can summarize persisted patch plans.
@@ -33,10 +37,11 @@ It is fileID-only, defaults to dry-run, includes impact summary plus `ack_requir
 Run go test ./... before final response.
 ```
 
-Current `v0.5b` surface:
+Current `v0.5c` surface:
 
 - `scene scan --mode editor`
 - `scene check`
+- `scene suggest`
 - `scene patch --op place_prefab`
 - `scene diff`
 - `scene apply`

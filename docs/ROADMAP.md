@@ -45,6 +45,14 @@ Done when:
 
 ## v0.5 — Prefab Impact, Prefab Set, & Basic Suggest
 
+Status:
+
+- `v0.5a` complete: prefab impact foundation
+- `v0.5b` complete: prefab set impact-first mutation
+- `v0.5c` complete: scene suggest read-only planner (`--manifest`, `--prefab`, `--near`, optional `--count`, `--align floor|grid`, `--json`)
+- `wall` alignment remains out of scope for this slice
+- actual scene placement still flows through `scene patch` and `scene apply`
+
 - prefab impact foundation
 - prefab set impact-first
 - nested prefab warning reuse across `prefab impact` and `prefab set`

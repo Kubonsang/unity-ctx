@@ -274,6 +274,114 @@ ERROR patch supports only --view compact
 ERROR manifest scene mismatch file=Stage01.unity manifest_scene=OtherScene.unity
 ```
 
+## v0.5c Scene Suggest Read-Only Slice
+
+### scene suggest
+
+```bash
+unity-ctx scene suggest Stage01.unity --manifest Stage01.bounds.json --prefab Assets/Prefabs/Chair.prefab --near 1000
+unity-ctx scene suggest Stage01.unity --manifest Stage01.bounds.json --prefab Assets/Prefabs/Chair.prefab --near Table_01 --align grid --count 2
+unity-ctx scene suggest Stage01.unity --manifest Stage01.bounds.json --prefab Assets/Prefabs/Chair.prefab --near 1000 --json
+```
+
+Required flags:
+
+- `--manifest`
+- `--prefab`
+- `--near`
+
+Optional flags:
+
+- `--count`
+- `--align`
+- `--json`
+
+Rules:
+
+- `suggest` is implemented only for the `scene` namespace.
+- `suggest` supports only compact output.
+- `suggest` is a read-only placement planner. It does not write scene files and does not emit patch files.
+- Actual placement still flows through `scene patch` and then `scene apply` after you choose a candidate.
+- `--near` accepts either an anchor `fileID` or an exact object name from the manifest.
+- Exact-name anchor matches must resolve to a single object. Ambiguous names return `ERROR AMBIGUOUS_NAME ...`.
+- `--count` defaults to `4` when omitted. If provided, it must be `>= 1`. The planner emits at most `4` ranked candidates.
+- `--align` defaults to `floor`.
+- `suggest` supports only `--align floor|grid`.
+- `--align wall` is excluded from v0.5c and is rejected.
+- Compact output starts with one summary line, followed by one `CANDIDATE` line per returned suggestion.
+- `--json` returns the normal envelope plus a nested `suggest` payload with `manifest`, `prefab`, `anchor`, `align`, `count`, and `candidates`.
+
+Compact output examples:
+
+```text
+OK manifest=Stage01.bounds.json prefab=Assets/Prefabs/Chair.prefab near=1000 align=floor count=4 candidates=4 clear=4 warn=0
+CANDIDATE rank=1 direction=east position=1.4,0,0 status=OK overlap_ids=none anchor_id=1000 anchor_name=Table_01
+CANDIDATE rank=2 direction=west position=-1.4,0,0 status=OK overlap_ids=none anchor_id=1000 anchor_name=Table_01
+CANDIDATE rank=3 direction=north position=0,0,1 status=OK overlap_ids=none anchor_id=1000 anchor_name=Table_01
+CANDIDATE rank=4 direction=south position=0,0,-1 status=OK overlap_ids=none anchor_id=1000 anchor_name=Table_01
+
+WARN manifest=Stage01.bounds.json prefab=Assets/Prefabs/Chair.prefab near=1000 align=floor count=4 candidates=4 clear=0 warn=4
+CANDIDATE rank=1 direction=east position=1.4,0,0 status=WARN overlap_ids=3000 anchor_id=1000 anchor_name=Table_01
+CANDIDATE rank=2 direction=west position=-1.4,0,0 status=WARN overlap_ids=4000 anchor_id=1000 anchor_name=Table_01
+CANDIDATE rank=3 direction=north position=0,0,1 status=WARN overlap_ids=5000 anchor_id=1000 anchor_name=Table_01
+CANDIDATE rank=4 direction=south position=0,0,-1 status=WARN overlap_ids=6000 anchor_id=1000 anchor_name=Table_01
+```
+
+JSON shape:
+
+```json
+{
+  "status": "OK",
+  "namespace": "scene",
+  "command": "suggest",
+  "file": "Stage01.unity",
+  "view": "compact",
+  "body": "OK manifest=Stage01.bounds.json prefab=Assets/Prefabs/Chair.prefab near=1000 align=grid count=2 candidates=2 clear=2 warn=0\nCANDIDATE rank=1 direction=east position=1.5,0,0 status=OK overlap_ids=none anchor_id=1000 anchor_name=Table_01\nCANDIDATE rank=2 direction=west position=-1.5,0,0 status=OK overlap_ids=none anchor_id=1000 anchor_name=Table_01",
+  "suggest": {
+    "status": "OK",
+    "manifest": "Stage01.bounds.json",
+    "prefab": "Assets/Prefabs/Chair.prefab",
+    "anchor": {
+      "id": 1000,
+      "name": "Table_01"
+    },
+    "align": "grid",
+    "count": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "direction": "east",
+        "position": [1.5, 0, 0],
+        "status": "OK",
+        "overlap_ids": []
+      },
+      {
+        "rank": 2,
+        "direction": "west",
+        "position": [-1.5, 0, 0],
+        "status": "OK",
+        "overlap_ids": []
+      }
+    ]
+  }
+}
+```
+
+Error output:
+
+```text
+ERROR suggest requires --manifest
+ERROR suggest requires --prefab
+ERROR suggest requires --near
+ERROR suggest requires --count >= 1
+ERROR suggest supports only --align floor|grid
+ERROR suggest supports only --view compact
+ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --project, --scenes, --prefabs, --position, --op, --prefab-guid, --out, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode
+ERROR missing anchor near="Missing"
+ERROR AMBIGUOUS_NAME name="Table_01" matches=2
+ERROR missing prefab manifest entry for path="Assets/Prefabs/Missing.prefab"
+```
+
 ## v0.5a Prefab Impact Foundation
 
 ### prefab impact
