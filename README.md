@@ -16,7 +16,7 @@ Recommended first prompt:
 ```text
 Read AGENTS.md and docs/SRS.md first.
 Start from the read-only commands first.
-`asset set` is the only mutation slice currently implemented.
+Implemented mutation slices are `asset set` and `prefab set`.
 `scene scan --mode editor` can generate a deterministic bounds manifest through a Unity Editor edge.
 `scene check` is available as a read-only bounds validation foundation.
 `scene patch --op place_prefab` is available as a read-only patch-plan generator.
@@ -27,10 +27,13 @@ With `--prefab-guid` it can return OK or WARN planning results.
 `prefab impact --project <project>` is available as a read-only impact scan for scene and nested prefab references.
 It supports compact output only, optional `--scenes` scoping, and `--json` with a nested `impact` payload.
 When nested prefab traversal exceeds the current depth cap, it returns `WARN` and adds `WARN IMPACT_DEPTH_LIMIT ...`.
+`prefab set <prefab> --project <project> --id <fileID> --field <field> --value <value>` is implemented as an impact-first mutation slice.
+It is fileID-only, defaults to dry-run, includes impact summary plus `ack_required` in dry-run output, and changing writes require `--write --ack-impact`.
+`prefab set --json` may include the same nested `impact` payload shape as `prefab impact`; `asset set` JSON is unchanged.
 Run go test ./... before final response.
 ```
 
-Current `v0.5a` surface:
+Current `v0.5b` surface:
 
 - `scene scan --mode editor`
 - `scene check`
@@ -38,3 +41,4 @@ Current `v0.5a` surface:
 - `scene diff`
 - `scene apply`
 - `prefab impact --project <project>`
+- `prefab set <prefab> --project <project> --id <fileID> --field <field> --value <value>`

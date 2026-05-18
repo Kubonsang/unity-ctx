@@ -43,11 +43,11 @@ Done when:
 - apply dry-run / --write
 - diff
 
-## v0.5 — Prefab Impact & Basic Suggest
+## v0.5 — Prefab Impact, Prefab Set, & Basic Suggest
 
 - prefab impact foundation
 - prefab set impact-first
-- nested prefab warning
+- nested prefab warning reuse across `prefab impact` and `prefab set`
 - suggest near/grid/floor
 
 ## v1.0 — Agent Harness Release

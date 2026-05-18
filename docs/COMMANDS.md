@@ -260,6 +260,20 @@ WARN op=place_prefab manifest=Stage01.bounds.json prefab=Assets/Prefabs/Chair.pr
 PLAN prefab_guid="guid-chair" append_ops=append:1:2002:GameObject,append:4:2003:Transform
 ```
 
+Error output:
+
+```text
+ERROR patch requires --op
+ERROR patch supports only --op place_prefab
+ERROR patch requires --manifest
+ERROR patch requires --prefab
+ERROR patch requires --position
+ERROR patch requires --position as x,y,z
+ERROR patch requires finite --position values
+ERROR patch supports only --view compact
+ERROR manifest scene mismatch file=Stage01.unity manifest_scene=OtherScene.unity
+```
+
 ## v0.5a Prefab Impact Foundation
 
 ### prefab impact
@@ -358,22 +372,119 @@ ERROR prefab file not found: /Users/me/MyUnityProject/Assets/Prefabs/Missing.pre
 ERROR prefab meta not found file=/Users/me/MyUnityProject/Assets/Prefabs/Enemy.prefab
 ```
 
-JSON note:
+## v0.5b Prefab Set Impact-First
 
-- `--json` returns the normal command envelope plus a `patch_plan` field for later tooling/CLI consumers.
+### prefab set
+
+```bash
+unity-ctx prefab set Assets/Prefabs/Enemy.prefab --project /Users/me/MyUnityProject --id 11400000 --field moveSpeed --value 4.0
+unity-ctx prefab set Assets/Prefabs/Enemy.prefab --project /Users/me/MyUnityProject --id 11400000 --field moveSpeed --value 4.0 --write --ack-impact
+unity-ctx prefab set Assets/Prefabs/Enemy.prefab --project /Users/me/MyUnityProject --id 11400000 --field moveSpeed --value 4.0 --json
+```
+
+Required flags:
+
+- `--project`
+- `--id`
+- `--field`
+- `--value`
+
+Optional flags:
+
+- `--write`
+- `--ack-impact`
+- `--json`
+
+Rules:
+
+- `set` is implemented for the `prefab` namespace with the command shape `unity-ctx prefab set <prefab> --project <project> --id <fileID> --field <field> --value <value>`.
+- Targeting is fileID-only. `--name` and `--component` selection are not supported for `prefab set`.
+- `prefab set` defaults to dry-run. Dry-run output includes the field mutation summary plus project-scoped impact summary and `ack_required`.
+- Changing writes require `--write --ack-impact`. Without `--ack-impact`, changing write requests fail with `ERROR set requires --ack-impact for prefab writes`.
+- `prefab set --json` may include a nested `impact` payload alongside the normal result envelope. `asset set` JSON shape is unchanged.
+- The impact scan is project-scoped for the provided `--project` and reuses the same nested depth warning behavior as `prefab impact`.
+- When nested traversal reaches the current depth cap, the command keeps the set summary and appends `WARN IMPACT_DEPTH_LIMIT ...`.
+
+Dry-run output:
+
+```text
+DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 ack_required=1
+SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000
+PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001
+```
+
+Write output:
+
+```text
+WRITE backup=Assets/Prefabs/Enemy.prefab.bak field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 verified=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1
+SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000
+PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001
+```
+
+Write-gate failure:
+
+```text
+ERROR set requires --ack-impact for prefab writes
+```
+
+Depth-limit warning suffix:
+
+```text
+DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=WARN scenes=2 scene_refs=3 prefabs=1 prefab_refs=1 nested_depth=3 ack_required=1
+SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000
+PREFABS Assets/Prefabs/EnemyElite.prefab refs=1 fileIDs=3000
+WARN IMPACT_DEPTH_LIMIT prefab=Assets/Prefabs/Enemy.prefab depth=3 more_possible=true
+```
+
+JSON shape:
+
+```json
+{
+  "namespace": "prefab",
+  "command": "set",
+  "file": "Assets/Prefabs/Enemy.prefab",
+  "view": "compact",
+  "status": "OK",
+  "body": "DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 ack_required=1\nSCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000\nPREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001",
+  "impact": {
+    "status": "OK",
+    "prefab_path": "Assets/Prefabs/Enemy.prefab",
+    "prefab_guid": "fake_enemy_guid",
+    "scene_hits": [
+      {
+        "path": "Assets/Scenes/BossRoom.unity",
+        "references": 1,
+        "file_ids": [4000]
+      },
+      {
+        "path": "Assets/Scenes/Stage01.unity",
+        "references": 2,
+        "file_ids": [1000, 2000]
+      }
+    ],
+    "prefab_hits": [
+      {
+        "path": "Assets/Prefabs/EnemyElite.prefab",
+        "references": 2,
+        "file_ids": [3000, 3001]
+      }
+    ],
+    "depth_limit_hit": false,
+    "max_nested_depth": 1
+  }
+}
+```
 
 Error output:
 
 ```text
-ERROR patch requires --op
-ERROR patch supports only --op place_prefab
-ERROR patch requires --manifest
-ERROR patch requires --prefab
-ERROR patch requires --position
-ERROR patch requires --position as x,y,z
-ERROR patch requires finite --position values
-ERROR patch supports only --view compact
-ERROR manifest scene mismatch file=Stage01.unity manifest_scene=OtherScene.unity
+ERROR set requires --project
+ERROR set requires --id
+ERROR set requires non-zero --id
+ERROR set requires --field
+ERROR set requires --value
+ERROR set requires --ack-impact for prefab writes
+ERROR set does not accept --name, --type, --component, --out, --task, --focus, --max-tokens, --scenes, --mode, --prefabs, --manifest, --prefab, --position, --op, --prefab-guid, or --patch
 ```
 
 ## v0.4c Apply + Diff Foundation Slice
