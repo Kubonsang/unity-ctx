@@ -48,6 +48,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	focus := flagSet.String("focus", "", "")
 	maxTokens := flagSet.Int("max-tokens", 256, "")
 	writeFlag := flagSet.Bool("write", false, "")
+	mode := flagSet.String("mode", "", "")
+	project := flagSet.String("project", "", "")
+	prefabs := flagSet.String("prefabs", "", "")
 	manifest := flagSet.String("manifest", "", "")
 	prefab := flagSet.String("prefab", "", "")
 	prefabGUID := flagSet.String("prefab-guid", "", "")
@@ -71,24 +74,28 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "ERROR invalid view %q\n", *view)
 		return 2
 	}
-	if command != "set" && command != "apply" && seenFlags["write"] {
+	if command != "set" && command != "apply" && command != "scan" && seenFlags["write"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --write\n", command)
 		return 2
 	}
-	if command != "set" && seenFlags["value"] {
+	if command != "set" && command != "scan" && seenFlags["value"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --value\n", command)
 		return 2
 	}
-	if command != "check" && command != "patch" && anyFlagVisited(seenFlags, "manifest", "prefab", "position") {
+	if command != "check" && command != "patch" && command != "scan" && anyFlagVisited(seenFlags, "manifest", "prefab", "position") {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --manifest, --prefab, or --position\n", command)
 		return 2
 	}
-	if command != "patch" && seenFlags["op"] {
+	if command != "patch" && command != "scan" && seenFlags["op"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --op\n", command)
 		return 2
 	}
-	if command != "patch" && seenFlags["prefab-guid"] {
+	if command != "patch" && command != "scan" && seenFlags["prefab-guid"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --prefab-guid\n", command)
+		return 2
+	}
+	if command != "scan" && anyFlagVisited(seenFlags, "mode", "project", "prefabs") {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --mode, --project, or --prefabs\n", command)
 		return 2
 	}
 	if command != "diff" && command != "apply" && seenFlags["patch"] {
@@ -380,6 +387,36 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
+	if command == "scan" {
+		if namespace != "scene" {
+			_, _ = fmt.Fprintf(stderr, "ERROR scan not implemented for namespace=%s\n", namespace)
+			return 2
+		}
+		if selectedView != core.ViewCompact {
+			_, _ = io.WriteString(stderr, "ERROR scan supports only --view compact\n")
+			return 2
+		}
+		if strings.TrimSpace(*mode) == "" {
+			_, _ = io.WriteString(stderr, "ERROR scan requires --mode\n")
+			return 2
+		}
+		if strings.TrimSpace(*mode) != "editor" {
+			_, _ = io.WriteString(stderr, "ERROR scan supports only --mode editor\n")
+			return 2
+		}
+		if strings.TrimSpace(*project) == "" {
+			_, _ = io.WriteString(stderr, "ERROR scan requires --project\n")
+			return 2
+		}
+		if strings.TrimSpace(*out) == "" {
+			_, _ = io.WriteString(stderr, "ERROR scan requires --out\n")
+			return 2
+		}
+		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "value", "write", "manifest", "prefab", "position", "op", "prefab-guid", "task", "focus", "max-tokens") {
+			_, _ = io.WriteString(stderr, "ERROR scan does not accept --id, --name, --type, --component, --field, --value, --write, --manifest, --prefab, --position, --op, --prefab-guid, --task, --focus, or --max-tokens\n")
+			return 2
+		}
+	}
 
 	result := core.Result{
 		Namespace: namespace,
@@ -505,6 +542,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			Prefab:      *prefab,
 			HasPosition: seenFlags["position"],
 			Position:    parsedPosition,
+		})
+	case "scan":
+		result, exitCode = service.Scan(namespace, file, selectedView, *jsonOutput, app.ScanArgs{
+			Mode:    *mode,
+			Project: *project,
+			Out:     *out,
+			Prefabs: *prefabs,
 		})
 	default:
 		result.Status = "ERROR"

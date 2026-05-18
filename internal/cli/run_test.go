@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"unity-ctx/internal/bounds"
 	"unity-ctx/internal/contextpack"
 )
 
@@ -426,37 +427,36 @@ func TestGetReturnsAssetField(t *testing.T) {
 func TestSceneCheckWarnsWithSortedOverlapIDs(t *testing.T) {
 	scenePath := "testdata/scenes/simple_scene.unity"
 	manifestPath := filepath.Join(t.TempDir(), "scene.bounds.json")
-	manifest := "" +
-		"{\n" +
-		"  \"scene\": \"" + scenePath + "\",\n" +
-		"  \"source\": \"editor\",\n" +
-		"  \"version\": 1,\n" +
-		"  \"objects\": [\n" +
-		"    {\n" +
-		"      \"fileID\": 3000,\n" +
-		"      \"name\": \"ObjectC\",\n" +
-		"      \"bounds\": {\"center\": [1.6, 0.5, 0.0], \"size\": [1.0, 1.0, 1.0]}\n" +
-		"    },\n" +
-		"    {\n" +
-		"      \"fileID\": 1000,\n" +
-		"      \"name\": \"ObjectA\",\n" +
-		"      \"bounds\": {\"center\": [0.0, 0.5, 0.0], \"size\": [1.0, 1.0, 1.0]}\n" +
-		"    },\n" +
-		"    {\n" +
-		"      \"fileID\": 2000,\n" +
-		"      \"name\": \"ObjectB\",\n" +
-		"      \"bounds\": {\"center\": [0.8, 0.5, 0.0], \"size\": [1.0, 1.0, 1.0]}\n" +
-		"    }\n" +
-		"  ],\n" +
-		"  \"prefabs\": [\n" +
-		"    {\n" +
-		"      \"path\": \"Assets/Prefabs/chair.prefab\",\n" +
-		"      \"bounds\": {\"center\": [0.0, 0.5, 0.0], \"size\": [1.2, 1.0, 1.0]}\n" +
-		"    }\n" +
-		"  ]\n" +
-		"}\n"
-	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
+	manifest := bounds.Manifest{
+		Scene:   "Assets/Scenes/SimpleScene.unity",
+		Source:  "editor",
+		Version: 1,
+		Objects: []bounds.ObjectBounds{
+			{
+				FileID: 3000,
+				Name:   "ObjectC",
+				Bounds: bounds.AABB{Center: bounds.Vec3{1.6, 0.5, 0.0}, Size: bounds.Vec3{1.0, 1.0, 1.0}},
+			},
+			{
+				FileID: 1000,
+				Name:   "ObjectA",
+				Bounds: bounds.AABB{Center: bounds.Vec3{0.0, 0.5, 0.0}, Size: bounds.Vec3{1.0, 1.0, 1.0}},
+			},
+			{
+				FileID: 2000,
+				Name:   "ObjectB",
+				Bounds: bounds.AABB{Center: bounds.Vec3{0.8, 0.5, 0.0}, Size: bounds.Vec3{1.0, 1.0, 1.0}},
+			},
+		},
+		Prefabs: []bounds.PrefabBounds{
+			{
+				Path:   "Assets/Prefabs/chair.prefab",
+				Bounds: bounds.AABB{Center: bounds.Vec3{0.0, 0.5, 0.0}, Size: bounds.Vec3{1.2, 1.0, 1.0}},
+			},
+		},
+	}
+	if err := bounds.Save(manifestPath, manifest); err != nil {
+		t.Fatalf("Save() error = %v", err)
 	}
 
 	result := runCLI(
@@ -682,21 +682,26 @@ func TestSceneCheckRejectsNonFinitePosition(t *testing.T) {
 
 func TestSceneCheckRejectsManifestSceneMismatch(t *testing.T) {
 	manifestPath := filepath.Join(t.TempDir(), "mismatch.bounds.json")
-	manifest := "" +
-		"{\n" +
-		"  \"scene\": \"testdata/scenes/other_scene.unity\",\n" +
-		"  \"source\": \"editor\",\n" +
-		"  \"version\": 1,\n" +
-		"  \"objects\": [],\n" +
-		"  \"prefabs\": [\n" +
-		"    {\n" +
-		"      \"path\": \"Assets/Prefabs/chair.prefab\",\n" +
-		"      \"bounds\": {\"center\": [0.0, 0.5, 0.0], \"size\": [0.8, 1.0, 0.8]}\n" +
-		"    }\n" +
-		"  ]\n" +
-		"}\n"
-	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
+	manifest := bounds.Manifest{
+		Scene:   "Assets/Scenes/OtherScene.unity",
+		Source:  "editor",
+		Version: 1,
+		Objects: []bounds.ObjectBounds{
+			{
+				FileID: 1000,
+				Name:   "OtherObject",
+				Bounds: bounds.AABB{Center: bounds.Vec3{0.0, 0.5, 0.0}, Size: bounds.Vec3{1.0, 1.0, 1.0}},
+			},
+		},
+		Prefabs: []bounds.PrefabBounds{
+			{
+				Path:   "Assets/Prefabs/chair.prefab",
+				Bounds: bounds.AABB{Center: bounds.Vec3{0.0, 0.5, 0.0}, Size: bounds.Vec3{0.8, 1.0, 0.8}},
+			},
+		},
+	}
+	if err := bounds.Save(manifestPath, manifest); err != nil {
+		t.Fatalf("Save() error = %v", err)
 	}
 
 	scenePath := "testdata/scenes/simple_scene.unity"
@@ -720,7 +725,7 @@ func TestSceneCheckRejectsManifestSceneMismatch(t *testing.T) {
 		t.Fatalf("expected empty stderr, got %q", result.stderr)
 	}
 
-	want := "ERROR manifest scene mismatch file=" + scenePath + " manifest_scene=testdata/scenes/other_scene.unity\n"
+	want := "ERROR manifest scene mismatch file=" + scenePath + " manifest_scene=Assets/Scenes/OtherScene.unity\n"
 	if result.stdout != want {
 		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
 	}
@@ -1831,6 +1836,263 @@ func TestIndexRejectsSymlinkAliasToInput(t *testing.T) {
 	}
 }
 
+func TestSceneScanRequiresMode(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"scan",
+		"testdata/scenes/simple_scene.unity",
+		"--project",
+		"/tmp/project",
+		"--out",
+		"/private/tmp/simple_scene.bounds.json",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+	want := "ERROR scan requires --mode\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSceneScanRejectsUnsupportedMode(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"scan",
+		"testdata/scenes/simple_scene.unity",
+		"--mode",
+		"offline",
+		"--project",
+		"/tmp/project",
+		"--out",
+		"/private/tmp/simple_scene.bounds.json",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+	want := "ERROR scan supports only --mode editor\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSceneScanRequiresProject(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"scan",
+		"testdata/scenes/simple_scene.unity",
+		"--mode",
+		"editor",
+		"--out",
+		"/private/tmp/simple_scene.bounds.json",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+	want := "ERROR scan requires --project\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSceneScanRequiresOut(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"scan",
+		"testdata/scenes/simple_scene.unity",
+		"--mode",
+		"editor",
+		"--project",
+		"/tmp/project",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+	want := "ERROR scan requires --out\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSceneScanRejectsIrrelevantFlags(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"scan",
+		"testdata/scenes/simple_scene.unity",
+		"--mode",
+		"editor",
+		"--project",
+		"/tmp/project",
+		"--out",
+		"/private/tmp/simple_scene.bounds.json",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+	want := "ERROR scan does not accept --id, --name, --type, --component, --field, --value, --write, --manifest, --prefab, --position, --op, --prefab-guid, --task, --focus, or --max-tokens\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSceneScanJSONReturnsDeterministicEnvelope(t *testing.T) {
+	project := t.TempDir()
+	scenePath := filepath.Join(project, "Assets", "Scenes", "SimpleScene.unity")
+	if err := os.MkdirAll(filepath.Dir(scenePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(scenePath, []byte("%YAML 1.1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	outPath := filepath.Join(t.TempDir(), "simple_scene.bounds.json")
+	pathEnv := fakeUnityCLIPathEnv(t, `{
+  "scene": "Assets/Scenes/SimpleScene.unity",
+  "objects": [
+    {"fileID": 2000, "name": "Chair_01", "center": [3, 0.5, 1], "size": [1, 1, 1]},
+    {"fileID": 1000, "name": "Table_01", "center": [1, 0.5, 2], "size": [2, 1, 1]}
+  ],
+  "prefabs": [
+    {"path": "Assets/Prefabs/table.prefab", "center": [0, 0.5, 0], "size": [2, 1, 1]},
+    {"path": "Assets/Prefabs/chair.prefab", "center": [0, 0.5, 0], "size": [1, 1, 1]}
+  ]
+}`)
+
+	result := runCLIWithEnv(
+		t,
+		[]string{pathEnv},
+		"scene",
+		"scan",
+		scenePath,
+		"--mode",
+		"editor",
+		"--project",
+		project,
+		"--prefabs",
+		"Assets/Prefabs/table.prefab,Assets/Prefabs/chair.prefab",
+		"--out",
+		outPath,
+		"--json",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	var got struct {
+		Status    string `json:"status"`
+		Namespace string `json:"namespace"`
+		Command   string `json:"command"`
+		File      string `json:"file"`
+		View      string `json:"view"`
+		Body      string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &got); err != nil {
+		t.Fatalf("parse stdout json: %v\nstdout=%q", err, result.stdout)
+	}
+
+	if got.Status != "OK" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "OK")
+	}
+	if got.Namespace != "scene" {
+		t.Fatalf("namespace mismatch: got %q want %q", got.Namespace, "scene")
+	}
+	if got.Command != "scan" {
+		t.Fatalf("command mismatch: got %q want %q", got.Command, "scan")
+	}
+	if got.File != scenePath {
+		t.Fatalf("file mismatch: got %q want %q", got.File, scenePath)
+	}
+	if got.View != "compact" {
+		t.Fatalf("view mismatch: got %q want %q", got.View, "compact")
+	}
+	wantBody := "OK mode=editor project=" + project + " scene=Assets/Scenes/SimpleScene.unity out=" + outPath + " objects=2 prefabs=2 source=editor"
+	if got.Body != wantBody {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, wantBody)
+	}
+}
+
+func TestSceneScanCompactOutputMatchesExpectedText(t *testing.T) {
+	project := t.TempDir()
+	scenePath := filepath.Join(project, "Assets", "Scenes", "SimpleScene.unity")
+	if err := os.MkdirAll(filepath.Dir(scenePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(scenePath, []byte("%YAML 1.1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	outPath := filepath.Join(t.TempDir(), "simple_scene.bounds.json")
+	pathEnv := fakeUnityCLIPathEnv(t, `{
+  "scene": "Assets/Scenes/SimpleScene.unity",
+  "objects": [
+    {"fileID": 2000, "name": "Chair_01", "center": [3, 0.5, 1], "size": [1, 1, 1]},
+    {"fileID": 1000, "name": "Table_01", "center": [1, 0.5, 2], "size": [2, 1, 1]}
+  ],
+  "prefabs": [
+    {"path": "Assets/Prefabs/table.prefab", "center": [0, 0.5, 0], "size": [2, 1, 1]},
+    {"path": "Assets/Prefabs/chair.prefab", "center": [0, 0.5, 0], "size": [1, 1, 1]}
+  ]
+}`)
+
+	result := runCLIWithEnv(
+		t,
+		[]string{pathEnv},
+		"scene",
+		"scan",
+		scenePath,
+		"--mode",
+		"editor",
+		"--project",
+		project,
+		"--prefabs",
+		"Assets/Prefabs/table.prefab,Assets/Prefabs/chair.prefab",
+		"--out",
+		outPath,
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+	want := "OK mode=editor project=" + project + " scene=Assets/Scenes/SimpleScene.unity out=" + outPath + " objects=2 prefabs=2 source=editor\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
 func TestContextPackRequiresFocusOrTask(t *testing.T) {
 	result := runCLI(
 		t,
@@ -2430,9 +2692,16 @@ type runResult struct {
 func runCLI(t *testing.T, args ...string) runResult {
 	t.Helper()
 
+	return runCLIWithEnv(t, nil, args...)
+}
+
+func runCLIWithEnv(t *testing.T, env []string, args ...string) runResult {
+	t.Helper()
+
 	binary := buildCLI(t)
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = repoRoot(t)
+	cmd.Env = append(os.Environ(), env...)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -2454,6 +2723,19 @@ func runCLI(t *testing.T, args ...string) runResult {
 		stdout:   stdout.String(),
 		stderr:   stderr.String(),
 	}
+}
+
+func fakeUnityCLIPathEnv(t *testing.T, output string) string {
+	t.Helper()
+
+	binDir := t.TempDir()
+	scriptPath := filepath.Join(binDir, "unity-cli")
+	script := "#!/bin/sh\ncat <<'EOF'\n" + output + "\nEOF\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	return "PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH")
 }
 
 func buildCLI(t *testing.T) string {
