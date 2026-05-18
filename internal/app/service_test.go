@@ -1,6 +1,7 @@
 package app_test
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
 	"os"
@@ -49,6 +50,180 @@ func TestScanRejectsNonSceneNamespace(t *testing.T) {
 	want := "ERROR scan not implemented for namespace=prefab"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestImpactRejectsNonPrefabNamespace(t *testing.T) {
+	target := filepath.Join("..", "..", "testdata", "impact", "project", "Assets", "Prefabs", "Enemy.prefab")
+
+	svc := app.New()
+	got, code := svc.Impact("scene", target, core.ViewCompact, false, app.ImpactArgs{
+		Project: filepath.Join("..", "..", "testdata", "impact", "project"),
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR impact not implemented for namespace=scene"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestImpactRejectsNonCompactView(t *testing.T) {
+	target := filepath.Join("..", "..", "testdata", "impact", "project", "Assets", "Prefabs", "Enemy.prefab")
+
+	svc := app.New()
+	got, code := svc.Impact("prefab", target, core.ViewDetail, false, app.ImpactArgs{
+		Project: filepath.Join("..", "..", "testdata", "impact", "project"),
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR impact supports only --view compact"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestImpactRejectsMissingProject(t *testing.T) {
+	target := filepath.Join("..", "..", "testdata", "impact", "project", "Assets", "Prefabs", "Enemy.prefab")
+
+	svc := app.New()
+	got, code := svc.Impact("prefab", target, core.ViewCompact, false, app.ImpactArgs{})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR impact requires --project"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestImpactReturnsDeterministicSummary(t *testing.T) {
+	project := filepath.Join("..", "..", "testdata", "impact", "project")
+	target := filepath.Join(project, "Assets", "Prefabs", "Enemy.prefab")
+
+	svc := app.New()
+	got, code := svc.Impact("prefab", target, core.ViewCompact, true, app.ImpactArgs{
+		Project: project,
+		Scenes:  " Assets/Scenes/BossRoom.unity , Assets/Scenes/Unused.unity ",
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "OK prefab=Assets/Prefabs/Enemy.prefab guid=fake_enemy_guid scenes=1 scene_refs=1 prefabs=1 prefab_refs=2 nested_depth=1\nSCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000\nPREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+	if got.Impact == nil {
+		t.Fatal("expected Impact payload for jsonOut=true")
+	}
+	if got.Impact.PrefabPath != "Assets/Prefabs/Enemy.prefab" {
+		t.Fatalf("impact prefab path mismatch: got %q", got.Impact.PrefabPath)
+	}
+}
+
+func TestImpactJSONMarshalsNestedImpactPayloadShape(t *testing.T) {
+	project := filepath.Join("..", "..", "testdata", "impact", "project")
+	target := filepath.Join(project, "Assets", "Prefabs", "Enemy.prefab")
+
+	svc := app.New()
+	got, code := svc.Impact("prefab", target, core.ViewCompact, true, app.ImpactArgs{
+		Project: project,
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	impactValue, ok := payload["impact"].(map[string]any)
+	if !ok {
+		t.Fatalf("impact payload missing or wrong type: %#v", payload["impact"])
+	}
+
+	if _, ok := impactValue["prefab_path"]; !ok {
+		t.Fatalf("missing prefab_path key: %#v", impactValue)
+	}
+	if _, ok := impactValue["prefab_guid"]; !ok {
+		t.Fatalf("missing prefab_guid key: %#v", impactValue)
+	}
+	if _, ok := impactValue["scene_hits"]; !ok {
+		t.Fatalf("missing scene_hits key: %#v", impactValue)
+	}
+	if _, ok := impactValue["prefab_hits"]; !ok {
+		t.Fatalf("missing prefab_hits key: %#v", impactValue)
+	}
+	if _, ok := impactValue["depth_limit_hit"]; !ok {
+		t.Fatalf("missing depth_limit_hit key: %#v", impactValue)
+	}
+	if _, ok := impactValue["max_nested_depth"]; !ok {
+		t.Fatalf("missing max_nested_depth key: %#v", impactValue)
+	}
+	if _, ok := impactValue["PrefabPath"]; ok {
+		t.Fatalf("unexpected Go field name leaked into JSON: %#v", impactValue)
+	}
+
+	sceneHits, ok := impactValue["scene_hits"].([]any)
+	if !ok || len(sceneHits) == 0 {
+		t.Fatalf("scene_hits missing or empty: %#v", impactValue["scene_hits"])
+	}
+	firstScene, ok := sceneHits[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first scene hit wrong type: %#v", sceneHits[0])
+	}
+	if _, ok := firstScene["path"]; !ok {
+		t.Fatalf("scene hit missing path key: %#v", firstScene)
+	}
+	if _, ok := firstScene["references"]; !ok {
+		t.Fatalf("scene hit missing references key: %#v", firstScene)
+	}
+	if _, ok := firstScene["file_ids"]; !ok {
+		t.Fatalf("scene hit missing file_ids key: %#v", firstScene)
+	}
+	if _, ok := firstScene["FileIDs"]; ok {
+		t.Fatalf("unexpected Go field name leaked into scene hit JSON: %#v", firstScene)
+	}
+}
+
+func TestImpactWarnsWithDepthLimitLine(t *testing.T) {
+	project := copyImpactProjectForService(t)
+	target := filepath.Join(project, "Assets", "Prefabs", "Enemy.prefab")
+
+	writeImpactPrefabAsset(t, filepath.Join(project, "Assets", "Prefabs", "EnemyElite.prefab"), "fake_enemy_elite_guid", "fake_enemy_guid")
+	writeImpactPrefabAsset(t, filepath.Join(project, "Assets", "Prefabs", "EnemyBoss.prefab"), "fake_enemy_boss_guid", "fake_enemy_elite_guid")
+	writeImpactPrefabAsset(t, filepath.Join(project, "Assets", "Prefabs", "EnemyUltra.prefab"), "fake_enemy_ultra_guid", "fake_enemy_boss_guid")
+	writeImpactPrefabAsset(t, filepath.Join(project, "Assets", "Prefabs", "EnemyLegend.prefab"), "fake_enemy_legend_guid", "fake_enemy_ultra_guid")
+
+	svc := app.New()
+	got, code := svc.Impact("prefab", target, core.ViewCompact, false, app.ImpactArgs{
+		Project: project,
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "WARN prefab=Assets/Prefabs/Enemy.prefab guid=fake_enemy_guid scenes=2 scene_refs=3 prefabs=1 prefab_refs=1 nested_depth=3\nSCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000\nPREFABS Assets/Prefabs/EnemyElite.prefab refs=1 fileIDs=3000\nWARN IMPACT_DEPTH_LIMIT prefab=Assets/Prefabs/Enemy.prefab depth=3 more_possible=true"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+	if got.Impact == nil {
+		t.Fatal("expected Impact payload on success")
+	}
+	if !got.Impact.DepthLimitHit {
+		t.Fatal("expected depth limit warning in impact payload")
 	}
 }
 
@@ -1786,5 +1961,62 @@ func TestAssetInspectAmbiguousComponentPreservesAmbiguity(t *testing.T) {
 	want := "ERROR AMBIGUOUS_TYPE component=MonoBehaviour matches=2"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func copyImpactProjectForService(t *testing.T) string {
+	t.Helper()
+
+	source := filepath.Join("..", "..", "testdata", "impact", "project")
+	dest := filepath.Join(t.TempDir(), "project")
+	if err := copyTreeForService(source, dest); err != nil {
+		t.Fatalf("copyTreeForService() error = %v", err)
+	}
+	return dest
+}
+
+func copyTreeForService(source, dest string) error {
+	return filepath.Walk(source, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dest, relative)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode())
+	})
+}
+
+func writeImpactPrefabAsset(t *testing.T, prefabPath, guid, referencedGUID string) {
+	t.Helper()
+
+	prefab := "" +
+		"%YAML 1.1\n" +
+		"%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!1001 &3000\n" +
+		"PrefabInstance:\n" +
+		"  m_SourcePrefab: {fileID: 100100000, guid: " + referencedGUID + ", type: 3}\n"
+	if err := os.WriteFile(prefabPath, []byte(prefab), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", prefabPath, err)
+	}
+
+	meta := "" +
+		"fileFormatVersion: 2\n" +
+		"guid: " + guid + "\n" +
+		"PrefabImporter:\n" +
+		"  externalObjects: {}\n"
+	if err := os.WriteFile(prefabPath+".meta", []byte(meta), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s.meta) error = %v", prefabPath, err)
 	}
 }

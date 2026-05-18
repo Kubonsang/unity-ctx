@@ -15,6 +15,7 @@ import (
 	"unity-ctx/internal/contextpack"
 	"unity-ctx/internal/core"
 	"unity-ctx/internal/document"
+	impactscan "unity-ctx/internal/impact"
 	"unity-ctx/internal/index"
 	"unity-ctx/internal/mutation"
 	"unity-ctx/internal/parser"
@@ -103,10 +104,36 @@ type ScanArgs struct {
 	Prefabs string
 }
 
+type ImpactArgs struct {
+	Project string
+	Scenes  string
+}
+
+type ImpactFileHit struct {
+	Path       string  `json:"path"`
+	References int     `json:"references"`
+	FileIDs    []int64 `json:"file_ids"`
+}
+
+type ImpactPayload struct {
+	Status         string          `json:"status"`
+	PrefabPath     string          `json:"prefab_path"`
+	PrefabGUID     string          `json:"prefab_guid"`
+	SceneHits      []ImpactFileHit `json:"scene_hits"`
+	PrefabHits     []ImpactFileHit `json:"prefab_hits"`
+	DepthLimitHit  bool            `json:"depth_limit_hit"`
+	MaxNestedDepth int             `json:"max_nested_depth"`
+}
+
 type PatchResult struct {
 	SchemaVersion int `json:"schema_version,omitempty"`
 	core.Result
 	PatchPlan *scenepatch.PlacePrefabPlan `json:"patch_plan,omitempty"`
+}
+
+type ImpactResult struct {
+	core.Result
+	Impact *ImpactPayload `json:"impact,omitempty"`
 }
 
 type loadedDoc struct {
@@ -570,6 +597,54 @@ func (s *Service) ContextPack(namespace, path string, view core.View, jsonOut bo
 
 	result.Status = "OK"
 	result.Body = strings.Join(lines, "\n")
+	return result, 0
+}
+
+func (s *Service) Impact(namespace, path string, view core.View, jsonOut bool, args ImpactArgs) (ImpactResult, int) {
+	result := ImpactResult{
+		Result: core.Result{
+			Namespace: namespace,
+			Command:   "impact",
+			File:      path,
+			View:      view,
+		},
+	}
+
+	if namespace != "prefab" {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR impact not implemented for namespace=%s", namespace)
+		return result, 1
+	}
+	if view != core.ViewCompact {
+		result.Status = "ERROR"
+		result.Body = "ERROR impact supports only --view compact"
+		return result, 1
+	}
+
+	project := strings.TrimSpace(args.Project)
+	if project == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR impact requires --project"
+		return result, 1
+	}
+
+	impactResult, err := impactscan.ScanPrefabImpact(impactscan.Request{
+		ProjectPath: project,
+		TargetPath:  path,
+		SceneScope:  normalizeImpactSceneScope(args.Scenes),
+		MaxDepth:    3,
+	})
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	result.Status = impactResult.Status
+	result.Body = formatImpactBody(impactResult)
+	if jsonOut || impactResult.Status != "" {
+		result.Impact = impactPayloadFromScanResult(impactResult)
+	}
 	return result, 0
 }
 
@@ -1318,6 +1393,109 @@ func formatCheckBody(prefix, manifestPath, prefabPath string, position [3]float6
 		builder.WriteString(strconv.FormatInt(id, 10))
 	}
 	return builder.String()
+}
+
+func formatImpactBody(result impactscan.Result) string {
+	summary := fmt.Sprintf(
+		"%s prefab=%s guid=%s scenes=%d scene_refs=%d prefabs=%d prefab_refs=%d nested_depth=%d",
+		result.Status,
+		result.PrefabPath,
+		result.PrefabGUID,
+		len(result.SceneHits),
+		sumImpactReferences(result.SceneHits),
+		len(result.PrefabHits),
+		sumImpactReferences(result.PrefabHits),
+		result.MaxNestedDepth,
+	)
+
+	lines := []string{
+		summary,
+		"SCENES " + formatImpactHits(result.SceneHits),
+		"PREFABS " + formatImpactHits(result.PrefabHits),
+	}
+	if result.DepthLimitHit {
+		lines = append(lines, fmt.Sprintf("WARN IMPACT_DEPTH_LIMIT prefab=%s depth=%d more_possible=true", result.PrefabPath, result.MaxNestedDepth))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatImpactHits(hits []impactscan.FileHit) string {
+	if len(hits) == 0 {
+		return "none"
+	}
+
+	parts := make([]string, 0, len(hits))
+	for _, hit := range hits {
+		parts = append(parts, fmt.Sprintf("%s refs=%d fileIDs=%s", hit.Path, hit.References, joinInt64s(hit.FileIDs)))
+	}
+	return strings.Join(parts, " ")
+}
+
+func sumImpactReferences(hits []impactscan.FileHit) int {
+	total := 0
+	for _, hit := range hits {
+		total += hit.References
+	}
+	return total
+}
+
+func joinInt64s(values []int64) string {
+	if len(values) == 0 {
+		return "none"
+	}
+
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, strconv.FormatInt(value, 10))
+	}
+	return strings.Join(parts, ",")
+}
+
+func normalizeImpactSceneScope(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+
+	scenes := make([]string, 0)
+	for _, part := range strings.Split(raw, ",") {
+		scene := strings.TrimSpace(part)
+		if scene == "" {
+			continue
+		}
+		scenes = append(scenes, scene)
+	}
+	if len(scenes) == 0 {
+		return nil
+	}
+	return scenes
+}
+
+func impactPayloadFromScanResult(result impactscan.Result) *ImpactPayload {
+	return &ImpactPayload{
+		Status:         result.Status,
+		PrefabPath:     result.PrefabPath,
+		PrefabGUID:     result.PrefabGUID,
+		SceneHits:      impactFileHitsFromScan(result.SceneHits),
+		PrefabHits:     impactFileHitsFromScan(result.PrefabHits),
+		DepthLimitHit:  result.DepthLimitHit,
+		MaxNestedDepth: result.MaxNestedDepth,
+	}
+}
+
+func impactFileHitsFromScan(hits []impactscan.FileHit) []ImpactFileHit {
+	if len(hits) == 0 {
+		return nil
+	}
+
+	out := make([]ImpactFileHit, 0, len(hits))
+	for _, hit := range hits {
+		out = append(out, ImpactFileHit{
+			Path:       hit.Path,
+			References: hit.References,
+			FileIDs:    append([]int64(nil), hit.FileIDs...),
+		})
+	}
+	return out
 }
 
 func formatPatchBody(status scenepatch.Status, op, manifestPath, prefabPath string, position [3]float64, plan scenepatch.PlacePrefabPlan) string {
