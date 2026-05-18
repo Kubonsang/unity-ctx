@@ -1,6 +1,7 @@
 package app_test
 
 import (
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -11,9 +12,284 @@ import (
 	"time"
 
 	"unity-ctx/internal/app"
+	"unity-ctx/internal/bounds"
 	"unity-ctx/internal/contextpack"
 	"unity-ctx/internal/core"
 )
+
+type fakeScanRunner struct {
+	output  []byte
+	err     error
+	project string
+	scene   string
+	prefabs []string
+}
+
+func (r *fakeScanRunner) RunEditorScan(projectPath, sceneAssetPath string, prefabPaths []string) ([]byte, error) {
+	r.project = projectPath
+	r.scene = sceneAssetPath
+	r.prefabs = append([]string(nil), prefabPaths...)
+	if r.err != nil {
+		return nil, r.err
+	}
+	return append([]byte(nil), r.output...), nil
+}
+
+func TestScanRejectsNonSceneNamespace(t *testing.T) {
+	svc := app.New()
+	got, code := svc.Scan("prefab", "ignored.prefab", core.ViewCompact, false, app.ScanArgs{
+		Mode:    "editor",
+		Project: "/tmp/project",
+		Out:     "/tmp/out.json",
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR scan not implemented for namespace=prefab"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestScanRejectsMissingMode(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+
+	svc := app.New()
+	got, code := svc.Scan("scene", scenePath, core.ViewCompact, false, app.ScanArgs{})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR scan requires --mode"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestScanRejectsNonCompactView(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+
+	svc := app.New()
+	got, code := svc.Scan("scene", scenePath, core.ViewDetail, false, app.ScanArgs{
+		Mode:    "editor",
+		Project: "/tmp/project",
+		Out:     "/tmp/out.json",
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR scan supports only --view compact"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestScanRejectsUnsupportedMode(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+
+	svc := app.New()
+	got, code := svc.Scan("scene", scenePath, core.ViewCompact, false, app.ScanArgs{Mode: "offline"})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR scan supports only --mode editor"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestScanRejectsMissingProject(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+
+	svc := app.New()
+	got, code := svc.Scan("scene", scenePath, core.ViewCompact, false, app.ScanArgs{Mode: "editor"})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR scan requires --project"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestScanRejectsMissingOut(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+
+	svc := app.New()
+	got, code := svc.Scan("scene", scenePath, core.ViewCompact, false, app.ScanArgs{
+		Mode:    "editor",
+		Project: "/tmp/project",
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR scan requires --out"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestScanRejectsSceneOutsideProjectAssets(t *testing.T) {
+	project := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(project, "Assets"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	scenePath := filepath.Join(t.TempDir(), "OutsideScene.unity")
+	if err := os.WriteFile(scenePath, []byte("%YAML 1.1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	svc := app.New()
+	got, code := svc.Scan("scene", scenePath, core.ViewCompact, false, app.ScanArgs{
+		Mode:    "editor",
+		Project: project,
+		Out:     filepath.Join(t.TempDir(), "out.json"),
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR scene must be under project Assets/ file=" + scenePath + " project=" + project
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestScanWritesManifestAndReturnsDeterministicSummary(t *testing.T) {
+	project := t.TempDir()
+	scenePath := filepath.Join(project, "Assets", "Scenes", "SimpleScene.unity")
+	if err := os.MkdirAll(filepath.Dir(scenePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(scenePath, []byte("%YAML 1.1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	outPath := filepath.Join(t.TempDir(), "simple_scene.bounds.json")
+	runner := &fakeScanRunner{
+		output: []byte(`{
+  "scene": "Assets/Scenes/SimpleScene.unity",
+  "objects": [
+    {"fileID": 2000, "name": "Chair_01", "center": [3, 0.5, 1], "size": [1, 1, 1]},
+    {"fileID": 1000, "name": "Table_01", "center": [1, 0.5, 2], "size": [2, 1, 1]}
+  ],
+  "prefabs": [
+    {"path": "Assets/Prefabs/table.prefab", "center": [0, 0.5, 0], "size": [2, 1, 1]},
+    {"path": "Assets/Prefabs/chair.prefab", "center": [0, 0.5, 0], "size": [1, 1, 1]}
+  ]
+}`),
+	}
+
+	svc := app.NewWithScanRunner(runner)
+	got, code := svc.Scan("scene", scenePath, core.ViewCompact, false, app.ScanArgs{
+		Mode:    "editor",
+		Project: project,
+		Out:     outPath,
+		Prefabs: " Assets/Prefabs/table.prefab , Assets/Prefabs/chair.prefab , Assets/Prefabs/table.prefab ",
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "OK mode=editor project=" + project + " scene=Assets/Scenes/SimpleScene.unity out=" + outPath + " objects=2 prefabs=2 source=editor"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+
+	if runner.project != project {
+		t.Fatalf("runner project mismatch: got %q want %q", runner.project, project)
+	}
+	if runner.scene != "Assets/Scenes/SimpleScene.unity" {
+		t.Fatalf("runner scene mismatch: got %q want %q", runner.scene, "Assets/Scenes/SimpleScene.unity")
+	}
+	if !reflect.DeepEqual(runner.prefabs, []string{"Assets/Prefabs/chair.prefab", "Assets/Prefabs/table.prefab"}) {
+		t.Fatalf("runner prefabs mismatch: got %#v", runner.prefabs)
+	}
+
+	manifest, err := bounds.Load(outPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if manifest.Scene != "Assets/Scenes/SimpleScene.unity" {
+		t.Fatalf("manifest scene mismatch: got %q", manifest.Scene)
+	}
+	if manifest.Source != "editor" {
+		t.Fatalf("manifest source mismatch: got %q", manifest.Source)
+	}
+	if len(manifest.Objects) != 2 || manifest.Objects[0].FileID != 1000 || manifest.Objects[1].FileID != 2000 {
+		t.Fatalf("manifest objects mismatch: got %#v", manifest.Objects)
+	}
+	if len(manifest.Prefabs) != 2 || manifest.Prefabs[0].Path != "Assets/Prefabs/chair.prefab" || manifest.Prefabs[1].Path != "Assets/Prefabs/table.prefab" {
+		t.Fatalf("manifest prefabs mismatch: got %#v", manifest.Prefabs)
+	}
+}
+
+func TestScanRejectsPayloadSceneMismatch(t *testing.T) {
+	project := t.TempDir()
+	scenePath := filepath.Join(project, "Assets", "Scenes", "SimpleScene.unity")
+	if err := os.MkdirAll(filepath.Dir(scenePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(scenePath, []byte("%YAML 1.1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	runner := &fakeScanRunner{
+		output: []byte(`{
+  "scene": "Assets/Scenes/OtherScene.unity",
+  "objects": [],
+  "prefabs": []
+}`),
+	}
+
+	svc := app.NewWithScanRunner(runner)
+	got, code := svc.Scan("scene", scenePath, core.ViewCompact, false, app.ScanArgs{
+		Mode:    "editor",
+		Project: project,
+		Out:     filepath.Join(t.TempDir(), "out.json"),
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR scan payload scene mismatch requested=Assets/Scenes/SimpleScene.unity payload=Assets/Scenes/OtherScene.unity"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestScanRunnerFailureReturnsStableError(t *testing.T) {
+	project := t.TempDir()
+	scenePath := filepath.Join(project, "Assets", "Scenes", "SimpleScene.unity")
+	if err := os.MkdirAll(filepath.Dir(scenePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(scenePath, []byte("%YAML 1.1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	runner := &fakeScanRunner{err: errors.New("unity-cli exec failed")}
+	svc := app.NewWithScanRunner(runner)
+	got, code := svc.Scan("scene", scenePath, core.ViewCompact, false, app.ScanArgs{
+		Mode:    "editor",
+		Project: project,
+		Out:     filepath.Join(t.TempDir(), "out.json"),
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR SCAN_EDITOR_FAILED project=" + project + " scene=Assets/Scenes/SimpleScene.unity err=unity-cli exec failed"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
 
 func TestSummarizeSceneCompact(t *testing.T) {
 	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
@@ -238,37 +514,36 @@ func TestGetFieldNotFound(t *testing.T) {
 func TestCheckSceneWarnsWithSortedOverlapIDs(t *testing.T) {
 	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
 	manifestPath := filepath.Join(t.TempDir(), "scene.bounds.json")
-	manifest := "" +
-		"{\n" +
-		"  \"scene\": \"" + scenePath + "\",\n" +
-		"  \"source\": \"editor\",\n" +
-		"  \"version\": 1,\n" +
-		"  \"objects\": [\n" +
-		"    {\n" +
-		"      \"fileID\": 3000,\n" +
-		"      \"name\": \"ObjectC\",\n" +
-		"      \"bounds\": {\"center\": [1.6, 0.5, 0.0], \"size\": [1.0, 1.0, 1.0]}\n" +
-		"    },\n" +
-		"    {\n" +
-		"      \"fileID\": 1000,\n" +
-		"      \"name\": \"ObjectA\",\n" +
-		"      \"bounds\": {\"center\": [0.0, 0.5, 0.0], \"size\": [1.0, 1.0, 1.0]}\n" +
-		"    },\n" +
-		"    {\n" +
-		"      \"fileID\": 2000,\n" +
-		"      \"name\": \"ObjectB\",\n" +
-		"      \"bounds\": {\"center\": [0.8, 0.5, 0.0], \"size\": [1.0, 1.0, 1.0]}\n" +
-		"    }\n" +
-		"  ],\n" +
-		"  \"prefabs\": [\n" +
-		"    {\n" +
-		"      \"path\": \"Assets/Prefabs/chair.prefab\",\n" +
-		"      \"bounds\": {\"center\": [0.0, 0.5, 0.0], \"size\": [1.2, 1.0, 1.0]}\n" +
-		"    }\n" +
-		"  ]\n" +
-		"}\n"
-	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
+	manifest := bounds.Manifest{
+		Scene:   "Assets/Scenes/SimpleScene.unity",
+		Source:  "editor",
+		Version: 1,
+		Objects: []bounds.ObjectBounds{
+			{
+				FileID: 3000,
+				Name:   "ObjectC",
+				Bounds: bounds.AABB{Center: bounds.Vec3{1.6, 0.5, 0.0}, Size: bounds.Vec3{1.0, 1.0, 1.0}},
+			},
+			{
+				FileID: 1000,
+				Name:   "ObjectA",
+				Bounds: bounds.AABB{Center: bounds.Vec3{0.0, 0.5, 0.0}, Size: bounds.Vec3{1.0, 1.0, 1.0}},
+			},
+			{
+				FileID: 2000,
+				Name:   "ObjectB",
+				Bounds: bounds.AABB{Center: bounds.Vec3{0.8, 0.5, 0.0}, Size: bounds.Vec3{1.0, 1.0, 1.0}},
+			},
+		},
+		Prefabs: []bounds.PrefabBounds{
+			{
+				Path:   "Assets/Prefabs/chair.prefab",
+				Bounds: bounds.AABB{Center: bounds.Vec3{0.0, 0.5, 0.0}, Size: bounds.Vec3{1.2, 1.0, 1.0}},
+			},
+		},
+	}
+	if err := bounds.Save(manifestPath, manifest); err != nil {
+		t.Fatalf("Save() error = %v", err)
 	}
 
 	svc := app.New()
@@ -665,21 +940,26 @@ func TestCheckSceneRejectsNonFinitePosition(t *testing.T) {
 func TestCheckSceneRejectsManifestSceneMismatch(t *testing.T) {
 	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
 	manifestPath := filepath.Join(t.TempDir(), "mismatch.bounds.json")
-	manifest := "" +
-		"{\n" +
-		"  \"scene\": \"testdata/scenes/other_scene.unity\",\n" +
-		"  \"source\": \"editor\",\n" +
-		"  \"version\": 1,\n" +
-		"  \"objects\": [],\n" +
-		"  \"prefabs\": [\n" +
-		"    {\n" +
-		"      \"path\": \"Assets/Prefabs/chair.prefab\",\n" +
-		"      \"bounds\": {\"center\": [0.0, 0.5, 0.0], \"size\": [0.8, 1.0, 0.8]}\n" +
-		"    }\n" +
-		"  ]\n" +
-		"}\n"
-	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
+	manifest := bounds.Manifest{
+		Scene:   "Assets/Scenes/OtherScene.unity",
+		Source:  "editor",
+		Version: 1,
+		Objects: []bounds.ObjectBounds{
+			{
+				FileID: 1000,
+				Name:   "OtherObject",
+				Bounds: bounds.AABB{Center: bounds.Vec3{0.0, 0.5, 0.0}, Size: bounds.Vec3{1.0, 1.0, 1.0}},
+			},
+		},
+		Prefabs: []bounds.PrefabBounds{
+			{
+				Path:   "Assets/Prefabs/chair.prefab",
+				Bounds: bounds.AABB{Center: bounds.Vec3{0.0, 0.5, 0.0}, Size: bounds.Vec3{0.8, 1.0, 0.8}},
+			},
+		},
+	}
+	if err := bounds.Save(manifestPath, manifest); err != nil {
+		t.Fatalf("Save() error = %v", err)
 	}
 
 	svc := app.New()
@@ -693,7 +973,7 @@ func TestCheckSceneRejectsManifestSceneMismatch(t *testing.T) {
 		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
 	}
 
-	want := "ERROR manifest scene mismatch file=" + scenePath + " manifest_scene=testdata/scenes/other_scene.unity"
+	want := "ERROR manifest scene mismatch file=" + scenePath + " manifest_scene=Assets/Scenes/OtherScene.unity"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}

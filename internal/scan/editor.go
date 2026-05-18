@@ -85,7 +85,7 @@ func (r UnityCLIRunner) RunEditorScan(projectPath, sceneAssetPath string, prefab
 
 	output, err := unityCLIExec("unity-cli", args...)
 	if err != nil {
-		message := strings.TrimSpace(string(output))
+		message := normalizeCommandOutput(output)
 		if message == "" {
 			return nil, fmt.Errorf("unity-cli exec failed: %w", err)
 		}
@@ -154,13 +154,16 @@ func NormalizePrefabList(raw string) []string {
 }
 
 func LoadEditorPayload(path string) (EditorPayload, error) {
-	file, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return EditorPayload{}, err
 	}
-	defer file.Close()
 
-	decoder := json.NewDecoder(file)
+	return DecodeEditorPayload(data)
+}
+
+func DecodeEditorPayload(data []byte) (EditorPayload, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 
 	var raw rawEditorPayload
@@ -233,6 +236,15 @@ func LoadEditorPayload(path string) (EditorPayload, error) {
 	}
 
 	return payload, nil
+}
+
+func normalizeCommandOutput(output []byte) string {
+	if len(output) == 0 {
+		return ""
+	}
+
+	fields := strings.Fields(string(output))
+	return strings.TrimSpace(strings.Join(fields, " "))
 }
 
 func BuildManifestFromPayload(payload EditorPayload) (bounds.Manifest, error) {

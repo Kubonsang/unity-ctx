@@ -77,6 +77,29 @@ func TestBuildManifestFromEditorPayloadSortsAndNormalizes(t *testing.T) {
 	}
 }
 
+func TestDecodeEditorPayloadMatchesFileLoader(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "scan", "editor_simple_scene.json")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	got, err := DecodeEditorPayload(data)
+	if err != nil {
+		t.Fatalf("DecodeEditorPayload() error = %v", err)
+	}
+
+	want, err := LoadEditorPayload(path)
+	if err != nil {
+		t.Fatalf("LoadEditorPayload() error = %v", err)
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("payload mismatch: got %#v want %#v", got, want)
+	}
+}
+
 func TestBuildManifestFromEditorPayloadRejectsDuplicatePrefabPath(t *testing.T) {
 	path := filepath.Join("..", "..", "testdata", "scan", "editor_invalid_duplicate_prefab.json")
 
@@ -550,7 +573,7 @@ func TestUnityCLIRunnerRunEditorScanWrapsCommandError(t *testing.T) {
 	}()
 
 	unityCLIExec = func(name string, args ...string) ([]byte, error) {
-		return []byte("boom"), errors.New("exit status 1")
+		return []byte("boom\n details \n\nnext line"), errors.New("exit status 1")
 	}
 
 	runner := UnityCLIRunner{}
@@ -559,7 +582,7 @@ func TestUnityCLIRunnerRunEditorScanWrapsCommandError(t *testing.T) {
 		t.Fatal("RunEditorScan() error = nil, want wrapped command error")
 	}
 
-	want := "unity-cli exec failed: exit status 1: boom"
+	want := "unity-cli exec failed: exit status 1: boom details next line"
 	if err.Error() != want {
 		t.Fatalf("error mismatch: got %q want %q", err.Error(), want)
 	}

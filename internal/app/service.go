@@ -19,9 +19,12 @@ import (
 	"unity-ctx/internal/mutation"
 	"unity-ctx/internal/parser"
 	scenepatch "unity-ctx/internal/patch"
+	"unity-ctx/internal/scan"
 )
 
-type Service struct{}
+type Service struct {
+	scanRunner scan.Runner
+}
 
 type QueryArgs struct {
 	HasID   bool
@@ -93,6 +96,13 @@ type ApplyArgs struct {
 	Write bool
 }
 
+type ScanArgs struct {
+	Mode    string
+	Project string
+	Out     string
+	Prefabs string
+}
+
 type PatchResult struct {
 	SchemaVersion int `json:"schema_version,omitempty"`
 	core.Result
@@ -106,7 +116,17 @@ type loadedDoc struct {
 }
 
 func New() *Service {
-	return &Service{}
+	return &Service{
+		scanRunner: scan.UnityCLIRunner{},
+	}
+}
+
+func NewWithScanRunner(runner scan.Runner) *Service {
+	svc := New()
+	if runner != nil {
+		svc.scanRunner = runner
+	}
+	return svc
 }
 
 func (s *Service) Summarize(namespace, path string, view core.View, jsonOut bool) (core.Result, int) {
@@ -550,6 +570,105 @@ func (s *Service) ContextPack(namespace, path string, view core.View, jsonOut bo
 
 	result.Status = "OK"
 	result.Body = strings.Join(lines, "\n")
+	return result, 0
+}
+
+func (s *Service) Scan(namespace, path string, view core.View, jsonOut bool, args ScanArgs) (core.Result, int) {
+	_ = jsonOut
+
+	result := core.Result{
+		Namespace: namespace,
+		Command:   "scan",
+		File:      path,
+		View:      view,
+	}
+
+	if namespace != "scene" {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR scan not implemented for namespace=%s", namespace)
+		return result, 1
+	}
+	if view != core.ViewCompact {
+		result.Status = "ERROR"
+		result.Body = "ERROR scan supports only --view compact"
+		return result, 1
+	}
+
+	mode := strings.TrimSpace(args.Mode)
+	if mode == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR scan requires --mode"
+		return result, 1
+	}
+	if mode != "editor" {
+		result.Status = "ERROR"
+		result.Body = "ERROR scan supports only --mode editor"
+		return result, 1
+	}
+
+	project := strings.TrimSpace(args.Project)
+	if project == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR scan requires --project"
+		return result, 1
+	}
+
+	outPath := strings.TrimSpace(args.Out)
+	if outPath == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR scan requires --out"
+		return result, 1
+	}
+
+	sceneAssetPath, err := scan.ResolveSceneAssetPath(project, path)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	prefabs := scan.NormalizePrefabList(args.Prefabs)
+	payloadBytes, err := s.scanRunner.RunEditorScan(project, sceneAssetPath, prefabs)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR SCAN_EDITOR_FAILED project=%s scene=%s err=%v", project, sceneAssetPath, err)
+		return result, 1
+	}
+
+	payload, err := scan.DecodeEditorPayload(payloadBytes)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	if payload.Scene != sceneAssetPath {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR scan payload scene mismatch requested=%s payload=%s", sceneAssetPath, payload.Scene)
+		return result, 1
+	}
+
+	manifest, err := scan.BuildManifestFromPayload(payload)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	if err := bounds.Save(outPath, manifest); err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	result.Status = "OK"
+	result.Body = fmt.Sprintf(
+		"OK mode=editor project=%s scene=%s out=%s objects=%d prefabs=%d source=%s",
+		project,
+		sceneAssetPath,
+		outPath,
+		len(manifest.Objects),
+		len(manifest.Prefabs),
+		manifest.Source,
+	)
 	return result, 0
 }
 
