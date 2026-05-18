@@ -92,9 +92,10 @@ func Plan(req Request) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
+		overlapIDs := excludeFileID(placement.OverlapIDs, anchorObject.FileID)
 
 		status := "WARN"
-		if placement.Clear {
+		if len(overlapIDs) == 0 {
 			status = "OK"
 		}
 
@@ -102,7 +103,7 @@ func Plan(req Request) (Result, error) {
 			Status:     status,
 			Direction:  spec.name,
 			Position:   position,
-			OverlapIDs: append([]int64(nil), placement.OverlapIDs...),
+			OverlapIDs: overlapIDs,
 		})
 	}
 
@@ -246,6 +247,24 @@ func parseNonZeroDecimal(raw string) (int64, bool) {
 		return 0, false
 	}
 	return value, true
+}
+
+func excludeFileID(ids []int64, fileID int64) []int64 {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	filtered := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id == fileID {
+			continue
+		}
+		filtered = append(filtered, id)
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
 }
 
 func statusRank(status string) int {

@@ -778,6 +778,257 @@ func TestCheckSceneOKAndJSONMatches(t *testing.T) {
 	}
 }
 
+func TestSuggestRejectsUnsupportedNamespace(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "prefabs", "enemy.prefab")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	svc := app.New()
+	got, code := svc.Suggest("prefab", path, core.ViewCompact, false, app.SuggestArgs{
+		Manifest: manifestPath,
+		Prefab:   "Assets/Prefabs/chair.prefab",
+		Near:     "1000",
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR suggest not implemented for namespace=prefab"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestSuggestRejectsNonCompactView(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	svc := app.New()
+	got, code := svc.Suggest("scene", scenePath, core.ViewDetail, false, app.SuggestArgs{
+		Manifest: manifestPath,
+		Prefab:   "Assets/Prefabs/chair.prefab",
+		Near:     "1000",
+	})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+	}
+
+	want := "ERROR suggest supports only --view compact"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestSuggestRequiresManifestPrefabAndNear(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+
+	tests := []struct {
+		name string
+		args app.SuggestArgs
+		want string
+	}{
+		{
+			name: "manifest",
+			args: app.SuggestArgs{
+				Prefab: "Assets/Prefabs/chair.prefab",
+				Near:   "1000",
+			},
+			want: "ERROR suggest requires --manifest",
+		},
+		{
+			name: "prefab",
+			args: app.SuggestArgs{
+				Manifest: filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json"),
+				Near:     "1000",
+			},
+			want: "ERROR suggest requires --prefab",
+		},
+		{
+			name: "near",
+			args: app.SuggestArgs{
+				Manifest: filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json"),
+				Prefab:   "Assets/Prefabs/chair.prefab",
+			},
+			want: "ERROR suggest requires --near",
+		},
+	}
+
+	svc := app.New()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, code := svc.Suggest("scene", scenePath, core.ViewCompact, false, tt.args)
+			if code != 1 {
+				t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
+			}
+			if got.Body != tt.want {
+				t.Fatalf("body mismatch: got %q want %q", got.Body, tt.want)
+			}
+		})
+	}
+}
+
+func TestSuggestCompactBodyIsDeterministicOnSimpleScene(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	svc := app.New()
+	got, code := svc.Suggest("scene", scenePath, core.ViewCompact, false, app.SuggestArgs{
+		Manifest: manifestPath,
+		Prefab:   "Assets/Prefabs/chair.prefab",
+		Near:     "1000",
+	})
+	if code != 0 {
+		t.Fatalf("expected success exit code, got %d body=%q", code, got.Body)
+	}
+	if got.Status != "OK" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "OK")
+	}
+	if got.Suggest != nil {
+		t.Fatalf("Suggest payload should be nil when jsonOut=false: %#v", got.Suggest)
+	}
+
+	want := "OK manifest=" + manifestPath + " prefab=Assets/Prefabs/chair.prefab near=1000 align=floor count=4 candidates=4 clear=4 warn=0\n" +
+		"CANDIDATE rank=1 direction=east position=1.4,0,0 status=OK overlap_ids=none anchor_id=1000 anchor_name=Table_01\n" +
+		"CANDIDATE rank=2 direction=west position=-1.4,0,0 status=OK overlap_ids=none anchor_id=1000 anchor_name=Table_01\n" +
+		"CANDIDATE rank=3 direction=north position=0,0,1 status=OK overlap_ids=none anchor_id=1000 anchor_name=Table_01\n" +
+		"CANDIDATE rank=4 direction=south position=0,0,-1 status=OK overlap_ids=none anchor_id=1000 anchor_name=Table_01"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestSuggestJSONIncludesNestedSuggestPayload(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	svc := app.New()
+	got, code := svc.Suggest("scene", scenePath, core.ViewCompact, true, app.SuggestArgs{
+		Manifest: manifestPath,
+		Prefab:   "Assets/Prefabs/chair.prefab",
+		Near:     "1000",
+	})
+	if code != 0 {
+		t.Fatalf("expected success exit code, got %d body=%q", code, got.Body)
+	}
+	if got.Suggest == nil {
+		t.Fatal("expected Suggest payload for jsonOut=true")
+	}
+
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	suggestValue, ok := payload["suggest"].(map[string]any)
+	if !ok {
+		t.Fatalf("suggest payload missing or wrong type: %#v", payload["suggest"])
+	}
+	if suggestValue["manifest"] != manifestPath {
+		t.Fatalf("suggest manifest mismatch: got %#v", suggestValue["manifest"])
+	}
+	if suggestValue["prefab"] != "Assets/Prefabs/chair.prefab" {
+		t.Fatalf("suggest prefab mismatch: got %#v", suggestValue["prefab"])
+	}
+
+	anchorValue, ok := suggestValue["anchor"].(map[string]any)
+	if !ok {
+		t.Fatalf("anchor payload missing or wrong type: %#v", suggestValue["anchor"])
+	}
+	if anchorValue["id"] != float64(1000) {
+		t.Fatalf("anchor id mismatch: got %#v", anchorValue["id"])
+	}
+	if anchorValue["name"] != "Table_01" {
+		t.Fatalf("anchor name mismatch: got %#v", anchorValue["name"])
+	}
+
+	candidatesValue, ok := suggestValue["candidates"].([]any)
+	if !ok || len(candidatesValue) != 4 {
+		t.Fatalf("candidates missing or wrong count: %#v", suggestValue["candidates"])
+	}
+	firstCandidate, ok := candidatesValue[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first candidate wrong type: %#v", candidatesValue[0])
+	}
+	if firstCandidate["direction"] != "east" {
+		t.Fatalf("first candidate direction mismatch: got %#v", firstCandidate["direction"])
+	}
+	if firstCandidate["status"] != "OK" {
+		t.Fatalf("first candidate status mismatch: got %#v", firstCandidate["status"])
+	}
+}
+
+func TestSuggestWarnsWhenAllCandidatesOverlap(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join(t.TempDir(), "scene.bounds.json")
+	manifest := bounds.Manifest{
+		Scene:   "Assets/Scenes/SimpleScene.unity",
+		Source:  "editor",
+		Version: 1,
+		Objects: []bounds.ObjectBounds{
+			{
+				FileID: 1000,
+				Name:   "Table_01",
+				Bounds: bounds.AABB{Center: bounds.Vec3{0.0, 0.5, 0.0}, Size: bounds.Vec3{2.0, 1.0, 1.2}},
+			},
+			{
+				FileID: 3000,
+				Name:   "BlockEast",
+				Bounds: bounds.AABB{Center: bounds.Vec3{1.4, 0.5, 0.0}, Size: bounds.Vec3{0.8, 1.0, 0.8}},
+			},
+			{
+				FileID: 4000,
+				Name:   "BlockWest",
+				Bounds: bounds.AABB{Center: bounds.Vec3{-1.4, 0.5, 0.0}, Size: bounds.Vec3{0.8, 1.0, 0.8}},
+			},
+			{
+				FileID: 5000,
+				Name:   "BlockNorth",
+				Bounds: bounds.AABB{Center: bounds.Vec3{0.0, 0.5, 1.0}, Size: bounds.Vec3{0.8, 1.0, 0.8}},
+			},
+			{
+				FileID: 6000,
+				Name:   "BlockSouth",
+				Bounds: bounds.AABB{Center: bounds.Vec3{0.0, 0.5, -1.0}, Size: bounds.Vec3{0.8, 1.0, 0.8}},
+			},
+		},
+		Prefabs: []bounds.PrefabBounds{
+			{
+				Path:   "Assets/Prefabs/chair.prefab",
+				Bounds: bounds.AABB{Center: bounds.Vec3{0.0, 0.5, 0.0}, Size: bounds.Vec3{0.8, 1.0, 0.8}},
+			},
+		},
+	}
+	if err := bounds.Save(manifestPath, manifest); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	svc := app.New()
+	got, code := svc.Suggest("scene", scenePath, core.ViewCompact, false, app.SuggestArgs{
+		Manifest: manifestPath,
+		Prefab:   "Assets/Prefabs/chair.prefab",
+		Near:     "1000",
+	})
+	if code != 0 {
+		t.Fatalf("expected warn success exit code, got %d body=%q", code, got.Body)
+	}
+	if got.Status != "WARN" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "WARN")
+	}
+
+	want := "WARN manifest=" + manifestPath + " prefab=Assets/Prefabs/chair.prefab near=1000 align=floor count=4 candidates=4 clear=0 warn=4\n" +
+		"CANDIDATE rank=1 direction=east position=1.4,0,0 status=WARN overlap_ids=3000 anchor_id=1000 anchor_name=Table_01\n" +
+		"CANDIDATE rank=2 direction=west position=-1.4,0,0 status=WARN overlap_ids=4000 anchor_id=1000 anchor_name=Table_01\n" +
+		"CANDIDATE rank=3 direction=north position=0,0,1 status=WARN overlap_ids=5000 anchor_id=1000 anchor_name=Table_01\n" +
+		"CANDIDATE rank=4 direction=south position=0,0,-1 status=WARN overlap_ids=6000 anchor_id=1000 anchor_name=Table_01"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
 func TestSetAssetDryRunDoesNotWriteFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "enemy_config.asset")
 	content := "" +

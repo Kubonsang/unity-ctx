@@ -21,6 +21,7 @@ import (
 	"unity-ctx/internal/parser"
 	scenepatch "unity-ctx/internal/patch"
 	"unity-ctx/internal/scan"
+	suggestplan "unity-ctx/internal/suggest"
 )
 
 type Service struct {
@@ -54,14 +55,14 @@ type GetArgs struct {
 }
 
 type SetArgs struct {
-	HasID    bool
-	HasValue bool
-	ID       int64
-	Field    string
-	Value    string
-	Project  string
+	HasID     bool
+	HasValue  bool
+	ID        int64
+	Field     string
+	Value     string
+	Project   string
 	AckImpact bool
-	Write    bool
+	Write     bool
 }
 
 type IndexArgs struct {
@@ -111,6 +112,14 @@ type ImpactArgs struct {
 	Scenes  string
 }
 
+type SuggestArgs struct {
+	Manifest string
+	Prefab   string
+	Near     string
+	Count    int
+	Align    string
+}
+
 type ImpactFileHit struct {
 	Path       string  `json:"path"`
 	References int     `json:"references"`
@@ -127,6 +136,29 @@ type ImpactPayload struct {
 	MaxNestedDepth int             `json:"max_nested_depth"`
 }
 
+type SuggestAnchorPayload struct {
+	FileID int64  `json:"id"`
+	Name   string `json:"name"`
+}
+
+type SuggestCandidatePayload struct {
+	Rank       int         `json:"rank"`
+	Direction  string      `json:"direction"`
+	Position   bounds.Vec3 `json:"position"`
+	Status     string      `json:"status"`
+	OverlapIDs []int64     `json:"overlap_ids"`
+}
+
+type SuggestPayload struct {
+	Status     string                    `json:"status"`
+	Manifest   string                    `json:"manifest"`
+	PrefabPath string                    `json:"prefab"`
+	Near       SuggestAnchorPayload      `json:"anchor"`
+	Align      string                    `json:"align"`
+	Count      int                       `json:"count"`
+	Candidates []SuggestCandidatePayload `json:"candidates"`
+}
+
 type PatchResult struct {
 	SchemaVersion int `json:"schema_version,omitempty"`
 	core.Result
@@ -136,6 +168,11 @@ type PatchResult struct {
 type ImpactResult struct {
 	core.Result
 	Impact *ImpactPayload `json:"impact,omitempty"`
+}
+
+type SuggestResult struct {
+	core.Result
+	Suggest *SuggestPayload `json:"suggest,omitempty"`
 }
 
 type SetResult struct {
@@ -767,6 +804,84 @@ func (s *Service) Impact(namespace, path string, view core.View, jsonOut bool, a
 	result.Body = formatImpactBody(impactResult)
 	if jsonOut || impactResult.Status != "" {
 		result.Impact = impactPayloadFromScanResult(impactResult)
+	}
+	return result, 0
+}
+
+func (s *Service) Suggest(namespace, path string, view core.View, jsonOut bool, args SuggestArgs) (SuggestResult, int) {
+	result := SuggestResult{
+		Result: core.Result{
+			Namespace: namespace,
+			Command:   "suggest",
+			File:      path,
+			View:      view,
+		},
+	}
+
+	if namespace != "scene" {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR suggest not implemented for namespace=%s", namespace)
+		return result, 1
+	}
+	if view != core.ViewCompact {
+		result.Status = "ERROR"
+		result.Body = "ERROR suggest supports only --view compact"
+		return result, 1
+	}
+	if strings.TrimSpace(args.Manifest) == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR suggest requires --manifest"
+		return result, 1
+	}
+	if strings.TrimSpace(args.Prefab) == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR suggest requires --prefab"
+		return result, 1
+	}
+	if strings.TrimSpace(args.Near) == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR suggest requires --near"
+		return result, 1
+	}
+
+	count := args.Count
+	if count <= 0 {
+		count = 4
+	}
+	align := strings.TrimSpace(args.Align)
+	if align == "" {
+		align = string(suggestplan.AlignFloor)
+	}
+	if align != string(suggestplan.AlignFloor) && align != string(suggestplan.AlignGrid) {
+		result.Status = "ERROR"
+		result.Body = "ERROR suggest supports only --align floor|grid"
+		return result, 1
+	}
+
+	manifest, err := bounds.Load(args.Manifest)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	plan, err := suggestplan.Plan(suggestplan.Request{
+		Manifest: manifest,
+		Prefab:   args.Prefab,
+		Near:     args.Near,
+		Count:    count,
+		Align:    suggestplan.Align(align),
+	})
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	result.Status = plan.Status
+	result.Body = formatSuggestBody(args.Manifest, args.Prefab, plan)
+	if jsonOut {
+		result.Suggest = suggestPayloadFromPlan(args.Manifest, plan)
 	}
 	return result, 0
 }
@@ -1542,6 +1657,45 @@ func formatImpactBody(result impactscan.Result) string {
 	return strings.Join(lines, "\n")
 }
 
+func formatSuggestBody(manifestPath, prefabPath string, plan suggestplan.Result) string {
+	clearCount := 0
+	for _, candidate := range plan.Candidates {
+		if candidate.Status == "OK" {
+			clearCount++
+		}
+	}
+
+	lines := []string{
+		fmt.Sprintf(
+			"%s manifest=%s prefab=%s near=%d align=%s count=%d candidates=%d clear=%d warn=%d",
+			plan.Status,
+			manifestPath,
+			prefabPath,
+			plan.Near.FileID,
+			plan.Align,
+			plan.Count,
+			len(plan.Candidates),
+			clearCount,
+			len(plan.Candidates)-clearCount,
+		),
+	}
+
+	for _, candidate := range plan.Candidates {
+		lines = append(lines, fmt.Sprintf(
+			"CANDIDATE rank=%d direction=%s position=%s status=%s overlap_ids=%s anchor_id=%d anchor_name=%s",
+			candidate.Rank,
+			candidate.Direction,
+			formatVec3(candidate.Position),
+			candidate.Status,
+			formatPatchIDList(candidate.OverlapIDs),
+			plan.Near.FileID,
+			plan.Near.Name,
+		))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
 func formatPrefabSetBody(prefix, backupPath string, plan mutation.PrefabSetResult, impactResult impactscan.Result, verified int, ackRequired bool) string {
 	summary := prefix
 	if backupPath != "" {
@@ -1647,6 +1801,32 @@ func impactPayloadFromScanResult(result impactscan.Result) *ImpactPayload {
 	}
 }
 
+func suggestPayloadFromPlan(manifestPath string, plan suggestplan.Result) *SuggestPayload {
+	candidates := make([]SuggestCandidatePayload, 0, len(plan.Candidates))
+	for _, candidate := range plan.Candidates {
+		candidates = append(candidates, SuggestCandidatePayload{
+			Rank:       candidate.Rank,
+			Direction:  candidate.Direction,
+			Position:   candidate.Position,
+			Status:     candidate.Status,
+			OverlapIDs: append([]int64(nil), candidate.OverlapIDs...),
+		})
+	}
+
+	return &SuggestPayload{
+		Status:     plan.Status,
+		Manifest:   manifestPath,
+		PrefabPath: plan.PrefabPath,
+		Near: SuggestAnchorPayload{
+			FileID: plan.Near.FileID,
+			Name:   plan.Near.Name,
+		},
+		Align:      string(plan.Align),
+		Count:      plan.Count,
+		Candidates: candidates,
+	}
+}
+
 func impactFileHitsFromScan(hits []impactscan.FileHit) []ImpactFileHit {
 	if len(hits) == 0 {
 		return nil
@@ -1740,6 +1920,15 @@ func formatAppendOps(appends []scenepatch.AppendIntent) string {
 }
 
 func formatPosition(position [3]float64) string {
+	parts := [3]string{
+		strconv.FormatFloat(position[0], 'f', -1, 64),
+		strconv.FormatFloat(position[1], 'f', -1, 64),
+		strconv.FormatFloat(position[2], 'f', -1, 64),
+	}
+	return strings.Join(parts[:], ",")
+}
+
+func formatVec3(position bounds.Vec3) string {
 	parts := [3]string{
 		strconv.FormatFloat(position[0], 'f', -1, 64),
 		strconv.FormatFloat(position[1], 'f', -1, 64),
