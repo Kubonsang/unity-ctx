@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -73,6 +74,35 @@ func Load(path string) (Manifest, error) {
 	}
 
 	return manifest, nil
+}
+
+func Save(path string, manifest Manifest) error {
+	if err := validateManifest(manifest); err != nil {
+		return err
+	}
+
+	normalized := Manifest{
+		Scene:   manifest.Scene,
+		Source:  manifest.Source,
+		Version: manifest.Version,
+		Objects: append([]ObjectBounds(nil), manifest.Objects...),
+		Prefabs: append([]PrefabBounds(nil), manifest.Prefabs...),
+	}
+
+	sort.Slice(normalized.Objects, func(i, j int) bool {
+		return normalized.Objects[i].FileID < normalized.Objects[j].FileID
+	})
+	sort.Slice(normalized.Prefabs, func(i, j int) bool {
+		return normalized.Prefabs[i].Path < normalized.Prefabs[j].Path
+	})
+
+	data, err := json.MarshalIndent(normalized, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	data = append(data, '\n')
+	return os.WriteFile(path, data, 0o644)
 }
 
 func decodeManifest(data []byte) (Manifest, error) {
@@ -259,6 +289,9 @@ func validateManifest(manifest Manifest) error {
 	case manifest.Version != manifestVersion:
 		return fmt.Errorf("invalid manifest: version must be %d", manifestVersion)
 	}
+	if err := validateSceneAssetPath(manifest.Scene); err != nil {
+		return err
+	}
 
 	seenFileIDs := make(map[int64]struct{}, len(manifest.Objects))
 	for i, object := range manifest.Objects {
@@ -277,8 +310,8 @@ func validateManifest(manifest Manifest) error {
 
 	seenPaths := make(map[string]struct{}, len(manifest.Prefabs))
 	for i, prefab := range manifest.Prefabs {
-		if prefab.Path == "" {
-			return fmt.Errorf("invalid manifest: prefabs[%d].path must be non-empty", i)
+		if err := validatePrefabAssetPath(prefab.Path, i); err != nil {
+			return err
 		}
 		if _, ok := seenPaths[prefab.Path]; ok {
 			return fmt.Errorf("invalid manifest: duplicate prefabs.path=%q", prefab.Path)
@@ -301,4 +334,32 @@ func validateSize(size Vec3, path string) error {
 	}
 
 	return nil
+}
+
+func validateSceneAssetPath(path string) error {
+	path = strings.TrimSpace(path)
+	switch {
+	case path == "":
+		return fmt.Errorf("invalid manifest: scene must be an Assets path ending in .unity")
+	case !strings.HasPrefix(path, "Assets/"):
+		return fmt.Errorf("invalid manifest: scene must be an Assets path ending in .unity")
+	case !strings.HasSuffix(path, ".unity"):
+		return fmt.Errorf("invalid manifest: scene must be an Assets path ending in .unity")
+	default:
+		return nil
+	}
+}
+
+func validatePrefabAssetPath(path string, index int) error {
+	path = strings.TrimSpace(path)
+	switch {
+	case path == "":
+		return fmt.Errorf("invalid manifest: prefabs[%d].path must be an Assets path ending in .prefab", index)
+	case !strings.HasPrefix(path, "Assets/"):
+		return fmt.Errorf("invalid manifest: prefabs[%d].path must be an Assets path ending in .prefab", index)
+	case !strings.HasSuffix(path, ".prefab"):
+		return fmt.Errorf("invalid manifest: prefabs[%d].path must be an Assets path ending in .prefab", index)
+	default:
+		return nil
+	}
 }

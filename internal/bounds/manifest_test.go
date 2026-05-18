@@ -3,6 +3,7 @@ package bounds
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -209,6 +210,115 @@ func TestLoadRejectsMalformedVectorAndInvalidSize(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsInvalidPathShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "scene must be unity asset path",
+			body: `{
+  "scene": "Packages/Scenes/SimpleScene.unity",
+  "source": "editor",
+  "version": 1,
+  "objects": [],
+  "prefabs": []
+}
+`,
+			want: "invalid manifest: scene must be an Assets path ending in .unity",
+		},
+		{
+			name: "prefab must be prefab asset path",
+			body: `{
+  "scene": "Assets/Scenes/SimpleScene.unity",
+  "source": "editor",
+  "version": 1,
+  "objects": [],
+  "prefabs": [
+    {
+      "path": "Assets/Prefabs/chair.unity",
+      "bounds": {
+        "center": [0.0, 0.5, 0.0],
+        "size": [0.8, 1.0, 0.8]
+      }
+    }
+  ]
+}
+`,
+			want: "invalid manifest: prefabs[0].path must be an Assets path ending in .prefab",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeManifestFile(t, tc.body)
+
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("expected Load() to reject invalid path shape")
+			}
+
+			if err.Error() != tc.want {
+				t.Fatalf("error mismatch: got %q want %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestSaveRejectsInvalidPathShapes(t *testing.T) {
+	tests := []struct {
+		name     string
+		manifest Manifest
+		want     string
+	}{
+		{
+			name: "scene must be unity asset path",
+			manifest: Manifest{
+				Scene:   "Scenes/SimpleScene.unity",
+				Source:  "editor",
+				Version: 1,
+				Objects: []ObjectBounds{},
+				Prefabs: []PrefabBounds{},
+			},
+			want: "invalid manifest: scene must be an Assets path ending in .unity",
+		},
+		{
+			name: "prefab must be prefab asset path",
+			manifest: Manifest{
+				Scene:   "Assets/Scenes/SimpleScene.unity",
+				Source:  "editor",
+				Version: 1,
+				Objects: []ObjectBounds{},
+				Prefabs: []PrefabBounds{
+					{
+						Path: "Packages/Prefabs/chair.prefab",
+						Bounds: AABB{
+							Center: Vec3{0, 0.5, 0},
+							Size:   Vec3{0.8, 1, 0.8},
+						},
+					},
+				},
+			},
+			want: "invalid manifest: prefabs[0].path must be an Assets path ending in .prefab",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "scene.bounds.json")
+			err := Save(path, tc.manifest)
+			if err == nil {
+				t.Fatal("expected Save() to reject invalid path shape")
+			}
+
+			if err.Error() != tc.want {
+				t.Fatalf("error mismatch: got %q want %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsMissingTopLevelCollections(t *testing.T) {
 	tests := []struct {
 		name string
@@ -367,6 +477,84 @@ func TestLoadRejectsUnknownNestedFields(t *testing.T) {
 				t.Fatalf("error mismatch: got %q want %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+func TestManifestSaveRoundTripPreservesDeterministicOrdering(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scene.bounds.json")
+	manifest := Manifest{
+		Scene:   "Assets/Scenes/SimpleScene.unity",
+		Source:  "editor",
+		Version: 1,
+		Objects: []ObjectBounds{
+			{
+				FileID: 2000,
+				Name:   "Chair_01",
+				Bounds: AABB{
+					Center: Vec3{2.1, 0.5, -1.25},
+					Size:   Vec3{0.8, 1.0, 0.8},
+				},
+			},
+			{
+				FileID: 1000,
+				Name:   "Table_01",
+				Bounds: AABB{
+					Center: Vec3{5.0, 0.5, 3.0},
+					Size:   Vec3{2.0, 1.0, 1.0},
+				},
+			},
+		},
+		Prefabs: []PrefabBounds{
+			{
+				Path: "Assets/Prefabs/table.prefab",
+				Bounds: AABB{
+					Center: Vec3{0, 0.5, 0},
+					Size:   Vec3{2, 1, 1},
+				},
+			},
+			{
+				Path: "Assets/Prefabs/chair.prefab",
+				Bounds: AABB{
+					Center: Vec3{0, 0.5, 0},
+					Size:   Vec3{0.8, 1, 0.8},
+				},
+			},
+		},
+	}
+
+	if err := Save(path, manifest); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if got.Scene != manifest.Scene {
+		t.Fatalf("scene mismatch: got %q want %q", got.Scene, manifest.Scene)
+	}
+	if len(got.Objects) != 2 || got.Objects[0].FileID != 1000 || got.Objects[1].FileID != 2000 {
+		t.Fatalf("saved objects not sorted deterministically: %#v", got.Objects)
+	}
+	if len(got.Prefabs) != 2 || got.Prefabs[0].Path != "Assets/Prefabs/chair.prefab" || got.Prefabs[1].Path != "Assets/Prefabs/table.prefab" {
+		t.Fatalf("saved prefabs not sorted deterministically: %#v", got.Prefabs)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	text := string(data)
+	if !strings.HasSuffix(text, "\n") {
+		t.Fatalf("saved manifest missing trailing newline: %q", text)
+	}
+	if strings.Index(text, `"fileID": 1000`) > strings.Index(text, `"fileID": 2000`) {
+		t.Fatalf("saved object order is not deterministic: %s", text)
+	}
+	if strings.Index(text, `"path": "Assets/Prefabs/chair.prefab"`) > strings.Index(text, `"path": "Assets/Prefabs/table.prefab"`) {
+		t.Fatalf("saved prefab order is not deterministic: %s", text)
 	}
 }
 

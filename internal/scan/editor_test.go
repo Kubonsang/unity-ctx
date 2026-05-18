@@ -1,8 +1,12 @@
 package scan
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"unity-ctx/internal/bounds"
@@ -382,6 +386,180 @@ func TestBuildManifestFromEditorPayloadValidatesBeforeSorting(t *testing.T) {
 	}
 
 	want := "invalid editor export: objects[1].bounds.size[1] must be > 0"
+	if err.Error() != want {
+		t.Fatalf("error mismatch: got %q want %q", err.Error(), want)
+	}
+}
+
+func TestResolveSceneAssetPathMapsProjectSceneToAssetPath(t *testing.T) {
+	project := filepath.Join(t.TempDir(), "MyUnityProject")
+	scene := filepath.Join(project, "Assets", "Scenes", "SimpleScene.unity")
+	if err := os.MkdirAll(filepath.Dir(scene), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(scene, []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	got, err := ResolveSceneAssetPath(project, scene)
+	if err != nil {
+		t.Fatalf("ResolveSceneAssetPath() error = %v", err)
+	}
+
+	if got != "Assets/Scenes/SimpleScene.unity" {
+		t.Fatalf("asset path mismatch: got %q want %q", got, "Assets/Scenes/SimpleScene.unity")
+	}
+}
+
+func TestResolveSceneAssetPathRejectsOutsideProject(t *testing.T) {
+	project := filepath.Join(t.TempDir(), "MyUnityProject")
+	scene := filepath.Join(t.TempDir(), "OutsideScene.unity")
+	assetsRoot := filepath.Join(project, "Assets")
+	if err := os.MkdirAll(assetsRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(scene, []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := ResolveSceneAssetPath(project, scene)
+	if err == nil {
+		t.Fatal("ResolveSceneAssetPath() error = nil, want outside-project error")
+	}
+
+	want := "scene must be under project Assets/ file=" + filepath.Clean(scene) + " project=" + filepath.Clean(project)
+	if err.Error() != want {
+		t.Fatalf("error mismatch: got %q want %q", err.Error(), want)
+	}
+}
+
+func TestResolveSceneAssetPathRejectsMissingScene(t *testing.T) {
+	project := filepath.Join(t.TempDir(), "MyUnityProject")
+	assetsRoot := filepath.Join(project, "Assets")
+	scene := filepath.Join(assetsRoot, "Scenes", "MissingScene.unity")
+	if err := os.MkdirAll(assetsRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	_, err := ResolveSceneAssetPath(project, scene)
+	if err == nil {
+		t.Fatal("ResolveSceneAssetPath() error = nil, want missing scene error")
+	}
+
+	want := "scene file not found: " + filepath.Clean(scene)
+	if err.Error() != want {
+		t.Fatalf("error mismatch: got %q want %q", err.Error(), want)
+	}
+}
+
+func TestResolveSceneAssetPathRejectsMissingAssetsRoot(t *testing.T) {
+	project := filepath.Join(t.TempDir(), "MyUnityProject")
+	scene := filepath.Join(project, "Assets", "Scenes", "SimpleScene.unity")
+	if err := os.MkdirAll(filepath.Dir(scene), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(scene, []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(project, "Assets")); err != nil {
+		t.Fatalf("RemoveAll() error = %v", err)
+	}
+
+	_, err := ResolveSceneAssetPath(project, scene)
+	if err == nil {
+		t.Fatal("ResolveSceneAssetPath() error = nil, want missing Assets root error")
+	}
+
+	want := "project Assets root not found: " + filepath.Clean(filepath.Join(project, "Assets"))
+	if err.Error() != want {
+		t.Fatalf("error mismatch: got %q want %q", err.Error(), want)
+	}
+}
+
+func TestNormalizePrefabListTrimsDedupesAndSorts(t *testing.T) {
+	raw := " Assets/Prefabs/table.prefab,Assets/Prefabs/chair.prefab,, Assets/Prefabs/table.prefab , Assets/Prefabs/bench.prefab "
+
+	got := NormalizePrefabList(raw)
+	want := []string{
+		"Assets/Prefabs/bench.prefab",
+		"Assets/Prefabs/chair.prefab",
+		"Assets/Prefabs/table.prefab",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("NormalizePrefabList() mismatch: got %#v want %#v", got, want)
+	}
+}
+
+func TestUnityCLIRunnerRunEditorScanBuildsExpectedInvocation(t *testing.T) {
+	restore := unityCLIExec
+	defer func() {
+		unityCLIExec = restore
+	}()
+
+	var gotName string
+	var gotArgs []string
+	wantOutput := []byte(`{"scene":"Assets/Scenes/SimpleScene.unity","objects":[],"prefabs":[]}`)
+	unityCLIExec = func(name string, args ...string) ([]byte, error) {
+		gotName = name
+		gotArgs = append([]string(nil), args...)
+		return wantOutput, nil
+	}
+
+	runner := UnityCLIRunner{}
+	project := filepath.Join(t.TempDir(), "MyUnityProject")
+	scene := "Assets/Scenes/SimpleScene.unity"
+	prefabs := []string{"Assets/Prefabs/table.prefab", "Assets/Prefabs/chair.prefab"}
+
+	got, err := runner.RunEditorScan(project, scene, prefabs)
+	if err != nil {
+		t.Fatalf("RunEditorScan() error = %v", err)
+	}
+	if !bytes.Equal(got, wantOutput) {
+		t.Fatalf("RunEditorScan() output mismatch: got %q want %q", string(got), string(wantOutput))
+	}
+	if gotName != "unity-cli" {
+		t.Fatalf("command name mismatch: got %q want %q", gotName, "unity-cli")
+	}
+	if len(gotArgs) < 5 {
+		t.Fatalf("expected unity-cli args, got %#v", gotArgs)
+	}
+	if gotArgs[0] != "exec" {
+		t.Fatalf("first arg mismatch: got %q want %q", gotArgs[0], "exec")
+	}
+	if gotArgs[2] != "--project" || gotArgs[3] != filepath.Clean(project) {
+		t.Fatalf("project args mismatch: got %#v", gotArgs)
+	}
+	if gotArgs[4] != "--usings" {
+		t.Fatalf("usings flag mismatch: got %#v", gotArgs)
+	}
+	if !strings.Contains(gotArgs[1], `var scenePath = "Assets/Scenes/SimpleScene.unity";`) {
+		t.Fatalf("snippet missing scene path: %q", gotArgs[1])
+	}
+	if !strings.Contains(gotArgs[1], `"Assets/Prefabs/chair.prefab"`) || !strings.Contains(gotArgs[1], `"Assets/Prefabs/table.prefab"`) {
+		t.Fatalf("snippet missing prefab paths: %q", gotArgs[1])
+	}
+	if strings.Index(gotArgs[1], `"Assets/Prefabs/chair.prefab"`) > strings.Index(gotArgs[1], `"Assets/Prefabs/table.prefab"`) {
+		t.Fatalf("prefab order in snippet is not sorted: %q", gotArgs[1])
+	}
+}
+
+func TestUnityCLIRunnerRunEditorScanWrapsCommandError(t *testing.T) {
+	restore := unityCLIExec
+	defer func() {
+		unityCLIExec = restore
+	}()
+
+	unityCLIExec = func(name string, args ...string) ([]byte, error) {
+		return []byte("boom"), errors.New("exit status 1")
+	}
+
+	runner := UnityCLIRunner{}
+	_, err := runner.RunEditorScan("/tmp/MyUnityProject", "Assets/Scenes/SimpleScene.unity", nil)
+	if err == nil {
+		t.Fatal("RunEditorScan() error = nil, want wrapped command error")
+	}
+
+	want := "unity-cli exec failed: exit status 1: boom"
 	if err.Error() != want {
 		t.Fatalf("error mismatch: got %q want %q", err.Error(), want)
 	}

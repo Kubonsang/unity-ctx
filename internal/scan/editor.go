@@ -6,13 +6,29 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"unity-ctx/internal/bounds"
 )
 
 const editorManifestVersion = 1
+
+const unityCLIUsings = "System,System.Linq,UnityEditor,UnityEditor.SceneManagement,UnityEngine"
+
+type Runner interface {
+	RunEditorScan(projectPath, sceneAssetPath string, prefabPaths []string) ([]byte, error)
+}
+
+type UnityCLIRunner struct{}
+
+var unityCLIExec = func(name string, args ...string) ([]byte, error) {
+	cmd := exec.Command(name, args...)
+	return cmd.CombinedOutput()
+}
 
 type EditorPayload struct {
 	Scene   string               `json:"scene"`
@@ -50,6 +66,91 @@ type rawEditorPrefab struct {
 	Path   string          `json:"path"`
 	Center json.RawMessage `json:"center"`
 	Size   json.RawMessage `json:"size"`
+}
+
+func (r UnityCLIRunner) RunEditorScan(projectPath, sceneAssetPath string, prefabPaths []string) ([]byte, error) {
+	projectPath = filepath.Clean(projectPath)
+	sceneAssetPath = filepath.ToSlash(strings.TrimSpace(sceneAssetPath))
+	prefabPaths = append([]string(nil), prefabPaths...)
+	sort.Strings(prefabPaths)
+
+	args := []string{
+		"exec",
+		buildEditorScanSnippet(sceneAssetPath, prefabPaths),
+		"--project",
+		projectPath,
+		"--usings",
+		unityCLIUsings,
+	}
+
+	output, err := unityCLIExec("unity-cli", args...)
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			return nil, fmt.Errorf("unity-cli exec failed: %w", err)
+		}
+		return nil, fmt.Errorf("unity-cli exec failed: %w: %s", err, message)
+	}
+
+	return output, nil
+}
+
+func ResolveSceneAssetPath(projectPath, scenePath string) (string, error) {
+	projectRoot, err := filepath.Abs(projectPath)
+	if err != nil {
+		return "", err
+	}
+	projectRoot = filepath.Clean(projectRoot)
+
+	assetsRoot := filepath.Join(projectRoot, "Assets")
+	if info, err := os.Stat(assetsRoot); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("project Assets root not found: %s", assetsRoot)
+	}
+
+	sceneRoot, err := filepath.Abs(scenePath)
+	if err != nil {
+		return "", err
+	}
+	sceneRoot = filepath.Clean(sceneRoot)
+	if info, err := os.Stat(sceneRoot); err != nil || info.IsDir() {
+		return "", fmt.Errorf("scene file not found: %s", sceneRoot)
+	}
+
+	relative, err := filepath.Rel(assetsRoot, sceneRoot)
+	if err != nil {
+		return "", fmt.Errorf("scene must be under project Assets/ file=%s project=%s", sceneRoot, projectRoot)
+	}
+	if relative == "." || relative == "" || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("scene must be under project Assets/ file=%s project=%s", sceneRoot, projectRoot)
+	}
+	if filepath.Ext(relative) != ".unity" {
+		return "", fmt.Errorf("scene must be under project Assets/ file=%s project=%s", sceneRoot, projectRoot)
+	}
+
+	return filepath.ToSlash(filepath.Join("Assets", relative)), nil
+}
+
+func NormalizePrefabList(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	prefabs := make([]string, 0)
+	for _, entry := range strings.Split(raw, ",") {
+		path := strings.TrimSpace(entry)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		prefabs = append(prefabs, path)
+	}
+
+	sort.Strings(prefabs)
+	return prefabs
 }
 
 func LoadEditorPayload(path string) (EditorPayload, error) {
@@ -314,4 +415,66 @@ func validateEditorPrefabPath(path string, index int) error {
 	default:
 		return nil
 	}
+}
+
+func buildEditorScanSnippet(sceneAssetPath string, prefabPaths []string) string {
+	return fmt.Sprintf(
+		`var scenePath = %s;
+var prefabPaths = new [] { %s };
+var openedScene = EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Single);
+var sceneObjects = UnityEngine.Object.FindObjectsByType<Renderer>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+	.Where(renderer => renderer != null && renderer.gameObject.scene.path == openedScene.path)
+	.Select(renderer => new {
+		fileID = Unsupported.GetLocalIdentifierInFileForPersistentObject(renderer.gameObject),
+		name = renderer.gameObject.name,
+		center = new [] { (double) renderer.bounds.center.x, (double) renderer.bounds.center.y, (double) renderer.bounds.center.z },
+		size = new [] { (double) renderer.bounds.size.x, (double) renderer.bounds.size.y, (double) renderer.bounds.size.z },
+	})
+	.Where(item => item.fileID > 0)
+	.GroupBy(item => item.fileID)
+	.Select(group => group.First())
+	.OrderBy(item => item.fileID)
+	.ToArray();
+var prefabObjects = prefabPaths
+	.Select(path => {
+		var prefabRoot = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+		if (prefabRoot == null) {
+			throw new Exception("prefab not found: " + path);
+		}
+		var renderers = prefabRoot.GetComponentsInChildren<Renderer>(true);
+		if (renderers.Length == 0) {
+			throw new Exception("prefab has no renderer bounds: " + path);
+		}
+		var prefabBounds = renderers[0].bounds;
+		for (var i = 1; i < renderers.Length; i++) {
+			prefabBounds.Encapsulate(renderers[i].bounds);
+		}
+		return new {
+			path = path,
+			center = new [] { (double) prefabBounds.center.x, (double) prefabBounds.center.y, (double) prefabBounds.center.z },
+			size = new [] { (double) prefabBounds.size.x, (double) prefabBounds.size.y, (double) prefabBounds.size.z },
+		};
+	})
+	.OrderBy(item => item.path)
+	.ToArray();
+return new {
+	scene = scenePath,
+	objects = sceneObjects,
+	prefabs = prefabObjects,
+};`,
+		strconv.Quote(sceneAssetPath),
+		joinQuotedCSharpStrings(prefabPaths),
+	)
+}
+
+func joinQuotedCSharpStrings(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, strconv.Quote(value))
+	}
+	return strings.Join(quoted, ", ")
 }
