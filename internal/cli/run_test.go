@@ -1625,6 +1625,179 @@ func TestSetJSONReturnsResultEnvelope(t *testing.T) {
 	}
 }
 
+func TestPrefabSetRequiresProject(t *testing.T) {
+	result := runCLI(
+		t,
+		"prefab",
+		"set",
+		"testdata/impact/project/Assets/Prefabs/Enemy.prefab",
+		"--id",
+		"11400000",
+		"--field",
+		"moveSpeed",
+		"--value",
+		"4.0",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+	if result.stderr != "ERROR set requires --project\n" {
+		t.Fatalf("stderr mismatch: got %q", result.stderr)
+	}
+}
+
+func TestPrefabSetRequiresID(t *testing.T) {
+	project := copyImpactProjectToTemp(t)
+	target := filepath.Join(project, "Assets", "Prefabs", "Enemy.prefab")
+	writePrefabSetProjectTarget(t, target, "fake_enemy_guid")
+
+	result := runCLI(
+		t,
+		"prefab",
+		"set",
+		target,
+		"--project",
+		project,
+		"--field",
+		"moveSpeed",
+		"--value",
+		"4.0",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+	if result.stderr != "ERROR set requires --id\n" {
+		t.Fatalf("stderr mismatch: got %q", result.stderr)
+	}
+}
+
+func TestPrefabSetRejectsIrrelevantFlags(t *testing.T) {
+	project := copyImpactProjectToTemp(t)
+	target := filepath.Join(project, "Assets", "Prefabs", "Enemy.prefab")
+	writePrefabSetProjectTarget(t, target, "fake_enemy_guid")
+
+	result := runCLI(
+		t,
+		"prefab",
+		"set",
+		target,
+		"--project",
+		project,
+		"--id",
+		"11400000",
+		"--field",
+		"moveSpeed",
+		"--value",
+		"4.0",
+		"--component",
+		"NavMeshAgent",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+	want := "ERROR set does not accept --name, --type, --component, --out, --task, --focus, --max-tokens, --scenes, --mode, --prefabs, --manifest, --prefab, --position, --op, --prefab-guid, or --patch\n"
+	if result.stderr != want {
+		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestPrefabSetDryRunReturnsImpactSummary(t *testing.T) {
+	project := copyImpactProjectToTemp(t)
+	target := filepath.Join(project, "Assets", "Prefabs", "Enemy.prefab")
+	writePrefabSetProjectTarget(t, target, "fake_enemy_guid")
+
+	result := runCLI(
+		t,
+		"prefab",
+		"set",
+		target,
+		"--project",
+		project,
+		"--id",
+		"11400000",
+		"--field",
+		"moveSpeed",
+		"--value",
+		"4.0",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q", result.exitCode, result.stderr)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+	want := "DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 ack_required=1\n" +
+		"SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000\n" +
+		"PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestPrefabSetJSONReturnsEnvelopeAndImpactPayload(t *testing.T) {
+	project := copyImpactProjectToTemp(t)
+	target := filepath.Join(project, "Assets", "Prefabs", "Enemy.prefab")
+	writePrefabSetProjectTarget(t, target, "fake_enemy_guid")
+
+	result := runCLI(
+		t,
+		"prefab",
+		"set",
+		target,
+		"--project",
+		project,
+		"--id",
+		"11400000",
+		"--field",
+		"moveSpeed",
+		"--value",
+		"4.0",
+		"--json",
+	)
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q", result.exitCode, result.stderr)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+
+	var got struct {
+		Status    string `json:"status"`
+		Namespace string `json:"namespace"`
+		Command   string `json:"command"`
+		View      string `json:"view"`
+		Impact    struct {
+			Status         string `json:"status"`
+			PrefabPath     string `json:"prefab_path"`
+			PrefabGUID     string `json:"prefab_guid"`
+			DepthLimitHit  bool   `json:"depth_limit_hit"`
+			MaxNestedDepth int    `json:"max_nested_depth"`
+		} `json:"impact"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &got); err != nil {
+		t.Fatalf("parse stdout json: %v\nstdout=%q", err, result.stdout)
+	}
+	if got.Status != "OK" || got.Namespace != "prefab" || got.Command != "set" || got.View != "compact" {
+		t.Fatalf("envelope mismatch: %#v", got)
+	}
+	if got.Impact.PrefabGUID != "fake_enemy_guid" || got.Impact.PrefabPath != "Assets/Prefabs/Enemy.prefab" {
+		t.Fatalf("impact payload mismatch: %#v", got.Impact)
+	}
+}
+
 func TestGetRejectsMissingField(t *testing.T) {
 	result := runCLI(
 		t,
@@ -2752,6 +2925,40 @@ func TestNonSetCommandsRejectValueFlag(t *testing.T) {
 	}
 }
 
+func TestNonSetCommandsRejectAckImpactFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "summarize",
+			args: []string{"scene", "summarize", "testdata/scenes/simple_scene.unity", "--ack-impact"},
+		},
+		{
+			name: "impact",
+			args: []string{"prefab", "impact", "testdata/impact/project/Assets/Prefabs/Enemy.prefab", "--project", "testdata/impact/project", "--ack-impact"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runCLI(t, tc.args...)
+
+			if result.exitCode != 2 {
+				t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+			}
+			if result.stdout != "" {
+				t.Fatalf("expected empty stdout, got %q", result.stdout)
+			}
+
+			want := fmt.Sprintf("ERROR %s does not accept --ack-impact\n", tc.name)
+			if result.stderr != want {
+				t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+			}
+		})
+	}
+}
+
 func TestSummarizeRejectsOutFlag(t *testing.T) {
 	result := runCLI(
 		t,
@@ -2888,6 +3095,62 @@ func fakeUnityCLIPathEnv(t *testing.T, output string) string {
 	}
 
 	return "PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+}
+
+func copyImpactProjectToTemp(t *testing.T) string {
+	t.Helper()
+
+	source := filepath.Join(repoRoot(t), "testdata", "impact", "project")
+	dest := filepath.Join(t.TempDir(), "project")
+	if err := filepath.Walk(source, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dest, relative)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode())
+	}); err != nil {
+		t.Fatalf("copy impact project: %v", err)
+	}
+	return dest
+}
+
+func writePrefabSetProjectTarget(t *testing.T, prefabPath, guid string) {
+	t.Helper()
+
+	prefab := "" +
+		"%YAML 1.1\n" +
+		"%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!1 &1000\n" +
+		"GameObject:\n" +
+		"  m_Name: Enemy\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_GameObject: {fileID: 1000}\n" +
+		"  m_Script: {fileID: 11500000, guid: fake_enemy_controller_guid, type: 3}\n" +
+		"  moveSpeed: 3.5\n"
+	if err := os.WriteFile(prefabPath, []byte(prefab), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", prefabPath, err)
+	}
+
+	meta := "" +
+		"fileFormatVersion: 2\n" +
+		"guid: " + guid + "\n" +
+		"PrefabImporter:\n" +
+		"  externalObjects: {}\n"
+	if err := os.WriteFile(prefabPath+".meta", []byte(meta), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s.meta) error = %v", prefabPath, err)
+	}
 }
 
 func buildCLI(t *testing.T) string {

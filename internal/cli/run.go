@@ -48,6 +48,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	focus := flagSet.String("focus", "", "")
 	maxTokens := flagSet.Int("max-tokens", 256, "")
 	writeFlag := flagSet.Bool("write", false, "")
+	ackImpact := flagSet.Bool("ack-impact", false, "")
 	mode := flagSet.String("mode", "", "")
 	project := flagSet.String("project", "", "")
 	scenes := flagSet.String("scenes", "", "")
@@ -95,12 +96,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --prefab-guid\n", command)
 		return 2
 	}
-	if command != "scan" && command != "impact" && anyFlagVisited(seenFlags, "mode", "project", "scenes", "prefabs") {
+	if command != "scan" && command != "impact" && !(command == "set" && namespace == "prefab") && anyFlagVisited(seenFlags, "mode", "project", "scenes", "prefabs") {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --mode, --project, --scenes, or --prefabs\n", command)
 		return 2
 	}
 	if command != "diff" && command != "apply" && seenFlags["patch"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --patch\n", command)
+		return 2
+	}
+	if command != "set" && seenFlags["ack-impact"] {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --ack-impact\n", command)
 		return 2
 	}
 
@@ -205,12 +210,28 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = io.WriteString(stderr, "ERROR get does not accept --task, --focus, or --max-tokens\n")
 		return 2
 	}
-	if command == "set" && namespace != "asset" {
+	if command == "set" && namespace != "asset" && namespace != "prefab" {
 		_, _ = fmt.Fprintf(stderr, "ERROR set not implemented for namespace=%s\n", namespace)
 		return 2
 	}
-	if command == "set" && anyFlagVisited(seenFlags, "name", "type", "component", "out", "task", "focus", "max-tokens") {
+	if command == "set" && namespace == "asset" && anyFlagVisited(seenFlags, "name", "type", "component", "out", "task", "focus", "max-tokens") {
 		_, _ = io.WriteString(stderr, "ERROR set does not accept --name, --type, --component, --out, --task, --focus, or --max-tokens\n")
+		return 2
+	}
+	if command == "set" && namespace == "asset" && seenFlags["ack-impact"] {
+		_, _ = io.WriteString(stderr, "ERROR set does not accept --ack-impact\n")
+		return 2
+	}
+	if command == "set" && namespace == "prefab" && anyFlagVisited(seenFlags, "name", "type", "component", "out", "task", "focus", "max-tokens", "scenes", "mode", "prefabs", "manifest", "prefab", "position", "op", "prefab-guid", "patch") {
+		_, _ = io.WriteString(stderr, "ERROR set does not accept --name, --type, --component, --out, --task, --focus, --max-tokens, --scenes, --mode, --prefabs, --manifest, --prefab, --position, --op, --prefab-guid, or --patch\n")
+		return 2
+	}
+	if command == "set" && namespace == "prefab" && strings.TrimSpace(*project) == "" {
+		_, _ = io.WriteString(stderr, "ERROR set requires --project\n")
+		return 2
+	}
+	if command == "set" && namespace == "prefab" && !seenFlags["id"] {
+		_, _ = io.WriteString(stderr, "ERROR set requires --id\n")
 		return 2
 	}
 	if command == "set" && strings.TrimSpace(*field) == "" {
@@ -560,14 +581,27 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			Field:     *field,
 		})
 	case "set":
-		result, exitCode = service.Set(namespace, file, selectedView, *jsonOutput, app.SetArgs{
+		setResult, setExitCode := service.Set(namespace, file, selectedView, *jsonOutput, app.SetArgs{
 			HasID:    seenFlags["id"],
 			HasValue: seenFlags["value"],
 			ID:       *fileID,
 			Field:    *field,
 			Value:    *value,
+			Project:  *project,
+			AckImpact: *ackImpact,
 			Write:    *writeFlag,
 		})
+		if *jsonOutput {
+			encoder := json.NewEncoder(stdout)
+			encoder.SetEscapeHTML(false)
+			if err := encoder.Encode(setResult); err != nil {
+				_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
+				return 2
+			}
+			return setExitCode
+		}
+		result = setResult.Result
+		exitCode = setExitCode
 	case "index":
 		result, exitCode = service.Index(namespace, file, selectedView, *jsonOutput, app.IndexArgs{
 			Out: *out,
