@@ -697,6 +697,7 @@ unity-ctx scene bench Assets/Scenes/Stage01.unity --task "inspect placement safe
 - `bench` measures `context-pack` only when `--task` is present.
 - `bench` does not use an external tokenizer.
 - `bench` does not use Unity Editor integration.
+- `bench` requires `--view compact` (the default).
 
 ## Output Stability Rules
 
