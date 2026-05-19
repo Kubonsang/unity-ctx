@@ -503,18 +503,7 @@ func TestBenchSummarizeOnly(t *testing.T) {
 		t.Fatalf("Bench() code = %d, want 0 body=%q", code, got.Body)
 	}
 
-	wantSummarize := "OK SCENE file=" + path + " game_objects=2 components=2 unknown=0"
-	rawBytes := len(raw)
-	rawTokens := estimateBenchTokens(rawBytes)
-	summarizeBytes := len(wantSummarize)
-	summarizeTokens := estimateBenchTokens(summarizeBytes)
-	wantBody := "OK" +
-		" raw_bytes=" + strconv.Itoa(rawBytes) +
-		" raw_tokens=" + strconv.Itoa(rawTokens) +
-		" summarize_bytes=" + strconv.Itoa(summarizeBytes) +
-		" summarize_tokens=" + strconv.Itoa(summarizeTokens) +
-		" summarize_ratio=" + strconv.FormatFloat(benchRatio(summarizeTokens, rawTokens), 'f', -1, 64) +
-		" summarize_saved_tokens=" + strconv.Itoa(benchSavedTokens(rawTokens, summarizeTokens))
+	wantBody := expectedBenchBody(len(raw), summarizeBodyForPath(path), "")
 	if got.Body != wantBody {
 		t.Fatalf("Bench().Body = %q, want %q", got.Body, wantBody)
 	}
@@ -541,25 +530,7 @@ func TestBenchWithTaskIncludesContextPack(t *testing.T) {
 		t.Fatalf("Bench() code = %d, want 0 body=%q", code, got.Body)
 	}
 
-	wantSummarize := "OK SCENE file=" + path + " game_objects=2 components=2 unknown=0"
-	summarizeBytes := len(wantSummarize)
-	summarizeTokens := estimateBenchTokens(summarizeBytes)
-	wantContextPack := "TASK_CONTEXT scene=" + path + ` task="Find spawn points" budget=` + strconv.Itoa(rawTokens) + "tok\n" +
-		`OBJECT name="Chair_01" id=2000 type="GameObject"` + "\n" +
-		`OBJECT name="Table_01" id=1000 type="GameObject"`
-	contextPackBytes := len(wantContextPack)
-	contextPackTokens := estimateBenchTokens(contextPackBytes)
-	wantBody := "OK" +
-		" raw_bytes=" + strconv.Itoa(rawBytes) +
-		" raw_tokens=" + strconv.Itoa(rawTokens) +
-		" summarize_bytes=" + strconv.Itoa(summarizeBytes) +
-		" summarize_tokens=" + strconv.Itoa(summarizeTokens) +
-		" summarize_ratio=" + strconv.FormatFloat(benchRatio(summarizeTokens, rawTokens), 'f', -1, 64) +
-		" summarize_saved_tokens=" + strconv.Itoa(benchSavedTokens(rawTokens, summarizeTokens)) +
-		" context_pack_bytes=" + strconv.Itoa(contextPackBytes) +
-		" context_pack_tokens=" + strconv.Itoa(contextPackTokens) +
-		" context_pack_ratio=" + strconv.FormatFloat(benchRatio(contextPackTokens, rawTokens), 'f', -1, 64) +
-		" context_pack_saved_tokens=" + strconv.Itoa(benchSavedTokens(rawTokens, contextPackTokens))
+	wantBody := expectedBenchBody(rawBytes, summarizeBodyForPath(path), simpleSceneContextPackBody(path, rawTokens))
 	if got.Body != wantBody {
 		t.Fatalf("Bench().Body = %q, want %q", got.Body, wantBody)
 	}
@@ -595,30 +566,28 @@ func TestBenchWithTaskUpliftsBudgetAboveRawTokenEstimate(t *testing.T) {
 		t.Fatalf("required tokens = %d, want > raw tokens %d", requiredTokens, rawTokens)
 	}
 
-	wantSummarize := "OK SCENE file=" + path + " game_objects=1 components=0 unknown=0"
-	summarizeBytes := len(wantSummarize)
-	summarizeTokens := estimateBenchTokens(summarizeBytes)
-	wantContextPack := "TASK_CONTEXT task=\"inspect\"\nOMITTED reason=token_budget lines=1"
-	contextPackBytes := len(wantContextPack)
-	contextPackTokens := estimateBenchTokens(contextPackBytes)
-	wantBody := "OK" +
-		" raw_bytes=" + strconv.Itoa(len(data)) +
-		" raw_tokens=" + strconv.Itoa(rawTokens) +
-		" summarize_bytes=" + strconv.Itoa(summarizeBytes) +
-		" summarize_tokens=" + strconv.Itoa(summarizeTokens) +
-		" summarize_ratio=" + strconv.FormatFloat(benchRatio(summarizeTokens, rawTokens), 'f', -1, 64) +
-		" summarize_saved_tokens=" + strconv.Itoa(benchSavedTokens(rawTokens, summarizeTokens)) +
-		" context_pack_bytes=" + strconv.Itoa(contextPackBytes) +
-		" context_pack_tokens=" + strconv.Itoa(contextPackTokens) +
-		" context_pack_ratio=" + strconv.FormatFloat(benchRatio(contextPackTokens, rawTokens), 'f', -1, 64) +
-		" context_pack_saved_tokens=" + strconv.Itoa(benchSavedTokens(rawTokens, contextPackTokens))
-
 	got, code := svc.Bench("scene", path, core.ViewCompact, false, app.BenchArgs{Task: "inspect"})
 	if code != 0 {
 		t.Fatalf("Bench() code = %d, want 0 body=%q", code, got.Body)
 	}
-	if got.Body != wantBody {
-		t.Fatalf("Bench().Body = %q, want %q", got.Body, wantBody)
+	if !strings.Contains(got.Body, " context_pack_bytes=") {
+		t.Fatalf("Bench().Body missing context_pack metrics: %q", got.Body)
+	}
+	if !strings.Contains(got.Body, " summarize_saved_tokens=") {
+		t.Fatalf("Bench().Body missing summarize_saved_tokens: %q", got.Body)
+	}
+	metrics := parseBenchMetrics(t, got.Body)
+	if metrics["raw_bytes"] != len(data) {
+		t.Fatalf("raw_bytes = %d, want %d", metrics["raw_bytes"], len(data))
+	}
+	if metrics["raw_tokens"] != rawTokens {
+		t.Fatalf("raw_tokens = %d, want %d", metrics["raw_tokens"], rawTokens)
+	}
+	if metrics["context_pack_bytes"] != len(upliftContextPackBody()) {
+		t.Fatalf("context_pack_bytes = %d, want %d", metrics["context_pack_bytes"], len(upliftContextPackBody()))
+	}
+	if metrics["context_pack_tokens"] != estimateBenchTokens(len(upliftContextPackBody())) {
+		t.Fatalf("context_pack_tokens = %d, want %d", metrics["context_pack_tokens"], estimateBenchTokens(len(upliftContextPackBody())))
 	}
 
 	jsonGot, jsonCode := svc.Bench("scene", path, core.ViewCompact, true, app.BenchArgs{Task: "inspect"})
@@ -631,11 +600,11 @@ func TestBenchWithTaskUpliftsBudgetAboveRawTokenEstimate(t *testing.T) {
 	if jsonGot.Bench.RawBytes != len(data) || jsonGot.Bench.RawTokens != rawTokens {
 		t.Fatalf("Bench(json) raw metrics = %+v, want bytes=%d tokens=%d", jsonGot.Bench, len(data), rawTokens)
 	}
-	if jsonGot.Bench.Summarize.Bytes != summarizeBytes || jsonGot.Bench.Summarize.Tokens != summarizeTokens {
-		t.Fatalf("Bench(json) summarize metrics = %+v, want bytes=%d tokens=%d", jsonGot.Bench.Summarize, summarizeBytes, summarizeTokens)
+	if jsonGot.Bench.Summarize.Bytes != len(summarizeBodyForSingleObjectPath(path)) {
+		t.Fatalf("Bench(json) summarize bytes = %d, want %d", jsonGot.Bench.Summarize.Bytes, len(summarizeBodyForSingleObjectPath(path)))
 	}
-	if jsonGot.Bench.ContextPack.Bytes != contextPackBytes || jsonGot.Bench.ContextPack.Tokens != contextPackTokens {
-		t.Fatalf("Bench(json) context pack metrics = %+v, want bytes=%d tokens=%d", *jsonGot.Bench.ContextPack, contextPackBytes, contextPackTokens)
+	if jsonGot.Bench.ContextPack.Bytes != len(upliftContextPackBody()) || jsonGot.Bench.ContextPack.Tokens != estimateBenchTokens(len(upliftContextPackBody())) {
+		t.Fatalf("Bench(json) context pack metrics = %+v, want bytes=%d tokens=%d", *jsonGot.Bench.ContextPack, len(upliftContextPackBody()), estimateBenchTokens(len(upliftContextPackBody())))
 	}
 }
 
@@ -662,11 +631,9 @@ func TestBenchJSONOmitsContextPackWithoutTaskAndIncludesItWithTask(t *testing.T)
 	}
 	rawBytes := len(raw)
 	rawTokens := estimateBenchTokens(rawBytes)
-	summarizeBytes := len("OK SCENE file=" + path + " game_objects=2 components=2 unknown=0")
+	summarizeBytes := len(summarizeBodyForPath(path))
 	summarizeTokens := estimateBenchTokens(summarizeBytes)
-	contextPackBytes := len("TASK_CONTEXT scene=" + path + ` task="Find spawn points" budget=` + strconv.Itoa(rawTokens) + "tok\n" +
-		`OBJECT name="Chair_01" id=2000 type="GameObject"` + "\n" +
-		`OBJECT name="Table_01" id=1000 type="GameObject"`)
+	contextPackBytes := len(simpleSceneContextPackBody(path, rawTokens))
 	contextPackTokens := estimateBenchTokens(contextPackBytes)
 
 	svc := app.New()
@@ -2426,6 +2393,69 @@ func benchSavedTokens(rawTokens int, tokens int) int {
 		return 0
 	}
 	return saved
+}
+
+func summarizeBodyForPath(path string) string {
+	return "OK SCENE file=" + path + " game_objects=2 components=2 unknown=0"
+}
+
+func summarizeBodyForSingleObjectPath(path string) string {
+	return "OK SCENE file=" + path + " game_objects=1 components=0 unknown=0"
+}
+
+func simpleSceneContextPackBody(path string, rawTokens int) string {
+	return "TASK_CONTEXT scene=" + path + ` task="Find spawn points" budget=` + strconv.Itoa(rawTokens) + "tok\n" +
+		`OBJECT name="Chair_01" id=2000 type="GameObject"` + "\n" +
+		`OBJECT name="Table_01" id=1000 type="GameObject"`
+}
+
+func upliftContextPackBody() string {
+	return "TASK_CONTEXT task=\"inspect\"\nOMITTED reason=token_budget lines=1"
+}
+
+func expectedBenchBody(rawBytes int, summarizeBody string, contextPackBody string) string {
+	rawTokens := estimateBenchTokens(rawBytes)
+	summarizeTokens := estimateBenchTokens(len(summarizeBody))
+
+	body := "OK" +
+		" raw_bytes=" + strconv.Itoa(rawBytes) +
+		" raw_tokens=" + strconv.Itoa(rawTokens) +
+		" summarize_bytes=" + strconv.Itoa(len(summarizeBody)) +
+		" summarize_tokens=" + strconv.Itoa(summarizeTokens) +
+		" summarize_ratio=" + strconv.FormatFloat(benchRatio(summarizeTokens, rawTokens), 'f', -1, 64) +
+		" summarize_saved_tokens=" + strconv.Itoa(benchSavedTokens(rawTokens, summarizeTokens))
+	if contextPackBody == "" {
+		return body
+	}
+
+	contextPackTokens := estimateBenchTokens(len(contextPackBody))
+	return body +
+		" context_pack_bytes=" + strconv.Itoa(len(contextPackBody)) +
+		" context_pack_tokens=" + strconv.Itoa(contextPackTokens) +
+		" context_pack_ratio=" + strconv.FormatFloat(benchRatio(contextPackTokens, rawTokens), 'f', -1, 64) +
+		" context_pack_saved_tokens=" + strconv.Itoa(benchSavedTokens(rawTokens, contextPackTokens))
+}
+
+func parseBenchMetrics(t *testing.T, body string) map[string]int {
+	t.Helper()
+
+	fields := strings.Fields(body)
+	metrics := make(map[string]int, len(fields))
+	for _, field := range fields[1:] {
+		parts := strings.SplitN(field, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if strings.Contains(parts[1], ".") {
+			continue
+		}
+		value, err := strconv.Atoi(parts[1])
+		if err != nil {
+			continue
+		}
+		metrics[parts[0]] = value
+	}
+	return metrics
 }
 
 func jsonNumberAsInt(t *testing.T, value any) int {

@@ -251,14 +251,7 @@ func (s *Service) Bench(namespace, path string, view core.View, jsonOut bool, ar
 		return result, 1
 	}
 
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		result.Status = "ERROR"
-		result.Body = fmt.Sprintf("ERROR %v", err)
-		return result, 1
-	}
-
-	loaded, err := loadDocFromBytes(raw)
+	loaded, err := s.load(path)
 	if err != nil {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR %v", err)
@@ -269,13 +262,13 @@ func (s *Service) Bench(namespace, path string, view core.View, jsonOut bool, ar
 	// requested path, rather than path-normalized semantic content.
 	summarizeResult := summarizeResultFromLoaded(namespace, path, core.ViewCompact, loaded)
 	benchInput := bench.Input{
-		RawBytes:       len(raw),
+		RawBytes:       len(loaded.data),
 		SummarizeBytes: len(summarizeResult.Body),
 	}
 
 	task := strings.TrimSpace(args.Task)
 	if task != "" {
-		rawTokens := bench.EstimateTokens(len(raw))
+		rawTokens := bench.EstimateTokens(len(loaded.data))
 		maxTokens := rawTokens
 		measureOpts := contextpack.Options{
 			Namespace: namespace,
