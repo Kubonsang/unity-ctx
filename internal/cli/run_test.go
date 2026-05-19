@@ -3288,6 +3288,72 @@ func TestGetRejectsInvalidSelectorCombination(t *testing.T) {
 	}
 }
 
+func TestBenchReturnsCompactOutput(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"bench",
+		"testdata/scenes/simple_scene.unity",
+	)
+
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q", result.exitCode, result.stderr)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "raw_bytes=") || !strings.Contains(result.stdout, "summarize_ratio=") {
+		t.Fatalf("stdout mismatch: got %q", result.stdout)
+	}
+}
+
+func TestBenchJSONIncludesNestedPayload(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"bench",
+		"testdata/scenes/simple_scene.unity",
+		"--task",
+		"inspect placement safety",
+		"--json",
+	)
+
+	var got struct {
+		Command string `json:"command"`
+		Bench   struct {
+			RawBytes  int `json:"raw_bytes"`
+			RawTokens int `json:"raw_tokens"`
+			ContextPack *struct {
+				Tokens int `json:"tokens"`
+			} `json:"context_pack"`
+		} `json:"bench"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &got); err != nil {
+		t.Fatalf("parse stdout json: %v", err)
+	}
+	if got.Command != "bench" || got.Bench.ContextPack == nil {
+		t.Fatalf("bench payload mismatch: %#v", got)
+	}
+}
+
+func TestBenchRejectsIrrelevantFlags(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"bench",
+		"testdata/scenes/simple_scene.unity",
+		"--focus",
+		"Table_01",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stderr != "ERROR bench does not accept --focus, --max-tokens, --id, --name, --type, --component, --field, --value, --write, --out, --manifest, --prefab, --position, --op, --prefab-guid, --project, --scenes, --prefabs, --patch, --ack-impact, --near, --count, or --align\n" {
+		t.Fatalf("stderr mismatch: got %q", result.stderr)
+	}
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 

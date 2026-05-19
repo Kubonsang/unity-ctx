@@ -502,6 +502,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
+	if command == "bench" {
+		if selectedView != core.ViewCompact {
+			_, _ = io.WriteString(stderr, "ERROR bench supports only --view compact\n")
+			return 2
+		}
+		if anyFlagVisited(seenFlags, "focus", "max-tokens", "id", "name", "type", "component", "field", "value", "write", "out", "manifest", "prefab", "position", "op", "prefab-guid", "project", "scenes", "prefabs", "patch", "ack-impact", "near", "count", "align") {
+			_, _ = io.WriteString(stderr, "ERROR bench does not accept --focus, --max-tokens, --id, --name, --type, --component, --field, --value, --write, --out, --manifest, --prefab, --position, --op, --prefab-guid, --project, --scenes, --prefabs, --patch, --ack-impact, --near, --count, or --align\n")
+			return 2
+		}
+	}
 
 	result := core.Result{
 		Namespace: namespace,
@@ -612,6 +622,24 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 		_, _ = io.WriteString(stdout, suggestResult.Body+"\n")
 		return suggestExitCode
+	}
+	if command == "bench" {
+		benchResult, benchExitCode := service.Bench(namespace, file, selectedView, *jsonOutput, app.BenchArgs{
+			Task: *task,
+		})
+
+		if *jsonOutput {
+			encoder := json.NewEncoder(stdout)
+			encoder.SetEscapeHTML(false)
+			if err := encoder.Encode(benchResult); err != nil {
+				_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
+				return 2
+			}
+			return benchExitCode
+		}
+
+		_, _ = io.WriteString(stdout, benchResult.Body+"\n")
+		return benchExitCode
 	}
 
 	switch command {
