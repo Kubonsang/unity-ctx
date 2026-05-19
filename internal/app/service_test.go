@@ -533,20 +533,23 @@ func TestBenchWithTaskIncludesContextPack(t *testing.T) {
 	}
 
 	svc := app.New()
+	summarize, summarizeCode := svc.Summarize("scene", path, core.ViewCompact, false)
+	if summarizeCode != 0 {
+		t.Fatalf("Summarize() code = %d, want 0 body=%q", summarizeCode, summarize.Body)
+	}
+
+	rawBytes := len(raw)
+	rawTokens := estimateBenchTokens(rawBytes)
+	contextPackBody := expectedBenchContextPackBody(t, svc, "scene", path, task, rawTokens)
+
 	got, code := svc.Bench("scene", path, core.ViewCompact, false, app.BenchArgs{Task: "  " + task + "  "})
 	if code != 0 {
 		t.Fatalf("Bench() code = %d, want 0 body=%q", code, got.Body)
 	}
 
-	wantSummarize := "OK SCENE file=" + path + " game_objects=2 components=2 unknown=0"
-	rawBytes := len(raw)
-	rawTokens := estimateBenchTokens(rawBytes)
-	summarizeBytes := len(wantSummarize)
+	summarizeBytes := len(summarize.Body)
 	summarizeTokens := estimateBenchTokens(summarizeBytes)
-	wantContextPack := "TASK_CONTEXT scene=" + path + ` task="Find spawn points" budget=` + strconv.Itoa(rawTokens) + "tok\n" +
-		`OBJECT name="Chair_01" id=2000 type="GameObject"` + "\n" +
-		`OBJECT name="Table_01" id=1000 type="GameObject"`
-	contextPackBytes := len(wantContextPack)
+	contextPackBytes := len(contextPackBody)
 	contextPackTokens := estimateBenchTokens(contextPackBytes)
 	wantBody := "OK" +
 		" raw_bytes=" + strconv.Itoa(rawBytes) +
@@ -624,18 +627,18 @@ func TestBenchJSONOmitsContextPackWithoutTaskAndIncludesItWithTask(t *testing.T)
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
+	svc := app.New()
+	summarize, summarizeCode := svc.Summarize("scene", path, core.ViewCompact, false)
+	if summarizeCode != 0 {
+		t.Fatalf("Summarize() code = %d, want 0 body=%q", summarizeCode, summarize.Body)
+	}
 	rawBytes := len(raw)
 	rawTokens := estimateBenchTokens(rawBytes)
-	wantSummarize := "OK SCENE file=" + path + " game_objects=2 components=2 unknown=0"
-	summarizeBytes := len(wantSummarize)
+	summarizeBytes := len(summarize.Body)
 	summarizeTokens := estimateBenchTokens(summarizeBytes)
-	wantContextPack := "TASK_CONTEXT scene=" + path + ` task="Find spawn points" budget=` + strconv.Itoa(rawTokens) + "tok\n" +
-		`OBJECT name="Chair_01" id=2000 type="GameObject"` + "\n" +
-		`OBJECT name="Table_01" id=1000 type="GameObject"`
-	contextPackBytes := len(wantContextPack)
+	contextPackBody := expectedBenchContextPackBody(t, svc, "scene", path, "Find spawn points", rawTokens)
+	contextPackBytes := len(contextPackBody)
 	contextPackTokens := estimateBenchTokens(contextPackBytes)
-
-	svc := app.New()
 
 	withoutTask, withoutCode := svc.Bench("scene", path, core.ViewCompact, true, app.BenchArgs{})
 	if withoutCode != 0 {
@@ -732,6 +735,55 @@ func TestBenchJSONOmitsContextPackWithoutTaskAndIncludesItWithTask(t *testing.T)
 	}
 	if got := jsonNumberAsInt(t, contextPackValue["saved_tokens"]); got != benchSavedTokens(rawTokens, contextPackTokens) {
 		t.Fatalf("bench.context_pack.saved_tokens = %d, want %d", got, benchSavedTokens(rawTokens, contextPackTokens))
+	}
+}
+
+func TestBenchMeasuresRenderedPayloadsIncludingPathText(t *testing.T) {
+	sceneData, err := os.ReadFile(filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	shortPath := filepath.Join(t.TempDir(), "a.unity")
+	longDir := filepath.Join(t.TempDir(), "deep", "nested", "path", "with", "more", "segments")
+	longPath := filepath.Join(longDir, "scene_with_a_longer_name.unity")
+	if err := os.MkdirAll(filepath.Dir(longPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(shortPath, sceneData, 0o644); err != nil {
+		t.Fatalf("WriteFile(shortPath) error = %v", err)
+	}
+	if err := os.WriteFile(longPath, sceneData, 0o644); err != nil {
+		t.Fatalf("WriteFile(longPath) error = %v", err)
+	}
+
+	svc := app.New()
+	shortBench, shortCode := svc.Bench("scene", shortPath, core.ViewCompact, true, app.BenchArgs{Task: "Find spawn points"})
+	if shortCode != 0 {
+		t.Fatalf("Bench(short) code = %d, want 0 body=%q", shortCode, shortBench.Body)
+	}
+	longBench, longCode := svc.Bench("scene", longPath, core.ViewCompact, true, app.BenchArgs{Task: "Find spawn points"})
+	if longCode != 0 {
+		t.Fatalf("Bench(long) code = %d, want 0 body=%q", longCode, longBench.Body)
+	}
+	if shortBench.Bench == nil || longBench.Bench == nil {
+		t.Fatalf("bench payloads must be present: short=%#v long=%#v", shortBench.Bench, longBench.Bench)
+	}
+	if shortBench.Bench.ContextPack == nil || longBench.Bench.ContextPack == nil {
+		t.Fatalf("context_pack payloads must be present: short=%#v long=%#v", shortBench.Bench, longBench.Bench)
+	}
+
+	if shortBench.Bench.RawBytes != longBench.Bench.RawBytes {
+		t.Fatalf("raw_bytes differ for same file content: short=%d long=%d", shortBench.Bench.RawBytes, longBench.Bench.RawBytes)
+	}
+	if shortBench.Bench.RawTokens != longBench.Bench.RawTokens {
+		t.Fatalf("raw_tokens differ for same file content: short=%d long=%d", shortBench.Bench.RawTokens, longBench.Bench.RawTokens)
+	}
+	if shortBench.Bench.Summarize.Bytes >= longBench.Bench.Summarize.Bytes {
+		t.Fatalf("summarize bytes should grow with longer rendered path: short=%d long=%d", shortBench.Bench.Summarize.Bytes, longBench.Bench.Summarize.Bytes)
+	}
+	if shortBench.Bench.ContextPack.Bytes >= longBench.Bench.ContextPack.Bytes {
+		t.Fatalf("context_pack bytes should grow with longer rendered path: short=%d long=%d", shortBench.Bench.ContextPack.Bytes, longBench.Bench.ContextPack.Bytes)
 	}
 }
 
@@ -2392,6 +2444,37 @@ func benchSavedTokens(rawTokens int, tokens int) int {
 		return 0
 	}
 	return saved
+}
+
+func expectedBenchContextPackBody(t *testing.T, svc *app.Service, namespace, path, task string, rawTokens int) string {
+	t.Helper()
+
+	got, code := svc.ContextPack(namespace, path, core.ViewCompact, false, app.ContextPackArgs{
+		Task:      task,
+		MaxTokens: rawTokens,
+	})
+	if code == 0 {
+		return got.Body
+	}
+
+	wantPrefix := "ERROR context-pack requires --max-tokens >= "
+	if !strings.HasPrefix(got.Body, wantPrefix) {
+		t.Fatalf("ContextPack().Body = %q, want success or prefix %q", got.Body, wantPrefix)
+	}
+
+	requiredTokens, err := strconv.Atoi(strings.TrimPrefix(got.Body, wantPrefix))
+	if err != nil {
+		t.Fatalf("Atoi(%q) error = %v", got.Body, err)
+	}
+
+	got, code = svc.ContextPack(namespace, path, core.ViewCompact, false, app.ContextPackArgs{
+		Task:      task,
+		MaxTokens: requiredTokens,
+	})
+	if code != 0 {
+		t.Fatalf("ContextPack() retry code = %d, want 0 body=%q", code, got.Body)
+	}
+	return got.Body
 }
 
 func jsonNumberAsInt(t *testing.T, value any) int {

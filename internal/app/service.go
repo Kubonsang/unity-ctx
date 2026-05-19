@@ -265,6 +265,8 @@ func (s *Service) Bench(namespace, path string, view core.View, jsonOut bool, ar
 		return result, 1
 	}
 
+	// Bench measures rendered command payloads, so path text in summarize/context-pack
+	// output intentionally contributes to the reported byte and token counts.
 	summarizeResult := summarizeResultFromLoaded(namespace, path, core.ViewCompact, loaded)
 	benchInput := bench.Input{
 		RawBytes:       len(raw),
