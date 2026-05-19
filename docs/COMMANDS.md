@@ -300,7 +300,7 @@ Rules:
 
 - `suggest` is implemented only for the `scene` namespace.
 - `suggest` supports only compact output.
-- `suggest` is a read-only placement planner. It does not write scene files and does not emit patch files.
+- `suggest` is a read-only placement planner. It does not write scene files. With `--out`, it writes a patch file as a side effect (see v0.5d below).
 - Actual placement still flows through `scene patch` and then `scene apply` after you choose a candidate.
 - `--near` accepts either an anchor `fileID` or an exact object name from the manifest.
 - Exact-name anchor matches must resolve to a single object. Ambiguous names return `ERROR AMBIGUOUS_NAME ...`.
@@ -376,10 +376,55 @@ ERROR suggest requires --near
 ERROR suggest requires --count >= 1
 ERROR suggest supports only --align floor|grid
 ERROR suggest supports only --view compact
-ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --project, --scenes, --prefabs, --position, --op, --prefab-guid, --out, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode
+ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --project, --scenes, --prefabs, --position, --op, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode
 ERROR missing anchor near="Missing"
 ERROR AMBIGUOUS_NAME name="Table_01" matches=2
 ERROR missing prefab manifest entry for path="Assets/Prefabs/Missing.prefab"
+```
+
+## v0.5d Suggest-to-Patch Handoff
+
+### scene suggest — patch output flags
+
+```bash
+# Write patch for top candidate (rank 1) with GUID → status=OK or WARN in patch
+unity-ctx scene suggest Stage01.unity \
+  --manifest Stage01.bounds.json \
+  --prefab Assets/Prefabs/Chair.prefab \
+  --near Table_01 \
+  --prefab-guid abc-guid-123 \
+  --out chair.patch.json
+
+# Select a specific candidate rank
+unity-ctx scene suggest Stage01.unity \
+  --manifest Stage01.bounds.json \
+  --prefab Assets/Prefabs/Chair.prefab \
+  --near Table_01 \
+  --prefab-guid abc-guid-123 \
+  --out chair.patch.json \
+  --pick 2
+
+# Full flow: suggest → diff → apply
+unity-ctx scene diff Stage01.unity --patch chair.patch.json
+unity-ctx scene apply Stage01.unity --patch chair.patch.json --write
+```
+
+- `--out <file>` triggers patch output: writes a patch file for the selected candidate rank.
+- `--pick <n>` (default `1`) selects which candidate rank to write. Requires `--out`.
+- `--prefab-guid <guid>` embeds the GUID in the written patch. Requires `--out`. Without it, the patch has `status=UNKNOWN`.
+- `--pick` and `--prefab-guid` are rejected when `--out` is not set.
+- Without `--out`, suggest output is byte-for-byte identical to v0.5c behavior.
+- The written patch file is identical in schema to `scene patch --json` output and is immediately usable by `scene diff` and `scene apply --write`.
+- `suggest` never writes to the `.unity` scene file. Scene changes are always done by `scene apply --write`.
+- An `UNKNOWN` patch (no `--prefab-guid`) follows the existing `scene apply` safety policy for UNKNOWN patches.
+
+### Error reference (v0.5d additions)
+
+```
+ERROR suggest --pick requires --out
+ERROR suggest --prefab-guid requires --out
+ERROR suggest requires --pick >= 1
+ERROR suggest --pick N is out of range, candidates=M
 ```
 
 ## v0.5a Prefab Impact Foundation
