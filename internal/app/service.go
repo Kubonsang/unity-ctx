@@ -227,37 +227,12 @@ func NewWithScanRunner(runner scan.Runner) *Service {
 func (s *Service) Summarize(namespace, path string, view core.View, jsonOut bool) (core.Result, int) {
 	_ = jsonOut
 
-	result := core.Result{
-		Namespace: namespace,
-		Command:   "summarize",
-		File:      path,
-		View:      view,
-	}
-
 	loaded, err := s.load(path)
 	if err != nil {
-		result.Status = "ERROR"
-		result.Body = fmt.Sprintf("ERROR %v", err)
-		return result, 1
+		return newErrorResult(namespace, "summarize", path, view, err), 1
 	}
 
-	gameObjects := 0
-	components := 0
-	unknown := 0
-	for _, block := range loaded.blocks {
-		switch {
-		case block.TypeName == "GameObject":
-			gameObjects++
-		case block.TypeName == "":
-			unknown++
-		default:
-			components++
-		}
-	}
-
-	result.Status = "OK"
-	result.Body = formatSummarizeBody(namespace, path, view, loaded.blocks, gameObjects, components, unknown)
-	return result, 0
+	return summarizeResultFromLoaded(namespace, path, view, loaded), 0
 }
 
 func (s *Service) Bench(namespace, path string, view core.View, jsonOut bool, args BenchArgs) (BenchResult, int) {
@@ -283,13 +258,14 @@ func (s *Service) Bench(namespace, path string, view core.View, jsonOut bool, ar
 		return result, 1
 	}
 
-	summarizeResult, summarizeCode := s.Summarize(namespace, path, core.ViewCompact, false)
-	if summarizeCode != 0 {
-		result.Status = summarizeResult.Status
-		result.Body = summarizeResult.Body
-		return result, summarizeCode
+	loaded, err := loadDocFromBytes(raw)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
 	}
 
+	summarizeResult := summarizeResultFromLoaded(namespace, path, core.ViewCompact, loaded)
 	benchInput := bench.Input{
 		RawBytes:       len(raw),
 		SummarizeBytes: len(summarizeResult.Body),
@@ -297,13 +273,6 @@ func (s *Service) Bench(namespace, path string, view core.View, jsonOut bool, ar
 
 	task := strings.TrimSpace(args.Task)
 	if task != "" {
-		loaded, err := s.load(path)
-		if err != nil {
-			result.Status = "ERROR"
-			result.Body = fmt.Sprintf("ERROR %v", err)
-			return result, 1
-		}
-
 		rawTokens := bench.EstimateTokens(len(raw))
 		maxTokens := rawTokens
 		minBudget := contextpack.MinimumBudgetForOptions(contextpack.Options{
@@ -316,7 +285,7 @@ func (s *Service) Bench(namespace, path string, view core.View, jsonOut bool, ar
 			maxTokens = minBudget
 		}
 
-		contextPackResult, contextPackCode := s.ContextPack(namespace, path, core.ViewCompact, false, ContextPackArgs{
+		contextPackResult, contextPackCode := contextPackResultFromLoaded(namespace, path, core.ViewCompact, loaded, ContextPackArgs{
 			Task:      task,
 			MaxTokens: maxTokens,
 		})
@@ -809,59 +778,11 @@ func (s *Service) Index(namespace, path string, view core.View, jsonOut bool, ar
 func (s *Service) ContextPack(namespace, path string, view core.View, jsonOut bool, args ContextPackArgs) (core.Result, int) {
 	_ = jsonOut
 
-	result := core.Result{
-		Namespace: namespace,
-		Command:   "context-pack",
-		File:      path,
-		View:      view,
-	}
-
-	if strings.TrimSpace(args.Task) == "" && strings.TrimSpace(args.Focus) == "" {
-		result.Status = "ERROR"
-		result.Body = "ERROR context-pack requires --focus or --task"
-		return result, 1
-	}
-	if args.MaxTokens < contextpack.MinimumBudget() {
-		result.Status = "ERROR"
-		result.Body = fmt.Sprintf("ERROR context-pack requires --max-tokens >= %d", contextpack.MinimumBudget())
-		return result, 1
-	}
-
 	loaded, err := s.load(path)
 	if err != nil {
-		result.Status = "ERROR"
-		result.Body = fmt.Sprintf("ERROR %v", err)
-		return result, 1
+		return newErrorResult(namespace, "context-pack", path, view, err), 1
 	}
-	minBudget := contextpack.MinimumBudgetForOptions(contextpack.Options{
-		Namespace: namespace,
-		File:      path,
-		Task:      args.Task,
-		Focus:     args.Focus,
-		MaxTokens: args.MaxTokens,
-	}, contextpack.NamedObjectCount(loaded.blocks))
-	if args.MaxTokens < minBudget {
-		result.Status = "ERROR"
-		result.Body = fmt.Sprintf("ERROR context-pack requires --max-tokens >= %d", minBudget)
-		return result, 1
-	}
-
-	lines := contextpack.Build(contextpack.Options{
-		Namespace: namespace,
-		File:      path,
-		Task:      args.Task,
-		Focus:     args.Focus,
-		MaxTokens: args.MaxTokens,
-	}, loaded.blocks)
-	if len(lines) == 0 {
-		result.Status = "ERROR"
-		result.Body = fmt.Sprintf("ERROR context-pack requires --max-tokens >= %d", minBudget)
-		return result, 1
-	}
-
-	result.Status = "OK"
-	result.Body = strings.Join(lines, "\n")
-	return result, 0
+	return contextPackResultFromLoaded(namespace, path, view, loaded, args)
 }
 
 func (s *Service) Impact(namespace, path string, view core.View, jsonOut bool, args ImpactArgs) (ImpactResult, int) {
@@ -1442,6 +1363,10 @@ func (s *Service) load(path string) (*loadedDoc, error) {
 	if err != nil {
 		return nil, err
 	}
+	return loadDocFromBytes(data)
+}
+
+func loadDocFromBytes(data []byte) (*loadedDoc, error) {
 	blocks, err := parser.Parse(data)
 	if err != nil {
 		return nil, err
@@ -1452,6 +1377,92 @@ func (s *Service) load(path string) (*loadedDoc, error) {
 		blocks: blocks,
 		doc:    document.Build(blocks),
 	}, nil
+}
+
+func summarizeResultFromLoaded(namespace, path string, view core.View, loaded *loadedDoc) core.Result {
+	gameObjects := 0
+	components := 0
+	unknown := 0
+	for _, block := range loaded.blocks {
+		switch {
+		case block.TypeName == "GameObject":
+			gameObjects++
+		case block.TypeName == "":
+			unknown++
+		default:
+			components++
+		}
+	}
+
+	return core.Result{
+		Status:    "OK",
+		Namespace: namespace,
+		Command:   "summarize",
+		File:      path,
+		View:      view,
+		Body:      formatSummarizeBody(namespace, path, view, loaded.blocks, gameObjects, components, unknown),
+	}
+}
+
+func contextPackResultFromLoaded(namespace, path string, view core.View, loaded *loadedDoc, args ContextPackArgs) (core.Result, int) {
+	result := core.Result{
+		Namespace: namespace,
+		Command:   "context-pack",
+		File:      path,
+		View:      view,
+	}
+
+	if strings.TrimSpace(args.Task) == "" && strings.TrimSpace(args.Focus) == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR context-pack requires --focus or --task"
+		return result, 1
+	}
+	if args.MaxTokens < contextpack.MinimumBudget() {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR context-pack requires --max-tokens >= %d", contextpack.MinimumBudget())
+		return result, 1
+	}
+
+	minBudget := contextpack.MinimumBudgetForOptions(contextpack.Options{
+		Namespace: namespace,
+		File:      path,
+		Task:      args.Task,
+		Focus:     args.Focus,
+		MaxTokens: args.MaxTokens,
+	}, contextpack.NamedObjectCount(loaded.blocks))
+	if args.MaxTokens < minBudget {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR context-pack requires --max-tokens >= %d", minBudget)
+		return result, 1
+	}
+
+	lines := contextpack.Build(contextpack.Options{
+		Namespace: namespace,
+		File:      path,
+		Task:      args.Task,
+		Focus:     args.Focus,
+		MaxTokens: args.MaxTokens,
+	}, loaded.blocks)
+	if len(lines) == 0 {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR context-pack requires --max-tokens >= %d", minBudget)
+		return result, 1
+	}
+
+	result.Status = "OK"
+	result.Body = strings.Join(lines, "\n")
+	return result, 0
+}
+
+func newErrorResult(namespace, command, path string, view core.View, err error) core.Result {
+	return core.Result{
+		Status:    "ERROR",
+		Namespace: namespace,
+		Command:   command,
+		File:      path,
+		View:      view,
+		Body:      fmt.Sprintf("ERROR %v", err),
+	}
 }
 
 func staleIndexPrefix(outPath, sourcePath string) (string, error) {
