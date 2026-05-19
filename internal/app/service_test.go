@@ -1287,6 +1287,188 @@ func TestSuggestWarnsWhenAllCandidatesOverlap(t *testing.T) {
 	}
 }
 
+func TestSuggestWithOutWritesPatchFileForRankOne(t *testing.T) {
+	svc := app.New()
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+	outFile := filepath.Join(t.TempDir(), "out.patch.json")
+
+	got, code := svc.Suggest("scene", scenePath, core.ViewCompact, false, app.SuggestArgs{
+		Manifest:   manifestPath,
+		Prefab:     "Assets/Prefabs/chair.prefab",
+		Near:       "1000",
+		Count:      4,
+		Align:      "floor",
+		PatchOut:   outFile,
+		Pick:       1,
+		PrefabGUID: "guid-chair",
+	})
+	if code != 0 {
+		t.Fatalf("expected code=0, got %d body=%s", code, got.Body)
+	}
+	// Suggest reports OK for the east candidate (anchor excluded from overlap check).
+	// Patch may report WARN because it does not exclude the anchor from overlap checks.
+	// candidate_status reflects the suggest planner result; status reflects the patch result.
+	if !strings.Contains(got.Body, "PATCH_OUT rank=1 file="+outFile) {
+		t.Fatalf("body missing PATCH_OUT line:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "candidate_status=OK") {
+		t.Fatalf("body missing candidate_status=OK:\n%s", got.Body)
+	}
+	if strings.Contains(got.Body, "candidate_status=WARN") {
+		t.Fatalf("unexpected candidate_status=WARN for east candidate:\n%s", got.Body)
+	}
+
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("patch file not written: %v", err)
+	}
+	var pf map[string]any
+	if err := json.Unmarshal(data, &pf); err != nil {
+		t.Fatalf("patch file is not valid JSON: %v", err)
+	}
+	if pf["schema_version"].(float64) != 1 {
+		t.Fatalf("unexpected schema_version: %v", pf["schema_version"])
+	}
+	if pf["command"] != "patch" {
+		t.Fatalf("unexpected command: %v", pf["command"])
+	}
+	pp, ok := pf["patch_plan"].(map[string]any)
+	if !ok {
+		t.Fatalf("patch_plan missing or wrong type")
+	}
+	if pp["prefab_guid"] != "guid-chair" {
+		t.Fatalf("prefab_guid mismatch: %v", pp["prefab_guid"])
+	}
+}
+
+func TestSuggestWithOutNoGUIDWritesUnknownPatch(t *testing.T) {
+	svc := app.New()
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+	outFile := filepath.Join(t.TempDir(), "out.patch.json")
+
+	got, code := svc.Suggest("scene", scenePath, core.ViewCompact, false, app.SuggestArgs{
+		Manifest: manifestPath,
+		Prefab:   "Assets/Prefabs/chair.prefab",
+		Near:     "1000",
+		Count:    4,
+		Align:    "floor",
+		PatchOut: outFile,
+		Pick:     1,
+	})
+	if code != 0 {
+		t.Fatalf("expected code=0, got %d body=%s", code, got.Body)
+	}
+	if !strings.Contains(got.Body, "PATCH_OUT rank=1 file="+outFile+" status=UNKNOWN") {
+		t.Fatalf("body missing PATCH_OUT UNKNOWN line:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "candidate_status=") {
+		t.Fatalf("body missing candidate_status field:\n%s", got.Body)
+	}
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("patch file not written: %v", err)
+	}
+	var pf map[string]any
+	if err := json.Unmarshal(data, &pf); err != nil {
+		t.Fatalf("patch file is not valid JSON: %v", err)
+	}
+	if pf["status"] != "UNKNOWN" {
+		t.Fatalf("expected status=UNKNOWN, got %v", pf["status"])
+	}
+}
+
+func TestSuggestWithOutPickSelectsRank(t *testing.T) {
+	svc := app.New()
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+	outFile1 := filepath.Join(t.TempDir(), "rank1.patch.json")
+	outFile2 := filepath.Join(t.TempDir(), "rank2.patch.json")
+
+	_, code1 := svc.Suggest("scene", scenePath, core.ViewCompact, false, app.SuggestArgs{
+		Manifest:   manifestPath,
+		Prefab:     "Assets/Prefabs/chair.prefab",
+		Near:       "1000",
+		Count:      4,
+		Align:      "floor",
+		PatchOut:   outFile1,
+		Pick:       1,
+		PrefabGUID: "guid-chair",
+	})
+	if code1 != 0 {
+		t.Fatalf("rank-1 failed")
+	}
+
+	got2, code2 := svc.Suggest("scene", scenePath, core.ViewCompact, false, app.SuggestArgs{
+		Manifest:   manifestPath,
+		Prefab:     "Assets/Prefabs/chair.prefab",
+		Near:       "1000",
+		Count:      4,
+		Align:      "floor",
+		PatchOut:   outFile2,
+		Pick:       2,
+		PrefabGUID: "guid-chair",
+	})
+	if code2 != 0 {
+		t.Fatalf("rank-2 failed: %s", got2.Body)
+	}
+	if !strings.Contains(got2.Body, "PATCH_OUT rank=2") {
+		t.Fatalf("body missing PATCH_OUT rank=2:\n%s", got2.Body)
+	}
+
+	d1, _ := os.ReadFile(outFile1)
+	d2, _ := os.ReadFile(outFile2)
+	if string(d1) == string(d2) {
+		t.Fatal("rank-1 and rank-2 patch files must differ")
+	}
+}
+
+func TestSuggestWithOutPickOutOfRangeReturnsError(t *testing.T) {
+	svc := app.New()
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+	outFile := filepath.Join(t.TempDir(), "out.patch.json")
+
+	got, code := svc.Suggest("scene", scenePath, core.ViewCompact, false, app.SuggestArgs{
+		Manifest: manifestPath,
+		Prefab:   "Assets/Prefabs/chair.prefab",
+		Near:     "1000",
+		Count:    2,
+		Align:    "floor",
+		PatchOut: outFile,
+		Pick:     5,
+	})
+	if code == 0 {
+		t.Fatalf("expected non-zero code, got body=%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "out of range") {
+		t.Fatalf("expected out-of-range error, got: %s", got.Body)
+	}
+}
+
+func TestSuggestWithOutPatchFailurePropagatesError(t *testing.T) {
+	svc := app.New()
+	outFile := filepath.Join(t.TempDir(), "out.patch.json")
+
+	// nonexistent scene file causes s.Patch to fail
+	got, code := svc.Suggest("scene", "testdata/scenes/nonexistent.unity", core.ViewCompact, false, app.SuggestArgs{
+		Manifest: "testdata/manifests/simple_scene.bounds.json",
+		Prefab:   "Assets/Prefabs/chair.prefab",
+		Near:     "1000",
+		Count:    4,
+		Align:    "floor",
+		PatchOut: outFile,
+		Pick:     1,
+	})
+	if code == 0 {
+		t.Fatalf("expected non-zero code, got body=%s", got.Body)
+	}
+	if got.Status != "ERROR" {
+		t.Fatalf("expected ERROR status, got %s", got.Status)
+	}
+}
+
 func TestSetAssetDryRunDoesNotWriteFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "enemy_config.asset")
 	content := "" +

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -118,11 +119,14 @@ type ImpactArgs struct {
 }
 
 type SuggestArgs struct {
-	Manifest string
-	Prefab   string
-	Near     string
-	Count    int
-	Align    string
+	Manifest   string
+	Prefab     string
+	Near       string
+	Count      int
+	Align      string
+	PatchOut   string
+	Pick       int
+	PrefabGUID string
 }
 
 type ImpactFileHit struct {
@@ -904,6 +908,49 @@ func (s *Service) Suggest(namespace, path string, view core.View, jsonOut bool, 
 	if jsonOut {
 		result.Suggest = suggestPayloadFromPlan(args.Manifest, plan)
 	}
+
+	if args.PatchOut != "" {
+		pick := args.Pick
+		if pick < 1 {
+			pick = 1
+		}
+		if pick > len(plan.Candidates) {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR suggest --pick %d is out of range, candidates=%d", pick, len(plan.Candidates))
+			return result, 1
+		}
+
+		candidate := plan.Candidates[pick-1]
+
+		patchResult, patchCode := s.Patch("scene", path, view, true, PatchArgs{
+			Op:          "place_prefab",
+			Manifest:    args.Manifest,
+			Prefab:      args.Prefab,
+			PrefabGUID:  args.PrefabGUID,
+			HasPosition: true,
+			Position:    [3]float64(candidate.Position),
+		})
+		if patchCode != 0 {
+			result.Status = "ERROR"
+			result.Body = patchResult.Body
+			return result, 1
+		}
+
+		data, marshalErr := json.Marshal(patchResult)
+		if marshalErr != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR marshal patch: %v", marshalErr)
+			return result, 1
+		}
+		if writeErr := os.WriteFile(args.PatchOut, data, 0o644); writeErr != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR writing patch file %s: %v", args.PatchOut, writeErr)
+			return result, 1
+		}
+
+		result.Body = strings.TrimRight(result.Body, "\n") + fmt.Sprintf("\nPATCH_OUT rank=%d file=%s status=%s candidate_status=%s", pick, args.PatchOut, patchResult.Status, candidate.Status)
+	}
+
 	return result, 0
 }
 

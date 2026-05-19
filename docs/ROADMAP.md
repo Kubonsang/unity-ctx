@@ -50,6 +50,7 @@ Status:
 - `v0.5a` complete: prefab impact foundation
 - `v0.5b` complete: prefab set impact-first mutation
 - `v0.5c` complete: scene suggest read-only planner (`--manifest`, `--prefab`, `--near`, optional `--count`, `--align floor|grid`, `--json`)
+- `v0.5d` complete: suggest-to-patch handoff (`--out`, `--pick`, `--prefab-guid` for `scene suggest`)
 - `wall` alignment remains out of scope for this slice
 - actual scene placement still flows through `scene patch` and `scene apply`
 

@@ -58,6 +58,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	near := flagSet.String("near", "", "")
 	count := flagSet.Int("count", 4, "")
 	align := flagSet.String("align", "floor", "")
+	pick := flagSet.Int("pick", 1, "")
 	prefabGUID := flagSet.String("prefab-guid", "", "")
 	position := flagSet.String("position", "", "")
 	op := flagSet.String("op", "", "")
@@ -111,8 +112,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --ack-impact\n", command)
 		return 2
 	}
-	if command != "suggest" && anyFlagVisited(seenFlags, "near", "count", "align") {
-		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --near, --count, or --align\n", command)
+	if command != "suggest" && anyFlagVisited(seenFlags, "near", "count", "align", "pick") {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --near, --count, --align, or --pick\n", command)
 		return 2
 	}
 
@@ -497,8 +498,20 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			_, _ = io.WriteString(stderr, "ERROR suggest supports only --align floor|grid\n")
 			return 2
 		}
-		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "value", "write", "project", "scenes", "prefabs", "position", "op", "prefab-guid", "out", "task", "focus", "max-tokens", "patch", "ack-impact", "mode") {
-			_, _ = io.WriteString(stderr, "ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --project, --scenes, --prefabs, --position, --op, --prefab-guid, --out, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode\n")
+		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "value", "write", "project", "scenes", "prefabs", "position", "op", "task", "focus", "max-tokens", "patch", "ack-impact", "mode") {
+			_, _ = io.WriteString(stderr, "ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --project, --scenes, --prefabs, --position, --op, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode\n")
+			return 2
+		}
+		if seenFlags["pick"] && *pick < 1 {
+			_, _ = io.WriteString(stderr, "ERROR suggest requires --pick >= 1\n")
+			return 2
+		}
+		if seenFlags["pick"] && !seenFlags["out"] {
+			_, _ = io.WriteString(stderr, "ERROR suggest --pick requires --out\n")
+			return 2
+		}
+		if seenFlags["prefab-guid"] && !seenFlags["out"] {
+			_, _ = io.WriteString(stderr, "ERROR suggest --prefab-guid requires --out\n")
 			return 2
 		}
 	}
@@ -603,11 +616,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	if command == "suggest" {
 		suggestResult, suggestExitCode := service.Suggest(namespace, file, selectedView, *jsonOutput, app.SuggestArgs{
-			Manifest: *manifest,
-			Prefab:   *prefab,
-			Near:     *near,
-			Count:    *count,
-			Align:    *align,
+			Manifest:   *manifest,
+			Prefab:     *prefab,
+			Near:       *near,
+			Count:      *count,
+			Align:      *align,
+			PatchOut:   *out,
+			Pick:       *pick,
+			PrefabGUID: *prefabGUID,
 		})
 
 		if *jsonOutput {
