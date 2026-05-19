@@ -26,8 +26,6 @@ type fakeScanRunner struct {
 	prefabs []string
 }
 
-const benchMeasurementPath = "<bench-input>"
-
 func (r *fakeScanRunner) RunEditorScan(projectPath, sceneAssetPath string, prefabPaths []string) ([]byte, error) {
 	r.project = projectPath
 	r.scene = sceneAssetPath
@@ -505,7 +503,7 @@ func TestBenchSummarizeOnly(t *testing.T) {
 		t.Fatalf("Bench() code = %d, want 0 body=%q", code, got.Body)
 	}
 
-	wantSummarize := "OK SCENE file=" + benchMeasurementPath + " game_objects=2 components=2 unknown=0"
+	wantSummarize := "OK SCENE file=" + path + " game_objects=2 components=2 unknown=0"
 	rawBytes := len(raw)
 	rawTokens := estimateBenchTokens(rawBytes)
 	summarizeBytes := len(wantSummarize)
@@ -543,10 +541,10 @@ func TestBenchWithTaskIncludesContextPack(t *testing.T) {
 		t.Fatalf("Bench() code = %d, want 0 body=%q", code, got.Body)
 	}
 
-	wantSummarize := "OK SCENE file=" + benchMeasurementPath + " game_objects=2 components=2 unknown=0"
+	wantSummarize := "OK SCENE file=" + path + " game_objects=2 components=2 unknown=0"
 	summarizeBytes := len(wantSummarize)
 	summarizeTokens := estimateBenchTokens(summarizeBytes)
-	wantContextPack := "TASK_CONTEXT scene=" + benchMeasurementPath + ` task="Find spawn points" budget=` + strconv.Itoa(rawTokens) + "tok\n" +
+	wantContextPack := "TASK_CONTEXT scene=" + path + ` task="Find spawn points" budget=` + strconv.Itoa(rawTokens) + "tok\n" +
 		`OBJECT name="Chair_01" id=2000 type="GameObject"` + "\n" +
 		`OBJECT name="Table_01" id=1000 type="GameObject"`
 	contextPackBytes := len(wantContextPack)
@@ -597,12 +595,47 @@ func TestBenchWithTaskUpliftsBudgetAboveRawTokenEstimate(t *testing.T) {
 		t.Fatalf("required tokens = %d, want > raw tokens %d", requiredTokens, rawTokens)
 	}
 
+	wantSummarize := "OK SCENE file=" + path + " game_objects=1 components=0 unknown=0"
+	summarizeBytes := len(wantSummarize)
+	summarizeTokens := estimateBenchTokens(summarizeBytes)
+	wantContextPack := "TASK_CONTEXT task=\"inspect\"\nOMITTED reason=token_budget lines=1"
+	contextPackBytes := len(wantContextPack)
+	contextPackTokens := estimateBenchTokens(contextPackBytes)
+	wantBody := "OK" +
+		" raw_bytes=" + strconv.Itoa(len(data)) +
+		" raw_tokens=" + strconv.Itoa(rawTokens) +
+		" summarize_bytes=" + strconv.Itoa(summarizeBytes) +
+		" summarize_tokens=" + strconv.Itoa(summarizeTokens) +
+		" summarize_ratio=" + strconv.FormatFloat(benchRatio(summarizeTokens, rawTokens), 'f', -1, 64) +
+		" summarize_saved_tokens=" + strconv.Itoa(benchSavedTokens(rawTokens, summarizeTokens)) +
+		" context_pack_bytes=" + strconv.Itoa(contextPackBytes) +
+		" context_pack_tokens=" + strconv.Itoa(contextPackTokens) +
+		" context_pack_ratio=" + strconv.FormatFloat(benchRatio(contextPackTokens, rawTokens), 'f', -1, 64) +
+		" context_pack_saved_tokens=" + strconv.Itoa(benchSavedTokens(rawTokens, contextPackTokens))
+
 	got, code := svc.Bench("scene", path, core.ViewCompact, false, app.BenchArgs{Task: "inspect"})
 	if code != 0 {
 		t.Fatalf("Bench() code = %d, want 0 body=%q", code, got.Body)
 	}
-	if !strings.Contains(got.Body, " context_pack_bytes=") {
-		t.Fatalf("Bench().Body missing context_pack metrics: %q", got.Body)
+	if got.Body != wantBody {
+		t.Fatalf("Bench().Body = %q, want %q", got.Body, wantBody)
+	}
+
+	jsonGot, jsonCode := svc.Bench("scene", path, core.ViewCompact, true, app.BenchArgs{Task: "inspect"})
+	if jsonCode != 0 {
+		t.Fatalf("Bench(json) code = %d, want 0 body=%q", jsonCode, jsonGot.Body)
+	}
+	if jsonGot.Bench == nil || jsonGot.Bench.ContextPack == nil {
+		t.Fatalf("Bench(json) payload missing context pack: %#v", jsonGot.Bench)
+	}
+	if jsonGot.Bench.RawBytes != len(data) || jsonGot.Bench.RawTokens != rawTokens {
+		t.Fatalf("Bench(json) raw metrics = %+v, want bytes=%d tokens=%d", jsonGot.Bench, len(data), rawTokens)
+	}
+	if jsonGot.Bench.Summarize.Bytes != summarizeBytes || jsonGot.Bench.Summarize.Tokens != summarizeTokens {
+		t.Fatalf("Bench(json) summarize metrics = %+v, want bytes=%d tokens=%d", jsonGot.Bench.Summarize, summarizeBytes, summarizeTokens)
+	}
+	if jsonGot.Bench.ContextPack.Bytes != contextPackBytes || jsonGot.Bench.ContextPack.Tokens != contextPackTokens {
+		t.Fatalf("Bench(json) context pack metrics = %+v, want bytes=%d tokens=%d", *jsonGot.Bench.ContextPack, contextPackBytes, contextPackTokens)
 	}
 }
 
@@ -629,9 +662,9 @@ func TestBenchJSONOmitsContextPackWithoutTaskAndIncludesItWithTask(t *testing.T)
 	}
 	rawBytes := len(raw)
 	rawTokens := estimateBenchTokens(rawBytes)
-	summarizeBytes := len("OK SCENE file=" + benchMeasurementPath + " game_objects=2 components=2 unknown=0")
+	summarizeBytes := len("OK SCENE file=" + path + " game_objects=2 components=2 unknown=0")
 	summarizeTokens := estimateBenchTokens(summarizeBytes)
-	contextPackBytes := len("TASK_CONTEXT scene=" + benchMeasurementPath + ` task="Find spawn points" budget=` + strconv.Itoa(rawTokens) + "tok\n" +
+	contextPackBytes := len("TASK_CONTEXT scene=" + path + ` task="Find spawn points" budget=` + strconv.Itoa(rawTokens) + "tok\n" +
 		`OBJECT name="Chair_01" id=2000 type="GameObject"` + "\n" +
 		`OBJECT name="Table_01" id=1000 type="GameObject"`)
 	contextPackTokens := estimateBenchTokens(contextPackBytes)
@@ -733,58 +766,6 @@ func TestBenchJSONOmitsContextPackWithoutTaskAndIncludesItWithTask(t *testing.T)
 	}
 	if got := jsonNumberAsInt(t, contextPackValue["saved_tokens"]); got != benchSavedTokens(rawTokens, contextPackTokens) {
 		t.Fatalf("bench.context_pack.saved_tokens = %d, want %d", got, benchSavedTokens(rawTokens, contextPackTokens))
-	}
-}
-
-func TestBenchMetricsArePathInvariantForIdenticalContent(t *testing.T) {
-	sceneData, err := os.ReadFile(filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"))
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-
-	shortPath := filepath.Join(t.TempDir(), "a.unity")
-	longDir := filepath.Join(t.TempDir(), "deep", "nested", "path", "with", "more", "segments")
-	longPath := filepath.Join(longDir, "scene_with_a_longer_name.unity")
-	if err := os.MkdirAll(filepath.Dir(longPath), 0o755); err != nil {
-		t.Fatalf("MkdirAll() error = %v", err)
-	}
-	if err := os.WriteFile(shortPath, sceneData, 0o644); err != nil {
-		t.Fatalf("WriteFile(shortPath) error = %v", err)
-	}
-	if err := os.WriteFile(longPath, sceneData, 0o644); err != nil {
-		t.Fatalf("WriteFile(longPath) error = %v", err)
-	}
-
-	svc := app.New()
-	shortBench, shortCode := svc.Bench("scene", shortPath, core.ViewCompact, true, app.BenchArgs{Task: "Find spawn points"})
-	if shortCode != 0 {
-		t.Fatalf("Bench(short) code = %d, want 0 body=%q", shortCode, shortBench.Body)
-	}
-	longBench, longCode := svc.Bench("scene", longPath, core.ViewCompact, true, app.BenchArgs{Task: "Find spawn points"})
-	if longCode != 0 {
-		t.Fatalf("Bench(long) code = %d, want 0 body=%q", longCode, longBench.Body)
-	}
-	if shortBench.Bench == nil || longBench.Bench == nil {
-		t.Fatalf("bench payloads must be present: short=%#v long=%#v", shortBench.Bench, longBench.Bench)
-	}
-	if shortBench.Bench.ContextPack == nil || longBench.Bench.ContextPack == nil {
-		t.Fatalf("context_pack payloads must be present: short=%#v long=%#v", shortBench.Bench, longBench.Bench)
-	}
-
-	if shortBench.Body != longBench.Body {
-		t.Fatalf("bench body differs for identical content at different paths:\nshort=%q\nlong=%q", shortBench.Body, longBench.Body)
-	}
-	if shortBench.Bench.RawBytes != longBench.Bench.RawBytes {
-		t.Fatalf("raw_bytes differ for same file content: short=%d long=%d", shortBench.Bench.RawBytes, longBench.Bench.RawBytes)
-	}
-	if shortBench.Bench.RawTokens != longBench.Bench.RawTokens {
-		t.Fatalf("raw_tokens differ for same file content: short=%d long=%d", shortBench.Bench.RawTokens, longBench.Bench.RawTokens)
-	}
-	if *shortBench.Bench.ContextPack != *longBench.Bench.ContextPack {
-		t.Fatalf("context_pack metrics differ for same file content: short=%+v long=%+v", *shortBench.Bench.ContextPack, *longBench.Bench.ContextPack)
-	}
-	if shortBench.Bench.Summarize != longBench.Bench.Summarize {
-		t.Fatalf("summarize metrics differ for same file content: short=%+v long=%+v", shortBench.Bench.Summarize, longBench.Bench.Summarize)
 	}
 }
 

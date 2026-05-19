@@ -210,8 +210,6 @@ type loadedDoc struct {
 	doc    *document.Doc
 }
 
-const benchMeasurementPath = "<bench-input>"
-
 func New() *Service {
 	return &Service{
 		scanRunner: scan.UnityCLIRunner{},
@@ -267,9 +265,9 @@ func (s *Service) Bench(namespace, path string, view core.View, jsonOut bool, ar
 		return result, 1
 	}
 
-	// Bench measures rendered command payloads against a stable placeholder path so
-	// identical file contents produce identical metrics regardless of caller path.
-	summarizeResult := summarizeResultFromLoaded(namespace, benchMeasurementPath, core.ViewCompact, loaded)
+	// Bench measures the actual rendered summarize/context-pack payloads for the
+	// requested path, rather than path-normalized semantic content.
+	summarizeResult := summarizeResultFromLoaded(namespace, path, core.ViewCompact, loaded)
 	benchInput := bench.Input{
 		RawBytes:       len(raw),
 		SummarizeBytes: len(summarizeResult.Body),
@@ -279,7 +277,12 @@ func (s *Service) Bench(namespace, path string, view core.View, jsonOut bool, ar
 	if task != "" {
 		rawTokens := bench.EstimateTokens(len(raw))
 		maxTokens := rawTokens
-		measureOpts := benchContextPackOptions(namespace, task, rawTokens)
+		measureOpts := contextpack.Options{
+			Namespace: namespace,
+			File:      path,
+			Task:      task,
+			MaxTokens: rawTokens,
+		}
 		minBudget := contextpack.MinimumBudgetForOptions(measureOpts, contextpack.NamedObjectCount(loaded.blocks))
 		if minBudget > maxTokens {
 			maxTokens = minBudget
@@ -1448,15 +1451,6 @@ func contextPackResultFromOptions(loaded *loadedDoc, opts contextpack.Options, v
 	result.Status = "OK"
 	result.Body = strings.Join(lines, "\n")
 	return result, 0
-}
-
-func benchContextPackOptions(namespace, task string, maxTokens int) contextpack.Options {
-	return contextpack.Options{
-		Namespace: namespace,
-		File:      benchMeasurementPath,
-		Task:      task,
-		MaxTokens: maxTokens,
-	}
 }
 
 func newErrorResult(namespace, command, path string, view core.View, err error) core.Result {
