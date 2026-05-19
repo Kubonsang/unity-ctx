@@ -2445,9 +2445,112 @@ func TestSceneSuggestRejectsIrrelevantFlags(t *testing.T) {
 	if result.stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", result.stdout)
 	}
-	want := "ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --project, --scenes, --prefabs, --position, --op, --prefab-guid, --out, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode\n"
+	want := "ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --project, --scenes, --prefabs, --position, --op, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode\n"
 	if result.stderr != want {
 		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSceneSuggestWritesPatchFileViaOut(t *testing.T) {
+	outFile := filepath.Join(t.TempDir(), "out.patch.json")
+	result := runCLI(t,
+		"scene", "suggest", "testdata/scenes/simple_scene.unity",
+		"--manifest", "testdata/manifests/simple_scene.bounds.json",
+		"--prefab", "Assets/Prefabs/chair.prefab",
+		"--near", "1000",
+		"--prefab-guid", "guid-chair",
+		"--out", outFile,
+	)
+	if result.exitCode != 0 {
+		t.Fatalf("expected exit 0, got %d stderr=%s stdout=%s", result.exitCode, result.stderr, result.stdout)
+	}
+	if !strings.Contains(result.stdout, "PATCH_OUT rank=1") {
+		t.Fatalf("stdout missing PATCH_OUT line:\n%s", result.stdout)
+	}
+	if _, err := os.Stat(outFile); err != nil {
+		t.Fatalf("patch file not created: %v", err)
+	}
+}
+
+func TestSceneSuggestPickSelectsRank(t *testing.T) {
+	outFile := filepath.Join(t.TempDir(), "out.patch.json")
+	result := runCLI(t,
+		"scene", "suggest", "testdata/scenes/simple_scene.unity",
+		"--manifest", "testdata/manifests/simple_scene.bounds.json",
+		"--prefab", "Assets/Prefabs/chair.prefab",
+		"--near", "1000",
+		"--prefab-guid", "guid-chair",
+		"--out", outFile,
+		"--pick", "2",
+	)
+	if result.exitCode != 0 {
+		t.Fatalf("expected exit 0, got %d stderr=%s", result.exitCode, result.stderr)
+	}
+	if !strings.Contains(result.stdout, "PATCH_OUT rank=2") {
+		t.Fatalf("stdout missing PATCH_OUT rank=2:\n%s", result.stdout)
+	}
+}
+
+func TestSceneSuggestRejectsPickWithoutOut(t *testing.T) {
+	result := runCLI(t,
+		"scene", "suggest", "testdata/scenes/simple_scene.unity",
+		"--manifest", "testdata/manifests/simple_scene.bounds.json",
+		"--prefab", "Assets/Prefabs/chair.prefab",
+		"--near", "1000",
+		"--pick", "2",
+	)
+	if result.exitCode == 0 {
+		t.Fatalf("expected non-zero exit")
+	}
+	if result.stderr != "ERROR suggest --pick requires --out\n" {
+		t.Fatalf("unexpected stderr: %q", result.stderr)
+	}
+}
+
+func TestSceneSuggestRejectsPrefabGUIDWithoutOut(t *testing.T) {
+	result := runCLI(t,
+		"scene", "suggest", "testdata/scenes/simple_scene.unity",
+		"--manifest", "testdata/manifests/simple_scene.bounds.json",
+		"--prefab", "Assets/Prefabs/chair.prefab",
+		"--near", "1000",
+		"--prefab-guid", "some-guid",
+	)
+	if result.exitCode == 0 {
+		t.Fatalf("expected non-zero exit")
+	}
+	if result.stderr != "ERROR suggest --prefab-guid requires --out\n" {
+		t.Fatalf("unexpected stderr: %q", result.stderr)
+	}
+}
+
+func TestSceneSuggestRejectsPickBelowOne(t *testing.T) {
+	outFile := filepath.Join(t.TempDir(), "out.patch.json")
+	result := runCLI(t,
+		"scene", "suggest", "testdata/scenes/simple_scene.unity",
+		"--manifest", "testdata/manifests/simple_scene.bounds.json",
+		"--prefab", "Assets/Prefabs/chair.prefab",
+		"--near", "1000",
+		"--out", outFile,
+		"--pick", "0",
+	)
+	if result.exitCode == 0 {
+		t.Fatalf("expected non-zero exit")
+	}
+	if result.stderr != "ERROR suggest requires --pick >= 1\n" {
+		t.Fatalf("unexpected stderr: %q", result.stderr)
+	}
+}
+
+func TestPickRejectedOnNonSuggestCommand(t *testing.T) {
+	result := runCLI(t,
+		"scene", "summarize", "testdata/scenes/simple_scene.unity",
+		"--pick", "2",
+	)
+	if result.exitCode == 0 {
+		t.Fatalf("expected non-zero exit")
+	}
+	if result.stderr != "ERROR summarize does not accept --near, --count, --align, or --pick\n" {
+		t.Fatalf("unexpected stderr: %q", result.stderr)
 	}
 }
 
