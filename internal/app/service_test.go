@@ -2257,6 +2257,10 @@ func TestIndexRecoversFromInvalidExistingSnapshot(t *testing.T) {
 }
 
 func TestIndexPropagatesIOErrorOnExistingSnapshotFile(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipping: chmod has no effect as root")
+	}
+
 	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
 	out := filepath.Join(t.TempDir(), "unreadable.index.json")
 
