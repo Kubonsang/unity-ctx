@@ -1,6 +1,6 @@
 # unity-ctx
 
-A CLI tool for AI coding agents to read and edit Unity scenes, prefabs, and assets — without loading raw Unity YAML into the prompt.
+A CLI tool for AI coding agents to inspect and safely modify Unity scenes, prefabs, and assets — without loading raw Unity YAML into the prompt.
 
 Unity's serialization format is verbose. A single scene file can easily exceed an agent's token budget, and editing it by hand risks corrupt serialization. `unity-ctx` solves this by exposing compact, query-first commands that keep context small and mutations safe.
 
@@ -100,7 +100,7 @@ See [`docs/COMMANDS.md`](docs/COMMANDS.md) for the full command reference.
 | `prefab impact` | Which scenes and prefabs reference a prefab |
 | `scene scan --mode editor` | Generate a bounds manifest via Unity Editor |
 | `scene check` | Validate a bounds manifest against the scene |
-| `scene patch --op place_prefab` | Plan a prefab placement (dry-run, no file write) |
+| `scene patch --op place_prefab` | Generate a prefab placement patch plan |
 | `scene diff --patch` | Summarize a persisted patch plan |
 | `scene suggest` | Rank placement candidates near an anchor object |
 | `bench` | Measure token reduction (raw vs summarize vs context-pack) |
