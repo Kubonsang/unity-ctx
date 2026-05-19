@@ -29,14 +29,17 @@ func EstimateTokens(utf8Bytes int) int {
 }
 
 func Build(in Input) Result {
-	rawTokens := EstimateTokens(in.RawBytes)
+	rawBytes := normalizeBytes(in.RawBytes)
+	summarizeBytes := normalizeBytes(in.SummarizeBytes)
+	contextPackBytes := normalizeBytes(in.ContextPackBytes)
+	rawTokens := EstimateTokens(rawBytes)
 	result := Result{
-		RawBytes:  in.RawBytes,
+		RawBytes:  rawBytes,
 		RawTokens: rawTokens,
-		Summarize: buildMetric(in.SummarizeBytes, rawTokens),
+		Summarize: buildMetric(summarizeBytes, rawTokens),
 	}
-	if in.HasContextPack {
-		metric := buildMetric(in.ContextPackBytes, rawTokens)
+	if in.HasContextPack || contextPackBytes != 0 {
+		metric := buildMetric(contextPackBytes, rawTokens)
 		result.ContextPack = &metric
 	}
 	return result
@@ -65,4 +68,11 @@ func savedTokens(rawTokens int, tokens int) int {
 		return 0
 	}
 	return saved
+}
+
+func normalizeBytes(bytes int) int {
+	if bytes < 0 {
+		return 0
+	}
+	return bytes
 }
