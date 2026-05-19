@@ -186,24 +186,14 @@ func TestBuildWithZeroRawBytesHasZeroRatioAndNonNegativeSavedTokens(t *testing.T
 	}
 }
 
-func TestBuildIncludesContextPackWhenBytesProvidedWithoutBool(t *testing.T) {
+func TestBuildLeavesContextPackNilWhenBoolIsFalse(t *testing.T) {
 	got := Build(Input{
 		RawBytes:         16,
 		SummarizeBytes:   8,
 		ContextPackBytes: 4,
 	})
 
-	if got.ContextPack == nil {
-		t.Fatal("Build().ContextPack = nil, want metric")
-	}
-
-	want := Metric{
-		Bytes:       4,
-		Tokens:      1,
-		Ratio:       0.25,
-		SavedTokens: 3,
-	}
-	if *got.ContextPack != want {
-		t.Fatalf("Build().ContextPack = %+v, want %+v", *got.ContextPack, want)
+	if got.ContextPack != nil {
+		t.Fatalf("Build().ContextPack = %+v, want nil", got.ContextPack)
 	}
 }

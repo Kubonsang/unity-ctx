@@ -38,7 +38,7 @@ func Build(in Input) Result {
 		RawTokens: rawTokens,
 		Summarize: buildMetric(summarizeBytes, rawTokens),
 	}
-	if in.HasContextPack || contextPackBytes != 0 {
+	if in.HasContextPack {
 		metric := buildMetric(contextPackBytes, rawTokens)
 		result.ContextPack = &metric
 	}
