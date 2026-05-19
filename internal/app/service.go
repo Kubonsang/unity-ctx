@@ -210,6 +210,8 @@ type loadedDoc struct {
 	doc    *document.Doc
 }
 
+const benchMeasurementPath = "<bench-input>"
+
 func New() *Service {
 	return &Service{
 		scanRunner: scan.UnityCLIRunner{},
@@ -265,9 +267,9 @@ func (s *Service) Bench(namespace, path string, view core.View, jsonOut bool, ar
 		return result, 1
 	}
 
-	// Bench measures rendered command payloads, so path text in summarize/context-pack
-	// output intentionally contributes to the reported byte and token counts.
-	summarizeResult := summarizeResultFromLoaded(namespace, path, core.ViewCompact, loaded)
+	// Bench measures rendered command payloads against a stable placeholder path so
+	// identical file contents produce identical metrics regardless of caller path.
+	summarizeResult := summarizeResultFromLoaded(namespace, benchMeasurementPath, core.ViewCompact, loaded)
 	benchInput := bench.Input{
 		RawBytes:       len(raw),
 		SummarizeBytes: len(summarizeResult.Body),
@@ -277,20 +279,14 @@ func (s *Service) Bench(namespace, path string, view core.View, jsonOut bool, ar
 	if task != "" {
 		rawTokens := bench.EstimateTokens(len(raw))
 		maxTokens := rawTokens
-		minBudget := contextpack.MinimumBudgetForOptions(contextpack.Options{
-			Namespace: namespace,
-			File:      path,
-			Task:      task,
-			MaxTokens: rawTokens,
-		}, contextpack.NamedObjectCount(loaded.blocks))
+		measureOpts := benchContextPackOptions(namespace, task, rawTokens)
+		minBudget := contextpack.MinimumBudgetForOptions(measureOpts, contextpack.NamedObjectCount(loaded.blocks))
 		if minBudget > maxTokens {
 			maxTokens = minBudget
 		}
+		measureOpts.MaxTokens = maxTokens
 
-		contextPackResult, contextPackCode := contextPackResultFromLoaded(namespace, path, core.ViewCompact, loaded, ContextPackArgs{
-			Task:      task,
-			MaxTokens: maxTokens,
-		})
+		contextPackResult, contextPackCode := contextPackResultFromOptions(loaded, measureOpts, core.ViewCompact)
 		if contextPackCode != 0 {
 			result.Status = contextPackResult.Status
 			result.Body = contextPackResult.Body
@@ -1407,44 +1403,42 @@ func summarizeResultFromLoaded(namespace, path string, view core.View, loaded *l
 }
 
 func contextPackResultFromLoaded(namespace, path string, view core.View, loaded *loadedDoc, args ContextPackArgs) (core.Result, int) {
-	result := core.Result{
+	return contextPackResultFromOptions(loaded, contextpack.Options{
 		Namespace: namespace,
-		Command:   "context-pack",
 		File:      path,
+		Task:      args.Task,
+		Focus:     args.Focus,
+		MaxTokens: args.MaxTokens,
+	}, view)
+}
+
+func contextPackResultFromOptions(loaded *loadedDoc, opts contextpack.Options, view core.View) (core.Result, int) {
+	result := core.Result{
+		Namespace: opts.Namespace,
+		Command:   "context-pack",
+		File:      opts.File,
 		View:      view,
 	}
 
-	if strings.TrimSpace(args.Task) == "" && strings.TrimSpace(args.Focus) == "" {
+	if strings.TrimSpace(opts.Task) == "" && strings.TrimSpace(opts.Focus) == "" {
 		result.Status = "ERROR"
 		result.Body = "ERROR context-pack requires --focus or --task"
 		return result, 1
 	}
-	if args.MaxTokens < contextpack.MinimumBudget() {
+	if opts.MaxTokens < contextpack.MinimumBudget() {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR context-pack requires --max-tokens >= %d", contextpack.MinimumBudget())
 		return result, 1
 	}
 
-	minBudget := contextpack.MinimumBudgetForOptions(contextpack.Options{
-		Namespace: namespace,
-		File:      path,
-		Task:      args.Task,
-		Focus:     args.Focus,
-		MaxTokens: args.MaxTokens,
-	}, contextpack.NamedObjectCount(loaded.blocks))
-	if args.MaxTokens < minBudget {
+	minBudget := contextpack.MinimumBudgetForOptions(opts, contextpack.NamedObjectCount(loaded.blocks))
+	if opts.MaxTokens < minBudget {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR context-pack requires --max-tokens >= %d", minBudget)
 		return result, 1
 	}
 
-	lines := contextpack.Build(contextpack.Options{
-		Namespace: namespace,
-		File:      path,
-		Task:      args.Task,
-		Focus:     args.Focus,
-		MaxTokens: args.MaxTokens,
-	}, loaded.blocks)
+	lines := contextpack.Build(opts, loaded.blocks)
 	if len(lines) == 0 {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR context-pack requires --max-tokens >= %d", minBudget)
@@ -1454,6 +1448,15 @@ func contextPackResultFromLoaded(namespace, path string, view core.View, loaded 
 	result.Status = "OK"
 	result.Body = strings.Join(lines, "\n")
 	return result, 0
+}
+
+func benchContextPackOptions(namespace, task string, maxTokens int) contextpack.Options {
+	return contextpack.Options{
+		Namespace: namespace,
+		File:      benchMeasurementPath,
+		Task:      task,
+		MaxTokens: maxTokens,
+	}
 }
 
 func newErrorResult(namespace, command, path string, view core.View, err error) core.Result {
