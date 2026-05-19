@@ -27,8 +27,7 @@ Choosing a suggestion does not place anything by itself; actual placement still 
 `--out <file>` writes a diff/apply-compatible patch artifact for the top candidate (use `--pick <n>` to select another rank).
 The patch status in `PATCH_OUT` can be `WARN` even when the selected candidate's `candidate_status` is `OK`:
 suggest excludes the anchor from overlap checks; the patch artifact uses normal patch planning semantics.
-Without `--prefab-guid`, the written patch has `status=UNKNOWN` and cannot be applied until the GUID is known.
-Without `--prefab-guid` it returns UNKNOWN NEED_PREFAB_GUID instead of guessing a GUID.
+Without `--prefab-guid`, the written patch has `status=UNKNOWN` (NEED_PREFAB_GUID) and cannot be applied until the GUID is known.
 With `--prefab-guid` it can return OK or WARN planning results.
 `scene diff` can summarize persisted patch plans.
 `scene apply` can dry-run or `--write` the current append-only place_prefab patch contract.
