@@ -58,6 +58,8 @@ Status:
 - nested prefab warning reuse across `prefab impact` and `prefab set`
 - suggest near/grid/floor
 
+- `v0.2x` complete: token reduction `bench` backfill
+
 ## v1.0 — Agent Harness Release
 
 - SKILL docs

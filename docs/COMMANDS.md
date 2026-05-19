@@ -681,6 +681,23 @@ ERROR APPLY_VERIFY_FAILED expected_objects=2 actual_objects=1
 ERROR patch scene mismatch file=Stage01.unity patch_file=OtherScene.unity
 ```
 
+## v0.2x Bench Backfill
+
+### bench
+
+```bash
+unity-ctx scene bench Assets/Scenes/Stage01.unity
+unity-ctx scene bench Assets/Scenes/Stage01.unity --task "inspect placement safety"
+unity-ctx scene bench Assets/Scenes/Stage01.unity --task "inspect placement safety" --json
+```
+
+- `bench` is a token reduction benchmark, not a performance benchmark.
+- token estimation uses `ceil(utf8_bytes / 4)`.
+- `bench` always measures raw vs `summarize`.
+- `bench` measures `context-pack` only when `--task` is present.
+- `bench` does not use an external tokenizer.
+- `bench` does not use Unity Editor integration.
+
 ## Output Stability Rules
 
 - No timestamps in default output.

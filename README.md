@@ -47,3 +47,5 @@ Current `v0.5c` surface:
 - `scene apply`
 - `prefab impact --project <project>`
 - `prefab set <prefab> --project <project> --id <fileID> --field <field> --value <value>`
+- `bench` is available as a read-only token reduction benchmark.
+It always measures raw-vs-summarize ratio, and with `--task` it also measures raw-vs-context-pack ratio using the SRS estimate `ceil(utf8_bytes / 4)`.
