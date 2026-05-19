@@ -1,61 +1,137 @@
-# unity-ctx Codex Development Kit
+# unity-ctx
 
-`unity-ctx` is a token-aware Unity Context Provider for AI coding agents.
+A CLI tool for AI coding agents to read and edit Unity scenes, prefabs, and assets — without loading raw Unity YAML into the prompt.
 
-This kit contains:
+Unity's serialization format is verbose. A single scene file can easily exceed an agent's token budget, and editing it by hand risks corrupt serialization. `unity-ctx` solves this by exposing compact, query-first commands that keep context small and mutations safe.
 
-- `docs/SRS.md`: Codex-ready SRS Rev 5
-- `AGENTS.md`: root project rules for Codex
-- `.agents/skills/*/SKILL.md`: focused development skills
-- `.agents/prompts/*.md`: copy-paste task prompts
-- `.codex/agents/*.toml`: optional Codex subagent specs
-- `docs/COMMANDS.md`, `docs/ROADMAP.md`, `docs/TESTING.md`: implementation references
+## Features
 
-Recommended first prompt:
+- **Read Unity files without raw YAML** — compact output, token-aware summaries
+- **Query by name or fileID** — inspect specific GameObjects, components, and fields
+- **Context packing** — assemble agent-ready context within a token budget
+- **Safe mutation** — all writes default to dry-run; `--write` required to commit
+- **Scene placement planning** — suggest placement candidates near an anchor object, write a diff/apply-compatible patch artifact
+- **Prefab impact analysis** — see which scenes and prefabs reference a prefab before mutating it
+- **Deterministic output** — every command produces stable, testable text
 
-```text
-Read AGENTS.md and docs/SRS.md first.
-Start from the read-only commands first.
-Implemented mutation slices are `asset set` and `prefab set`.
+## Supported file types
 
-`scene scan --mode editor` generates a deterministic bounds manifest through a Unity Editor edge.
-`scene check` is a read-only bounds validation tool.
-`scene patch --op place_prefab` is a read-only patch-plan generator.
-`scene diff` summarizes persisted patch plans.
-`scene apply` dry-runs or `--write`s the append-only place_prefab patch contract.
+| File | Namespace |
+|------|-----------|
+| `.unity` | `scene` |
+| `.prefab` | `prefab` |
+| `.asset`, `.mat` | `asset` |
 
-`scene suggest` is a read-only placement planner for ranked near/grid/floor candidates.
-  - `--manifest`, `--prefab`, `--near`, optional `--count`, `--align floor|grid`, `--json`
-  - `--align wall` is out of scope
-  - `--out <file>` writes a diff/apply-compatible patch artifact for the selected rank
-  - `--pick <n>` (default 1) selects the candidate rank; requires `--out`
-  - `--prefab-guid <guid>` embeds the GUID; requires `--out`; omit → `status=UNKNOWN` (cannot apply until GUID is known)
-  - `PATCH_OUT status` may differ from `candidate_status`: patch checks anchor overlap, suggest does not
-  - Placement always flows through `scene apply --write`
+## Installation
 
-`prefab impact --project <project>` is a read-only impact scan for scene and nested prefab references.
-  - compact output, optional `--scenes`, `--json` with nested `impact` payload
-  - nested traversal beyond depth cap returns `WARN IMPACT_DEPTH_LIMIT`
-
-`prefab set <prefab> --project <project> --id <fileID> --field <field> --value <value>` is an impact-first mutation slice.
-  - fileID-only, defaults to dry-run, `ack_required` in dry-run output
-  - writes require `--write --ack-impact`
-  - `--json` uses the same nested `impact` payload shape as `prefab impact`; `asset set` JSON is unchanged
-
-`bench` measures token reduction: raw-vs-summarize always, raw-vs-context-pack with `--task`.
-
-Run go test ./... before final response.
+```bash
+go install unity-ctx/cmd/unity-ctx@latest
 ```
 
-Current `v0.5d` surface:
+Or build from source:
 
-- `scene scan --mode editor`
-- `scene check`
-- `scene suggest` (`--out`, `--pick`, `--prefab-guid`)
-- `scene patch --op place_prefab`
-- `scene diff`
-- `scene apply`
-- `prefab impact --project <project>`
-- `prefab set <prefab> --project <project> --id <fileID> --field <field> --value <value>`
-- `asset set`
-- `bench`
+```bash
+git clone https://github.com/Kubonsang/unity-ctx.git
+cd unity-ctx
+go build ./cmd/unity-ctx
+```
+
+Requires Go 1.22+. No external runtime dependencies.
+
+## Quick start
+
+```bash
+# Summarize a scene
+unity-ctx scene summarize Stage01.unity
+
+# Query objects near an anchor
+unity-ctx scene query Stage01.unity --near Table_01 --radius 5
+
+# Inspect a component field
+unity-ctx scene inspect Stage01.unity --name Enemy --component NavMeshAgent
+
+# Suggest placement candidates and write a patch
+unity-ctx scene suggest Stage01.unity \
+  --manifest Stage01.bounds.json \
+  --prefab Assets/Prefabs/Chair.prefab \
+  --near Table_01 \
+  --prefab-guid abc-guid-123 \
+  --out chair.patch.json
+
+# Preview the patch before applying
+unity-ctx scene diff Stage01.unity --patch chair.patch.json
+
+# Apply the patch
+unity-ctx scene apply Stage01.unity --patch chair.patch.json --write
+
+# Check the impact of changing a prefab field
+unity-ctx prefab impact Assets/Prefabs/Enemy.prefab --project /path/to/MyUnityProject
+
+# Change a prefab field (dry-run by default)
+unity-ctx prefab set Assets/Prefabs/Enemy.prefab \
+  --project /path/to/MyUnityProject \
+  --id 12345 --field moveSpeed --value 4.0
+
+# Measure token reduction from summarize and context-pack
+unity-ctx bench Assets/Scenes/Stage01.unity --task "place a chair near Table_01"
+```
+
+## Command reference
+
+See [`docs/COMMANDS.md`](docs/COMMANDS.md) for the full command reference.
+
+### Read commands
+
+| Command | Description |
+|---------|-------------|
+| `scene summarize` | Scene overview: object count, component types, PrefabInstances |
+| `scene query` | Filter objects by name, type, or proximity |
+| `scene inspect` | Component fields for a specific object |
+| `scene get` | Single field value by fileID |
+| `scene context-pack` | Token-budgeted context bundle for an agent task |
+| `prefab impact` | Which scenes and prefabs reference a prefab |
+| `scene scan --mode editor` | Generate a bounds manifest via Unity Editor |
+| `scene check` | Validate a bounds manifest against the scene |
+| `scene patch --op place_prefab` | Plan a prefab placement (dry-run, no file write) |
+| `scene diff --patch` | Summarize a persisted patch plan |
+| `scene suggest` | Rank placement candidates near an anchor object |
+| `bench` | Measure token reduction (raw vs summarize vs context-pack) |
+
+### Mutation commands
+
+All mutation commands default to dry-run. Pass `--write` to commit changes. A `.bak` backup is created automatically.
+
+| Command | Description |
+|---------|-------------|
+| `asset set` | Set a field value in a `.asset` or `.mat` file |
+| `prefab set` | Set a prefab field value (impact-checked, requires `--ack-impact` when impact is non-trivial) |
+| `scene apply --patch` | Apply a patch plan to a scene file |
+
+## Design principles
+
+- **No raw YAML in prompts** — commands emit structured, compact text
+- **Dry-run first** — mutations require explicit `--write`
+- **UNKNOWN over guessing** — uncertain states are reported, not assumed
+- **fileID targeting** — mutations target by fileID; name fallback emits a warning
+- **Stable output** — all commands produce deterministic output suitable for tests
+
+## Status
+
+Currently at **v0.5d**. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full roadmap.
+
+Implemented:
+- Read-only context commands (summarize, query, inspect, get, context-pack)
+- Asset and prefab mutation (set, dry-run, impact-checked)
+- Scene placement pipeline (scan, check, patch, diff, apply, suggest)
+- suggest-to-patch handoff (`--out`, `--pick`, `--prefab-guid`)
+- Token reduction benchmarking (bench)
+
+Next milestone: **v1.0 Agent Harness Release** — SKILL docs, AGENTS.md integration guide, sample Unity project, CI examples.
+
+## Contributing
+
+```bash
+go test ./...
+```
+
+All packages must pass before submitting changes. See [`docs/TESTING.md`](docs/TESTING.md) for the testing guide.
