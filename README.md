@@ -25,7 +25,7 @@ Unity's serialization format is verbose. A single scene file can easily exceed a
 ## Installation
 
 ```bash
-go install unity-ctx/cmd/unity-ctx@latest
+go install github.com/Kubonsang/unity-ctx/cmd/unity-ctx@latest
 ```
 
 Or build from source:
@@ -44,8 +44,9 @@ Requires Go 1.22+. No external runtime dependencies.
 # Summarize a scene
 unity-ctx scene summarize Stage01.unity
 
-# Query objects near an anchor
-unity-ctx scene query Stage01.unity --near Table_01 --radius 5
+# Query objects by name or fileID
+unity-ctx scene query Stage01.unity --name Table_01
+unity-ctx scene query Stage01.unity --id 1000
 
 # Inspect a component field
 unity-ctx scene inspect Stage01.unity --name Enemy --component NavMeshAgent
@@ -57,9 +58,16 @@ unity-ctx scene suggest Stage01.unity \
   --near Table_01 \
   --prefab-guid abc-guid-123 \
   --out chair.patch.json
+# PATCH_OUT rank=1 file=chair.patch.json status=WARN candidate_status=OK
+# Note: PATCH_OUT status is the generated patch status; candidate_status is the original
+# suggest candidate status. They may differ because suggest and patch use different
+# overlap semantics (suggest excludes the anchor object; patch does not).
 
 # Preview the patch before applying
 unity-ctx scene diff Stage01.unity --patch chair.patch.json
+
+# Dry-run apply (default — no file is written)
+unity-ctx scene apply Stage01.unity --patch chair.patch.json
 
 # Apply the patch
 unity-ctx scene apply Stage01.unity --patch chair.patch.json --write
@@ -85,7 +93,7 @@ See [`docs/COMMANDS.md`](docs/COMMANDS.md) for the full command reference.
 | Command | Description |
 |---------|-------------|
 | `scene summarize` | Scene overview: object count, component types, PrefabInstances |
-| `scene query` | Filter objects by name, type, or proximity |
+| `scene query` | Filter objects by name, fileID, or type |
 | `scene inspect` | Component fields for a specific object |
 | `scene get` | Single field value by fileID |
 | `scene context-pack` | Token-budgeted context bundle for an agent task |
