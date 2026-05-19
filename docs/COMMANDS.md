@@ -387,13 +387,15 @@ ERROR missing prefab manifest entry for path="Assets/Prefabs/Missing.prefab"
 ### scene suggest — patch output flags
 
 ```bash
-# Write patch for top candidate (rank 1) with GUID → status=OK or WARN in patch
+# Write patch for top candidate (rank 1) with GUID
 unity-ctx scene suggest Stage01.unity \
   --manifest Stage01.bounds.json \
   --prefab Assets/Prefabs/Chair.prefab \
   --near Table_01 \
   --prefab-guid abc-guid-123 \
   --out chair.patch.json
+# stdout: ...CANDIDATE lines...
+# PATCH_OUT rank=1 file=chair.patch.json status=WARN candidate_status=OK
 
 # Select a specific candidate rank
 unity-ctx scene suggest Stage01.unity \
@@ -409,14 +411,27 @@ unity-ctx scene diff Stage01.unity --patch chair.patch.json
 unity-ctx scene apply Stage01.unity --patch chair.patch.json --write
 ```
 
-- `--out <file>` triggers patch output: writes a patch file for the selected candidate rank.
+- `--out <file>` triggers patch output: writes a diff/apply-compatible patch artifact for the selected candidate rank.
 - `--pick <n>` (default `1`) selects which candidate rank to write. Requires `--out`.
 - `--prefab-guid <guid>` embeds the GUID in the written patch. Requires `--out`. Without it, the patch has `status=UNKNOWN`.
 - `--pick` and `--prefab-guid` are rejected when `--out` is not set.
 - Without `--out`, suggest output is byte-for-byte identical to v0.5c behavior.
-- The written patch file is identical in schema to `scene patch --json` output and is immediately usable by `scene diff` and `scene apply --write`.
+- The written patch file is identical in schema to `scene patch --json` output and is usable by `scene diff` and `scene apply --write`.
 - `suggest` never writes to the `.unity` scene file. Scene changes are always done by `scene apply --write`.
-- An `UNKNOWN` patch (no `--prefab-guid`) follows the existing `scene apply` safety policy for UNKNOWN patches.
+- An `UNKNOWN` patch (no `--prefab-guid`) is for inspection/diff and cannot be applied until the GUID is known.
+  It follows the existing `scene apply` safety policy for UNKNOWN patches.
+
+### PATCH_OUT status vs candidate_status
+
+The `PATCH_OUT` line reports two distinct statuses:
+
+- `status` — the patch planning result from `scene patch` semantics (overlap checked against all objects including the anchor).
+- `candidate_status` — the suggest planner result (anchor excluded from overlap check so the selected position remains usable).
+
+`suggest` excludes the anchor from overlap checks; `scene patch` does not.
+This means `candidate_status=OK` and `status=WARN` can appear together for the same position.
+`PATCH_OUT status` is the patch status, not the candidate status.
+v0.5d does not unify these two semantics.
 
 ### Error reference (v0.5d additions)
 

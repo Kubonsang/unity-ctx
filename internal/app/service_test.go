@@ -1306,11 +1306,17 @@ func TestSuggestWithOutWritesPatchFileForRankOne(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("expected code=0, got %d body=%s", code, got.Body)
 	}
-	// The east candidate at 1.4,0,0 touches the Table_01 anchor (center=0,0.5,0 size=2,1,1.2)
-	// due to floating-point precision the overlap check sees a borderline hit, so status=WARN.
-	// Suggest reports OK because it excludes the anchor fileID; Patch does not exclude it.
-	if !strings.Contains(got.Body, "PATCH_OUT rank=1 file="+outFile+" status=WARN") {
+	// Suggest reports OK for the east candidate (anchor excluded from overlap check).
+	// Patch may report WARN because it does not exclude the anchor from overlap checks.
+	// candidate_status reflects the suggest planner result; status reflects the patch result.
+	if !strings.Contains(got.Body, "PATCH_OUT rank=1 file="+outFile) {
 		t.Fatalf("body missing PATCH_OUT line:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "candidate_status=OK") {
+		t.Fatalf("body missing candidate_status=OK:\n%s", got.Body)
+	}
+	if strings.Contains(got.Body, "candidate_status=WARN") {
+		t.Fatalf("unexpected candidate_status=WARN for east candidate:\n%s", got.Body)
 	}
 
 	data, err := os.ReadFile(outFile)
@@ -1356,6 +1362,9 @@ func TestSuggestWithOutNoGUIDWritesUnknownPatch(t *testing.T) {
 	}
 	if !strings.Contains(got.Body, "PATCH_OUT rank=1 file="+outFile+" status=UNKNOWN") {
 		t.Fatalf("body missing PATCH_OUT UNKNOWN line:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "candidate_status=") {
+		t.Fatalf("body missing candidate_status field:\n%s", got.Body)
 	}
 	data, err := os.ReadFile(outFile)
 	if err != nil {

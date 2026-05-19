@@ -948,7 +948,7 @@ func (s *Service) Suggest(namespace, path string, view core.View, jsonOut bool, 
 			return result, 1
 		}
 
-		result.Body = strings.TrimRight(result.Body, "\n") + fmt.Sprintf("\nPATCH_OUT rank=%d file=%s status=%s", pick, args.PatchOut, patchResult.Status)
+		result.Body = strings.TrimRight(result.Body, "\n") + fmt.Sprintf("\nPATCH_OUT rank=%d file=%s status=%s candidate_status=%s", pick, args.PatchOut, patchResult.Status, candidate.Status)
 	}
 
 	return result, 0
