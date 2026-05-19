@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"unity-ctx/internal/app"
+	"unity-ctx/internal/bench"
 	"unity-ctx/internal/bounds"
 	"unity-ctx/internal/contextpack"
 	"unity-ctx/internal/core"
@@ -486,6 +487,189 @@ func TestSummarizeSceneCompact(t *testing.T) {
 	}
 	if jsonGot != got {
 		t.Fatalf("json summarize mismatch: got %#v want %#v", jsonGot, got)
+	}
+}
+
+func TestBenchSummarizeOnly(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	svc := app.New()
+	summarize, summarizeCode := svc.Summarize("scene", path, core.ViewCompact, false)
+	if summarizeCode != 0 {
+		t.Fatalf("Summarize() code = %d, want 0 body=%q", summarizeCode, summarize.Body)
+	}
+
+	metrics := bench.Build(bench.Input{
+		RawBytes:       len(raw),
+		SummarizeBytes: len(summarize.Body),
+	})
+
+	got, code := svc.Bench("scene", path, core.ViewCompact, false, app.BenchArgs{})
+	if code != 0 {
+		t.Fatalf("Bench() code = %d, want 0 body=%q", code, got.Body)
+	}
+
+	wantBody := "OK" +
+		" raw_bytes=" + strconv.Itoa(metrics.RawBytes) +
+		" raw_tokens=" + strconv.Itoa(metrics.RawTokens) +
+		" summarize_bytes=" + strconv.Itoa(metrics.Summarize.Bytes) +
+		" summarize_tokens=" + strconv.Itoa(metrics.Summarize.Tokens) +
+		" summarize_ratio=" + strconv.FormatFloat(metrics.Summarize.Ratio, 'f', -1, 64) +
+		" summarize_saved_tokens=" + strconv.Itoa(metrics.Summarize.SavedTokens)
+	if got.Body != wantBody {
+		t.Fatalf("Bench().Body = %q, want %q", got.Body, wantBody)
+	}
+	if got.Bench != nil {
+		t.Fatalf("Bench().Bench = %#v, want nil for text output", got.Bench)
+	}
+}
+
+func TestBenchWithTaskIncludesContextPack(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	task := "Find spawn points"
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	svc := app.New()
+	summarize, summarizeCode := svc.Summarize("scene", path, core.ViewCompact, false)
+	if summarizeCode != 0 {
+		t.Fatalf("Summarize() code = %d, want 0 body=%q", summarizeCode, summarize.Body)
+	}
+
+	rawTokens := bench.EstimateTokens(len(raw))
+	contextPack, contextCode := svc.ContextPack("scene", path, core.ViewCompact, false, app.ContextPackArgs{
+		Task:      task,
+		MaxTokens: rawTokens,
+	})
+	if contextCode != 0 {
+		t.Fatalf("ContextPack() code = %d, want 0 body=%q", contextCode, contextPack.Body)
+	}
+
+	metrics := bench.Build(bench.Input{
+		RawBytes:         len(raw),
+		SummarizeBytes:   len(summarize.Body),
+		HasContextPack:   true,
+		ContextPackBytes: len(contextPack.Body),
+	})
+
+	got, code := svc.Bench("scene", path, core.ViewCompact, false, app.BenchArgs{Task: "  " + task + "  "})
+	if code != 0 {
+		t.Fatalf("Bench() code = %d, want 0 body=%q", code, got.Body)
+	}
+
+	if metrics.ContextPack == nil {
+		t.Fatal("bench.Build().ContextPack = nil, want metric")
+	}
+
+	wantBody := "OK" +
+		" raw_bytes=" + strconv.Itoa(metrics.RawBytes) +
+		" raw_tokens=" + strconv.Itoa(metrics.RawTokens) +
+		" summarize_bytes=" + strconv.Itoa(metrics.Summarize.Bytes) +
+		" summarize_tokens=" + strconv.Itoa(metrics.Summarize.Tokens) +
+		" summarize_ratio=" + strconv.FormatFloat(metrics.Summarize.Ratio, 'f', -1, 64) +
+		" summarize_saved_tokens=" + strconv.Itoa(metrics.Summarize.SavedTokens) +
+		" context_pack_bytes=" + strconv.Itoa(metrics.ContextPack.Bytes) +
+		" context_pack_tokens=" + strconv.Itoa(metrics.ContextPack.Tokens) +
+		" context_pack_ratio=" + strconv.FormatFloat(metrics.ContextPack.Ratio, 'f', -1, 64) +
+		" context_pack_saved_tokens=" + strconv.Itoa(metrics.ContextPack.SavedTokens)
+	if got.Body != wantBody {
+		t.Fatalf("Bench().Body = %q, want %q", got.Body, wantBody)
+	}
+}
+
+func TestBenchRejectsNonCompactView(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+
+	svc := app.New()
+	got, code := svc.Bench("scene", path, core.ViewDetail, false, app.BenchArgs{})
+	if code != 1 {
+		t.Fatalf("Bench() code = %d, want 1 body=%q", code, got.Body)
+	}
+
+	want := "ERROR bench supports only --view compact"
+	if got.Body != want {
+		t.Fatalf("Bench().Body = %q, want %q", got.Body, want)
+	}
+}
+
+func TestBenchJSONOmitsContextPackWithoutTaskAndIncludesItWithTask(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+
+	svc := app.New()
+
+	withoutTask, withoutCode := svc.Bench("scene", path, core.ViewCompact, true, app.BenchArgs{})
+	if withoutCode != 0 {
+		t.Fatalf("Bench() without task code = %d, want 0 body=%q", withoutCode, withoutTask.Body)
+	}
+	if withoutTask.Bench == nil {
+		t.Fatal("Bench() without task payload = nil, want payload")
+	}
+
+	withoutJSON, err := json.Marshal(withoutTask)
+	if err != nil {
+		t.Fatalf("json.Marshal() without task error = %v", err)
+	}
+
+	var withoutMap map[string]any
+	if err := json.Unmarshal(withoutJSON, &withoutMap); err != nil {
+		t.Fatalf("json.Unmarshal() without task error = %v", err)
+	}
+
+	withoutBench, ok := withoutMap["bench"].(map[string]any)
+	if !ok {
+		t.Fatalf("bench payload missing or wrong type: %#v", withoutMap["bench"])
+	}
+	if _, ok := withoutBench["raw_bytes"]; !ok {
+		t.Fatalf("bench payload missing raw_bytes: %#v", withoutBench)
+	}
+	if _, ok := withoutBench["raw_tokens"]; !ok {
+		t.Fatalf("bench payload missing raw_tokens: %#v", withoutBench)
+	}
+	if _, ok := withoutBench["summarize"]; !ok {
+		t.Fatalf("bench payload missing summarize: %#v", withoutBench)
+	}
+	if _, ok := withoutBench["context_pack"]; ok {
+		t.Fatalf("bench payload unexpectedly included context_pack: %#v", withoutBench)
+	}
+
+	withTask, withCode := svc.Bench("scene", path, core.ViewCompact, true, app.BenchArgs{Task: "Find spawn points"})
+	if withCode != 0 {
+		t.Fatalf("Bench() with task code = %d, want 0 body=%q", withCode, withTask.Body)
+	}
+	if withTask.Bench == nil {
+		t.Fatal("Bench() with task payload = nil, want payload")
+	}
+
+	withJSON, err := json.Marshal(withTask)
+	if err != nil {
+		t.Fatalf("json.Marshal() with task error = %v", err)
+	}
+
+	var withMap map[string]any
+	if err := json.Unmarshal(withJSON, &withMap); err != nil {
+		t.Fatalf("json.Unmarshal() with task error = %v", err)
+	}
+
+	withBench, ok := withMap["bench"].(map[string]any)
+	if !ok {
+		t.Fatalf("bench payload missing or wrong type: %#v", withMap["bench"])
+	}
+	contextPackValue, ok := withBench["context_pack"].(map[string]any)
+	if !ok {
+		t.Fatalf("bench payload missing context_pack object: %#v", withBench["context_pack"])
+	}
+	for _, key := range []string{"bytes", "tokens", "ratio", "saved_tokens"} {
+		if _, ok := contextPackValue[key]; !ok {
+			t.Fatalf("context_pack missing %q: %#v", key, contextPackValue)
+		}
 	}
 }
 

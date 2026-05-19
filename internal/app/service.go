@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"unity-ctx/internal/bench"
 	"unity-ctx/internal/bounds"
 	"unity-ctx/internal/check"
 	"unity-ctx/internal/contextpack"
@@ -73,6 +74,10 @@ type ContextPackArgs struct {
 	Task      string
 	Focus     string
 	MaxTokens int
+}
+
+type BenchArgs struct {
+	Task string
 }
 
 type CheckArgs struct {
@@ -159,6 +164,25 @@ type SuggestPayload struct {
 	Candidates []SuggestCandidatePayload `json:"candidates"`
 }
 
+type BenchMetricPayload struct {
+	Bytes       int     `json:"bytes"`
+	Tokens      int     `json:"tokens"`
+	Ratio       float64 `json:"ratio"`
+	SavedTokens int     `json:"saved_tokens"`
+}
+
+type BenchPayload struct {
+	RawBytes    int                 `json:"raw_bytes"`
+	RawTokens   int                 `json:"raw_tokens"`
+	Summarize   BenchMetricPayload  `json:"summarize"`
+	ContextPack *BenchMetricPayload `json:"context_pack,omitempty"`
+}
+
+type BenchResult struct {
+	core.Result
+	Bench *BenchPayload `json:"bench,omitempty"`
+}
+
 type PatchResult struct {
 	SchemaVersion int `json:"schema_version,omitempty"`
 	core.Result
@@ -233,6 +257,86 @@ func (s *Service) Summarize(namespace, path string, view core.View, jsonOut bool
 
 	result.Status = "OK"
 	result.Body = formatSummarizeBody(namespace, path, view, loaded.blocks, gameObjects, components, unknown)
+	return result, 0
+}
+
+func (s *Service) Bench(namespace, path string, view core.View, jsonOut bool, args BenchArgs) (BenchResult, int) {
+	result := BenchResult{
+		Result: core.Result{
+			Namespace: namespace,
+			Command:   "bench",
+			File:      path,
+			View:      view,
+		},
+	}
+
+	if view != core.ViewCompact {
+		result.Status = "ERROR"
+		result.Body = "ERROR bench supports only --view compact"
+		return result, 1
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	summarizeResult, summarizeCode := s.Summarize(namespace, path, core.ViewCompact, false)
+	if summarizeCode != 0 {
+		result.Status = summarizeResult.Status
+		result.Body = summarizeResult.Body
+		return result, summarizeCode
+	}
+
+	benchInput := bench.Input{
+		RawBytes:       len(raw),
+		SummarizeBytes: len(summarizeResult.Body),
+	}
+
+	task := strings.TrimSpace(args.Task)
+	if task != "" {
+		loaded, err := s.load(path)
+		if err != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR %v", err)
+			return result, 1
+		}
+
+		rawTokens := bench.EstimateTokens(len(raw))
+		maxTokens := rawTokens
+		minBudget := contextpack.MinimumBudgetForOptions(contextpack.Options{
+			Namespace: namespace,
+			File:      path,
+			Task:      task,
+			MaxTokens: rawTokens,
+		}, contextpack.NamedObjectCount(loaded.blocks))
+		if minBudget > maxTokens {
+			maxTokens = minBudget
+		}
+
+		contextPackResult, contextPackCode := s.ContextPack(namespace, path, core.ViewCompact, false, ContextPackArgs{
+			Task:      task,
+			MaxTokens: maxTokens,
+		})
+		if contextPackCode != 0 {
+			result.Status = contextPackResult.Status
+			result.Body = contextPackResult.Body
+			return result, contextPackCode
+		}
+
+		benchInput.HasContextPack = true
+		benchInput.ContextPackBytes = len(contextPackResult.Body)
+	}
+
+	benchResult := bench.Build(benchInput)
+	result.Status = "OK"
+	result.Body = formatBenchBody(benchResult)
+	if jsonOut {
+		payload := benchPayloadFromResult(benchResult)
+		result.Bench = &payload
+	}
 	return result, 0
 }
 
@@ -2000,6 +2104,56 @@ func formatSummarizeBody(namespace, path string, view core.View, blocks []parser
 			unknown,
 		)
 	}
+}
+
+func formatBenchBody(result bench.Result) string {
+	var builder strings.Builder
+	builder.WriteString("OK raw_bytes=")
+	builder.WriteString(strconv.Itoa(result.RawBytes))
+	builder.WriteString(" raw_tokens=")
+	builder.WriteString(strconv.Itoa(result.RawTokens))
+	builder.WriteString(" summarize_bytes=")
+	builder.WriteString(strconv.Itoa(result.Summarize.Bytes))
+	builder.WriteString(" summarize_tokens=")
+	builder.WriteString(strconv.Itoa(result.Summarize.Tokens))
+	builder.WriteString(" summarize_ratio=")
+	builder.WriteString(strconv.FormatFloat(result.Summarize.Ratio, 'f', -1, 64))
+	builder.WriteString(" summarize_saved_tokens=")
+	builder.WriteString(strconv.Itoa(result.Summarize.SavedTokens))
+	if result.ContextPack != nil {
+		builder.WriteString(" context_pack_bytes=")
+		builder.WriteString(strconv.Itoa(result.ContextPack.Bytes))
+		builder.WriteString(" context_pack_tokens=")
+		builder.WriteString(strconv.Itoa(result.ContextPack.Tokens))
+		builder.WriteString(" context_pack_ratio=")
+		builder.WriteString(strconv.FormatFloat(result.ContextPack.Ratio, 'f', -1, 64))
+		builder.WriteString(" context_pack_saved_tokens=")
+		builder.WriteString(strconv.Itoa(result.ContextPack.SavedTokens))
+	}
+	return builder.String()
+}
+
+func benchPayloadFromResult(result bench.Result) BenchPayload {
+	payload := BenchPayload{
+		RawBytes:  result.RawBytes,
+		RawTokens: result.RawTokens,
+		Summarize: BenchMetricPayload{
+			Bytes:       result.Summarize.Bytes,
+			Tokens:      result.Summarize.Tokens,
+			Ratio:       result.Summarize.Ratio,
+			SavedTokens: result.Summarize.SavedTokens,
+		},
+	}
+	if result.ContextPack != nil {
+		metric := BenchMetricPayload{
+			Bytes:       result.ContextPack.Bytes,
+			Tokens:      result.ContextPack.Tokens,
+			Ratio:       result.ContextPack.Ratio,
+			SavedTokens: result.ContextPack.SavedTokens,
+		}
+		payload.ContextPack = &metric
+	}
+	return payload
 }
 
 func formatFoundBlock(block parser.Block, view core.View) string {
