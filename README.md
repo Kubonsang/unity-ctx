@@ -17,38 +17,45 @@ Recommended first prompt:
 Read AGENTS.md and docs/SRS.md first.
 Start from the read-only commands first.
 Implemented mutation slices are `asset set` and `prefab set`.
-`scene scan --mode editor` can generate a deterministic bounds manifest through a Unity Editor edge.
-`scene check` is available as a read-only bounds validation foundation.
-`scene patch --op place_prefab` is available as a read-only patch-plan generator.
-`scene suggest` is available as a read-only planner for ranked near/grid/floor placement candidates from a bounds manifest.
-It supports `--manifest`, `--prefab`, `--near`, optional `--count`, `--align floor|grid`, and `--json` with a nested `suggest` payload.
-`--align wall` is intentionally excluded from the v0.5c slice.
-Choosing a suggestion does not place anything by itself; actual placement still flows through `scene patch` and `scene apply`.
-`--out <file>` writes a diff/apply-compatible patch artifact for the top candidate (use `--pick <n>` to select another rank).
-The patch status in `PATCH_OUT` can be `WARN` even when the selected candidate's `candidate_status` is `OK`:
-suggest excludes the anchor from overlap checks; the patch artifact uses normal patch planning semantics.
-Without `--prefab-guid`, the written patch has `status=UNKNOWN` (NEED_PREFAB_GUID) and cannot be applied until the GUID is known.
-With `--prefab-guid` it can return OK or WARN planning results.
-`scene diff` can summarize persisted patch plans.
-`scene apply` can dry-run or `--write` the current append-only place_prefab patch contract.
-`prefab impact --project <project>` is available as a read-only impact scan for scene and nested prefab references.
-It supports compact output only, optional `--scenes` scoping, and `--json` with a nested `impact` payload.
-When nested prefab traversal exceeds the current depth cap, it returns `WARN` and adds `WARN IMPACT_DEPTH_LIMIT ...`.
-`prefab set <prefab> --project <project> --id <fileID> --field <field> --value <value>` is implemented as an impact-first mutation slice.
-It is fileID-only, defaults to dry-run, includes impact summary plus `ack_required` in dry-run output, and changing writes require `--write --ack-impact`.
-`prefab set --json` may include the same nested `impact` payload shape as `prefab impact`; `asset set` JSON is unchanged.
+
+`scene scan --mode editor` generates a deterministic bounds manifest through a Unity Editor edge.
+`scene check` is a read-only bounds validation tool.
+`scene patch --op place_prefab` is a read-only patch-plan generator.
+`scene diff` summarizes persisted patch plans.
+`scene apply` dry-runs or `--write`s the append-only place_prefab patch contract.
+
+`scene suggest` is a read-only placement planner for ranked near/grid/floor candidates.
+  - `--manifest`, `--prefab`, `--near`, optional `--count`, `--align floor|grid`, `--json`
+  - `--align wall` is out of scope
+  - `--out <file>` writes a diff/apply-compatible patch artifact for the selected rank
+  - `--pick <n>` (default 1) selects the candidate rank; requires `--out`
+  - `--prefab-guid <guid>` embeds the GUID; requires `--out`; omit → `status=UNKNOWN` (cannot apply until GUID is known)
+  - `PATCH_OUT status` may differ from `candidate_status`: patch checks anchor overlap, suggest does not
+  - Placement always flows through `scene apply --write`
+
+`prefab impact --project <project>` is a read-only impact scan for scene and nested prefab references.
+  - compact output, optional `--scenes`, `--json` with nested `impact` payload
+  - nested traversal beyond depth cap returns `WARN IMPACT_DEPTH_LIMIT`
+
+`prefab set <prefab> --project <project> --id <fileID> --field <field> --value <value>` is an impact-first mutation slice.
+  - fileID-only, defaults to dry-run, `ack_required` in dry-run output
+  - writes require `--write --ack-impact`
+  - `--json` uses the same nested `impact` payload shape as `prefab impact`; `asset set` JSON is unchanged
+
+`bench` measures token reduction: raw-vs-summarize always, raw-vs-context-pack with `--task`.
+
 Run go test ./... before final response.
 ```
 
-Current `v0.5c` surface:
+Current `v0.5d` surface:
 
 - `scene scan --mode editor`
 - `scene check`
-- `scene suggest`
+- `scene suggest` (`--out`, `--pick`, `--prefab-guid`)
 - `scene patch --op place_prefab`
 - `scene diff`
 - `scene apply`
 - `prefab impact --project <project>`
 - `prefab set <prefab> --project <project> --id <fileID> --field <field> --value <value>`
-- `bench` is available as a read-only token reduction benchmark.
-It always measures raw-vs-summarize ratio, and with `--task` it also measures raw-vs-context-pack ratio using the SRS estimate `ceil(utf8_bytes / 4)`.
+- `asset set`
+- `bench`
