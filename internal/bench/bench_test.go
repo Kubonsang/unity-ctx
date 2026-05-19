@@ -1,6 +1,9 @@
 package bench
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestEstimateTokensUsesCeilBytesDiv4(t *testing.T) {
 	cases := []struct {
@@ -195,5 +198,87 @@ func TestBuildLeavesContextPackNilWhenBoolIsFalse(t *testing.T) {
 
 	if got.ContextPack != nil {
 		t.Fatalf("Build().ContextPack = %+v, want nil", got.ContextPack)
+	}
+}
+
+func TestResultJSONUsesSnakeCaseAndOmitsNilContextPack(t *testing.T) {
+	withoutContextPack := Build(Input{
+		RawBytes:       16,
+		SummarizeBytes: 8,
+	})
+
+	withoutJSON, err := json.Marshal(withoutContextPack)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var withoutMap map[string]any
+	if err := json.Unmarshal(withoutJSON, &withoutMap); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if _, ok := withoutMap["raw_bytes"]; !ok {
+		t.Fatalf("json keys = %v, want raw_bytes", withoutMap)
+	}
+	if _, ok := withoutMap["raw_tokens"]; !ok {
+		t.Fatalf("json keys = %v, want raw_tokens", withoutMap)
+	}
+	summarizeValue, ok := withoutMap["summarize"]
+	if !ok {
+		t.Fatalf("json keys = %v, want summarize", withoutMap)
+	}
+	if _, ok := withoutMap["context_pack"]; ok {
+		t.Fatalf("json keys = %v, want context_pack omitted", withoutMap)
+	}
+	if _, ok := withoutMap["rawBytes"]; ok {
+		t.Fatalf("json keys = %v, want snake_case only", withoutMap)
+	}
+
+	summarizeMap, ok := summarizeValue.(map[string]any)
+	if !ok {
+		t.Fatalf("summarize = %T, want object", summarizeValue)
+	}
+	for _, key := range []string{"bytes", "tokens", "ratio", "saved_tokens"} {
+		if _, ok := summarizeMap[key]; !ok {
+			t.Fatalf("summarize keys = %v, want %q", summarizeMap, key)
+		}
+	}
+	if _, ok := summarizeMap["savedTokens"]; ok {
+		t.Fatalf("summarize keys = %v, want snake_case only", summarizeMap)
+	}
+
+	withContextPack := Build(Input{
+		RawBytes:         16,
+		SummarizeBytes:   8,
+		HasContextPack:   true,
+		ContextPackBytes: 4,
+	})
+
+	withJSON, err := json.Marshal(withContextPack)
+	if err != nil {
+		t.Fatalf("json.Marshal() with context_pack error = %v", err)
+	}
+
+	var withMap map[string]any
+	if err := json.Unmarshal(withJSON, &withMap); err != nil {
+		t.Fatalf("json.Unmarshal() with context_pack error = %v", err)
+	}
+
+	contextPackValue, ok := withMap["context_pack"]
+	if !ok {
+		t.Fatalf("json keys = %v, want context_pack", withMap)
+	}
+
+	contextPackMap, ok := contextPackValue.(map[string]any)
+	if !ok {
+		t.Fatalf("context_pack = %T, want object", contextPackValue)
+	}
+	for _, key := range []string{"bytes", "tokens", "ratio", "saved_tokens"} {
+		if _, ok := contextPackMap[key]; !ok {
+			t.Fatalf("context_pack keys = %v, want %q", contextPackMap, key)
+		}
+	}
+	if _, ok := contextPackMap["savedTokens"]; ok {
+		t.Fatalf("context_pack keys = %v, want snake_case only", contextPackMap)
 	}
 }

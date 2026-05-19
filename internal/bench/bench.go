@@ -8,17 +8,17 @@ type Input struct {
 }
 
 type Metric struct {
-	Bytes       int
-	Tokens      int
-	Ratio       float64
-	SavedTokens int
+	Bytes       int     `json:"bytes"`
+	Tokens      int     `json:"tokens"`
+	Ratio       float64 `json:"ratio"`
+	SavedTokens int     `json:"saved_tokens"`
 }
 
 type Result struct {
-	RawBytes    int
-	RawTokens   int
-	Summarize   Metric
-	ContextPack *Metric
+	RawBytes    int     `json:"raw_bytes"`
+	RawTokens   int     `json:"raw_tokens"`
+	Summarize   Metric  `json:"summarize"`
+	ContextPack *Metric `json:"context_pack,omitempty"`
 }
 
 func EstimateTokens(utf8Bytes int) int {
