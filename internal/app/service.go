@@ -342,7 +342,7 @@ func (s *Service) Query(namespace, path string, view core.View, jsonOut bool, ar
 	}
 
 	switch {
-	case args.Name != "":
+	case args.HasName:
 		block, err := loaded.doc.FindUniqueByName(args.Name)
 		if err != nil {
 			result.Status = "ERROR"
@@ -352,7 +352,7 @@ func (s *Service) Query(namespace, path string, view core.View, jsonOut bool, ar
 		result.Status = "FOUND"
 		result.Body = formatFoundBlock(block, view)
 		return result, 0
-	case args.ID != 0:
+	case args.HasID:
 		block, ok := loaded.doc.FindByFileID(args.ID)
 		if !ok {
 			result.Status = "ERROR"
@@ -511,6 +511,7 @@ func (s *Service) setAsset(path string, args SetArgs, result SetResult) (SetResu
 	}
 
 	if !plan.Changed {
+		verification := s.verifySetValue(path, args)
 		result.Status = "OK"
 		result.Body = fmt.Sprintf(
 			"OK field=%s old=%s new=%s type_hint=%s changed=%d verified=%d",
@@ -519,7 +520,7 @@ func (s *Service) setAsset(path string, args SetArgs, result SetResult) (SetResu
 			plan.NewValue,
 			plan.TypeHint,
 			boolToInt(plan.Changed),
-			1,
+			boolToInt(verification.Matched),
 		)
 		return result, 0
 	}
@@ -634,8 +635,9 @@ func (s *Service) setPrefab(path string, jsonOut bool, args SetArgs, result SetR
 		return result, 0
 	}
 	if !plan.Changed {
+		verification := s.verifySetValue(path, args)
 		result.Status = impactResult.Status
-		result.Body = formatPrefabSetBody("OK", "", plan, impactResult, 1, false)
+		result.Body = formatPrefabSetBody("OK", "", plan, impactResult, boolToInt(verification.Matched), false)
 		return result, 0
 	}
 	if !args.AckImpact {
@@ -1463,6 +1465,10 @@ func staleIndexPrefix(outPath, sourcePath string) (string, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", nil
 		}
+		var pathErr *os.PathError
+		if errors.As(err, &pathErr) {
+			return "", err
+		}
 		return fmt.Sprintf("INDEX_STALE file=%s reason=invalid_snapshot reparse=true\n", sourcePath), nil
 	}
 
@@ -1479,13 +1485,13 @@ func staleIndexPrefix(outPath, sourcePath string) (string, error) {
 
 func countQueryArgs(args QueryArgs) int {
 	count := 0
-	if args.HasID || args.ID != 0 {
+	if args.HasID {
 		count++
 	}
-	if args.HasName || args.Name != "" {
+	if args.HasName {
 		count++
 	}
-	if args.HasType || args.Type != "" {
+	if args.HasType {
 		count++
 	}
 	return count
@@ -1792,7 +1798,7 @@ func formatSuggestBody(manifestPath, prefabPath string, plan suggestplan.Result)
 			"CANDIDATE rank=%d direction=%s position=%s status=%s overlap_ids=%s anchor_id=%d anchor_name=%s",
 			candidate.Rank,
 			candidate.Direction,
-			formatVec3(candidate.Position),
+			formatPosition([3]float64(candidate.Position)),
 			candidate.Status,
 			formatPatchIDList(candidate.OverlapIDs),
 			plan.Near.FileID,
@@ -1852,7 +1858,7 @@ func formatImpactHits(hits []impactscan.FileHit) string {
 
 	parts := make([]string, 0, len(hits))
 	for _, hit := range hits {
-		parts = append(parts, fmt.Sprintf("%s refs=%d fileIDs=%s", hit.Path, hit.References, joinInt64s(hit.FileIDs)))
+		parts = append(parts, fmt.Sprintf("%s refs=%d fileIDs=%s", hit.Path, hit.References, formatPatchIDList(hit.FileIDs)))
 	}
 	return strings.Join(parts, " ")
 }
@@ -1863,18 +1869,6 @@ func sumImpactReferences(hits []impactscan.FileHit) int {
 		total += hit.References
 	}
 	return total
-}
-
-func joinInt64s(values []int64) string {
-	if len(values) == 0 {
-		return "none"
-	}
-
-	parts := make([]string, 0, len(values))
-	for _, value := range values {
-		parts = append(parts, strconv.FormatInt(value, 10))
-	}
-	return strings.Join(parts, ",")
 }
 
 func normalizeImpactSceneScope(raw string) []string {
@@ -2027,15 +2021,6 @@ func formatAppendOps(appends []scenepatch.AppendIntent) string {
 }
 
 func formatPosition(position [3]float64) string {
-	parts := [3]string{
-		strconv.FormatFloat(position[0], 'f', -1, 64),
-		strconv.FormatFloat(position[1], 'f', -1, 64),
-		strconv.FormatFloat(position[2], 'f', -1, 64),
-	}
-	return strings.Join(parts[:], ",")
-}
-
-func formatVec3(position bounds.Vec3) string {
 	parts := [3]string{
 		strconv.FormatFloat(position[0], 'f', -1, 64),
 		strconv.FormatFloat(position[1], 'f', -1, 64),

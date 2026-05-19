@@ -566,6 +566,17 @@ func TestBenchWithTaskUpliftsBudgetAboveRawTokenEstimate(t *testing.T) {
 		t.Fatalf("required tokens = %d, want > raw tokens %d", requiredTokens, rawTokens)
 	}
 
+	// Derive the expected context-pack body from a direct service call using the uplifted budget.
+	// This avoids hardcoding the internal rendering format (e.g. exact "lines=N" count).
+	upliftedPack, upliftedCode := svc.ContextPack("scene", path, core.ViewCompact, false, app.ContextPackArgs{
+		Task:      "inspect",
+		MaxTokens: requiredTokens,
+	})
+	if upliftedCode != 0 {
+		t.Fatalf("ContextPack(uplifted) code = %d, want 0 body=%q", upliftedCode, upliftedPack.Body)
+	}
+	upliftedBody := upliftedPack.Body
+
 	got, code := svc.Bench("scene", path, core.ViewCompact, false, app.BenchArgs{Task: "inspect"})
 	if code != 0 {
 		t.Fatalf("Bench() code = %d, want 0 body=%q", code, got.Body)
@@ -583,11 +594,11 @@ func TestBenchWithTaskUpliftsBudgetAboveRawTokenEstimate(t *testing.T) {
 	if metrics["raw_tokens"] != rawTokens {
 		t.Fatalf("raw_tokens = %d, want %d", metrics["raw_tokens"], rawTokens)
 	}
-	if metrics["context_pack_bytes"] != len(upliftContextPackBody()) {
-		t.Fatalf("context_pack_bytes = %d, want %d", metrics["context_pack_bytes"], len(upliftContextPackBody()))
+	if metrics["context_pack_bytes"] != len(upliftedBody) {
+		t.Fatalf("context_pack_bytes = %d, want %d", metrics["context_pack_bytes"], len(upliftedBody))
 	}
-	if metrics["context_pack_tokens"] != estimateBenchTokens(len(upliftContextPackBody())) {
-		t.Fatalf("context_pack_tokens = %d, want %d", metrics["context_pack_tokens"], estimateBenchTokens(len(upliftContextPackBody())))
+	if metrics["context_pack_tokens"] != estimateBenchTokens(len(upliftedBody)) {
+		t.Fatalf("context_pack_tokens = %d, want %d", metrics["context_pack_tokens"], estimateBenchTokens(len(upliftedBody)))
 	}
 
 	jsonGot, jsonCode := svc.Bench("scene", path, core.ViewCompact, true, app.BenchArgs{Task: "inspect"})
@@ -603,8 +614,8 @@ func TestBenchWithTaskUpliftsBudgetAboveRawTokenEstimate(t *testing.T) {
 	if jsonGot.Bench.Summarize.Bytes != len(summarizeBodyForSingleObjectPath(path)) {
 		t.Fatalf("Bench(json) summarize bytes = %d, want %d", jsonGot.Bench.Summarize.Bytes, len(summarizeBodyForSingleObjectPath(path)))
 	}
-	if jsonGot.Bench.ContextPack.Bytes != len(upliftContextPackBody()) || jsonGot.Bench.ContextPack.Tokens != estimateBenchTokens(len(upliftContextPackBody())) {
-		t.Fatalf("Bench(json) context pack metrics = %+v, want bytes=%d tokens=%d", *jsonGot.Bench.ContextPack, len(upliftContextPackBody()), estimateBenchTokens(len(upliftContextPackBody())))
+	if jsonGot.Bench.ContextPack.Bytes != len(upliftedBody) || jsonGot.Bench.ContextPack.Tokens != estimateBenchTokens(len(upliftedBody)) {
+		t.Fatalf("Bench(json) context pack metrics = %+v, want bytes=%d tokens=%d", *jsonGot.Bench.ContextPack, len(upliftedBody), estimateBenchTokens(len(upliftedBody)))
 	}
 }
 
@@ -779,7 +790,7 @@ func TestQueryByNameAmbiguous(t *testing.T) {
 	path := filepath.Join("..", "..", "testdata", "scenes", "duplicate_names_scene.unity")
 
 	svc := app.New()
-	got, code := svc.Query("scene", path, core.ViewCompact, false, app.QueryArgs{Name: "Enemy"})
+	got, code := svc.Query("scene", path, core.ViewCompact, false, app.QueryArgs{HasName: true, Name: "Enemy"})
 	if code != 1 {
 		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
 	}
@@ -794,7 +805,7 @@ func TestQueryByIDSuccessQuotesName(t *testing.T) {
 	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
 
 	svc := app.New()
-	got, code := svc.Query("scene", path, core.ViewCompact, false, app.QueryArgs{ID: 2000})
+	got, code := svc.Query("scene", path, core.ViewCompact, false, app.QueryArgs{HasID: true, ID: 2000})
 	if code != 0 {
 		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 	}
@@ -818,7 +829,7 @@ func TestQueryByNameSuccessQuotesNameWithSpaces(t *testing.T) {
 	}
 
 	svc := app.New()
-	got, code := svc.Query("scene", path, core.ViewCompact, false, app.QueryArgs{Name: "Boss Enemy"})
+	got, code := svc.Query("scene", path, core.ViewCompact, false, app.QueryArgs{HasName: true, Name: "Boss Enemy"})
 	if code != 0 {
 		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 	}
@@ -2245,6 +2256,53 @@ func TestIndexRecoversFromInvalidExistingSnapshot(t *testing.T) {
 	}
 }
 
+func TestIndexPropagatesIOErrorOnExistingSnapshotFile(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	out := filepath.Join(t.TempDir(), "unreadable.index.json")
+
+	if err := os.WriteFile(out, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.Chmod(out, 0o000); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(out, 0o644) })
+
+	svc := app.New()
+	_, code := svc.Index("scene", path, core.ViewCompact, false, app.IndexArgs{Out: out})
+	if code != 1 {
+		t.Fatalf("expected error exit code, got %d", code)
+	}
+}
+
+func TestQueryIgnoresBareIDWithoutHasIDSentinel(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+
+	svc := app.New()
+	got, code := svc.Query("scene", path, core.ViewCompact, false, app.QueryArgs{ID: 2000})
+	if code != 1 {
+		t.Fatalf("expected error (HasID not set), got code=%d body=%q", code, got.Body)
+	}
+	want := "ERROR query requires exactly one of --id, --name, or --type"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
+func TestQueryIgnoresBareNameWithoutHasNameSentinel(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+
+	svc := app.New()
+	got, code := svc.Query("scene", path, core.ViewCompact, false, app.QueryArgs{Name: "Table_01"})
+	if code != 1 {
+		t.Fatalf("expected error (HasName not set), got code=%d body=%q", code, got.Body)
+	}
+	want := "ERROR query requires exactly one of --id, --name, or --type"
+	if got.Body != want {
+		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
+	}
+}
+
 func TestIndexRejectsOutPathMatchingInput(t *testing.T) {
 	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
 
@@ -2409,10 +2467,6 @@ func simpleSceneContextPackBody(path string, rawTokens int) string {
 		`OBJECT name="Table_01" id=1000 type="GameObject"`
 }
 
-func upliftContextPackBody() string {
-	return "TASK_CONTEXT task=\"inspect\"\nOMITTED reason=token_budget lines=1"
-}
-
 func expectedBenchBody(rawBytes int, summarizeBody string, contextPackBody string) string {
 	rawTokens := estimateBenchTokens(rawBytes)
 	summarizeTokens := estimateBenchTokens(len(summarizeBody))
@@ -2482,7 +2536,7 @@ func TestQueryNotFoundQuotesNameWithSpaces(t *testing.T) {
 	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
 
 	svc := app.New()
-	got, code := svc.Query("scene", path, core.ViewCompact, false, app.QueryArgs{Name: "Missing Boss"})
+	got, code := svc.Query("scene", path, core.ViewCompact, false, app.QueryArgs{HasName: true, Name: "Missing Boss"})
 	if code != 1 {
 		t.Fatalf("expected error, got code=%d body=%q", code, got.Body)
 	}
