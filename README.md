@@ -56,6 +56,59 @@ No external runtime dependencies.
 | `.prefab` | `prefab` |
 | `.asset`, `.mat` | `asset` |
 
+## Using with Your Own Unity Project
+
+unity-ctx requires no configuration file. You pass file paths directly on the command line.
+
+**Read commands** — point to any `.unity`, `.prefab`, or `.asset` file anywhere on disk:
+
+```bash
+unity-ctx scene summarize /Users/me/MyUnityProject/Assets/Scenes/GameLevel.unity
+unity-ctx prefab inspect /Users/me/MyUnityProject/Assets/Prefabs/Player.prefab --component Rigidbody
+unity-ctx asset get /Users/me/MyUnityProject/Assets/Configs/GameConfig.asset --field startingHealth
+```
+
+**Mutation commands that need `--project`** (`prefab impact`, `prefab set`) — pass the Unity project root, the directory that contains `Assets/`, `ProjectSettings/`, and `Packages/`. The prefab path must be under that root's `Assets/` tree:
+
+```bash
+unity-ctx prefab impact Assets/Prefabs/Player.prefab \
+  --project /Users/me/MyUnityProject
+
+unity-ctx prefab set Assets/Prefabs/Player.prefab \
+  --project /Users/me/MyUnityProject \
+  --id 11400000 --field moveSpeed --value 5.0
+```
+
+**Getting a prefab's GUID** — required for `scene patch` and `scene suggest --out`. The GUID is in the `.meta` file next to the prefab:
+
+```bash
+grep "^guid:" /Users/me/MyUnityProject/Assets/Prefabs/Chair.prefab.meta
+# guid: abc123def456...
+```
+
+**Placement pipeline** — `scene scan` requires the Unity Editor to be running with the project open. All other placement commands (`suggest`, `patch`, `diff`, `apply`) work without the Editor:
+
+```bash
+# 1. With Editor open — generate bounds manifest
+unity-ctx scene scan Assets/Scenes/GameLevel.unity \
+  --mode editor \
+  --project /Users/me/MyUnityProject \
+  --out /tmp/GameLevel.bounds.json
+
+# 2–4. No Editor needed
+unity-ctx scene suggest Assets/Scenes/GameLevel.unity \
+  --manifest /tmp/GameLevel.bounds.json \
+  --prefab Assets/Prefabs/Chair.prefab \
+  --near SpawnPoint_01 \
+  --prefab-guid abc123def456 \
+  --out /tmp/chair.patch.json
+
+unity-ctx scene diff Assets/Scenes/GameLevel.unity --patch /tmp/chair.patch.json
+unity-ctx scene apply Assets/Scenes/GameLevel.unity --patch /tmp/chair.patch.json --write
+```
+
+> Paths passed to unity-ctx can be absolute or relative to your current working directory. Running commands from the project root (`cd /Users/me/MyUnityProject`) lets you use short `Assets/...` paths throughout.
+
 ## Commands
 
 ### `unity-ctx scene summarize`
