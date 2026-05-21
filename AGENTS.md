@@ -41,6 +41,18 @@ go test ./...
 go run ./cmd/unity-ctx --help
 ```
 
+## Smoke Test
+
+빌드된 바이너리가 3개 네임스페이스 모두 정상 동작하는지 확인:
+
+```bash
+./unity-ctx scene summarize testdata/scenes/simple_scene.unity && \
+./unity-ctx prefab summarize testdata/prefabs/enemy.prefab && \
+./unity-ctx asset get testdata/assets/enemy_config.asset --field maxHealth
+```
+
+3줄 모두 `OK`로 시작하면 정상.
+
 ## Current Focus
 
 Start with v0.1 read-only context MVP:
