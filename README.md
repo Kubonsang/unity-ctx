@@ -48,6 +48,13 @@ go build -o unity-ctx ./cmd/unity-ctx
 
 No external runtime dependencies.
 
+> **Building from source (v0.6+):** unity-ctx embeds the
+> [unity-fileid-graph](https://github.com/Kubonsang/unity-fileid-graph) safety
+> kernel as a Go library. Until a tagged release (`v0.9.0`) is published, the
+> `go.mod` `replace` directive expects a sibling checkout of that repository;
+> adjust the path or drop the directive once the tag exists. The produced
+> binary remains a single static executable with no runtime dependencies.
+
 ## Supported File Types
 
 | Extension | Namespace |
@@ -79,12 +86,35 @@ unity-ctx prefab set Assets/Prefabs/Player.prefab \
   --id 11400000 --field moveSpeed --value 5.0
 ```
 
-**Getting a prefab's GUID** — required for `scene patch` and `scene suggest --out`. The GUID is in the `.meta` file next to the prefab:
+**Getting a prefab's GUID** — required for `scene patch` and `scene suggest --out`. `meta guid` reads it from the `.meta` file next to the prefab (and `patch`/`suggest` auto-resolve it the same way when `--prefab-guid` is omitted):
 
 ```bash
-grep "^guid:" /Users/me/MyUnityProject/Assets/Prefabs/Chair.prefab.meta
-# guid: abc123def456...
+unity-ctx meta guid Assets/Prefabs/Chair.prefab --project /Users/me/MyUnityProject
+# OK guid=abc123def456... file=... meta=...
 ```
+
+## Safety Integration (v0.6)
+
+Every write path is validated by the
+[unity-fileid-graph](https://github.com/Kubonsang/unity-fileid-graph) safety
+kernel — a lossless Unity YAML block parser plus fileID graph integrity
+checker — at three points:
+
+```text
+pre_check   target file before planning   → ERROR blocks (BLOCKED, exit 0)
+temp_check  candidate bytes before commit → ERROR blocks (BLOCKED, exit 0)
+   --write  atomic write with .bak backup
+final_check re-read file after commit     → ERROR reports WRITE_COMMITTED (exit 1) with the backup path
+```
+
+- A file that is already structurally broken (duplicate fileIDs, missing
+  component blocks, mismatched back-references, ...) is never mutated.
+- `WARN` findings (unknown class IDs, unsupported shapes) are surfaced on the
+  summary line and in `CHECK` detail lines but do not block.
+- `BLOCKED` is a safety verdict, not a tool failure — do not work around it by
+  editing the YAML directly.
+- `refs` exposes the kernel's PPtr/GUID reference evidence
+  (`unity-ctx prefab refs Enemy.prefab --json`) for blast-radius analysis.
 
 **Placement pipeline** — `scene scan` requires the Unity Editor to be running with the project open. All other placement commands (`suggest`, `patch`, `diff`, `apply`) work without the Editor:
 
