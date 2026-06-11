@@ -182,6 +182,8 @@ func materializeAppendBlocks(plan patch.PlacePrefabPlan) ([]byte, error) {
 	builder.WriteString(name)
 	builder.WriteString("\n")
 	builder.WriteString("  m_IsActive: 1\n")
+	builder.WriteString("  m_Component:\n")
+	builder.WriteString(fmt.Sprintf("  - component: {fileID: %d}\n", transformID))
 	builder.WriteString(fmt.Sprintf("--- !u!4 &%d\n", transformID))
 	builder.WriteString("Transform:\n")
 	builder.WriteString(fmt.Sprintf("  m_GameObject: {fileID: %d}\n", gameObjectID))
@@ -192,6 +194,8 @@ func materializeAppendBlocks(plan patch.PlacePrefabPlan) ([]byte, error) {
 	))
 	builder.WriteString("  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}\n")
 	builder.WriteString("  m_LocalScale: {x: 1, y: 1, z: 1}\n")
+	builder.WriteString("  m_Father: {fileID: 0}\n")
+	builder.WriteString("  m_Children: []\n")
 	return []byte(builder.String()), nil
 }
 
