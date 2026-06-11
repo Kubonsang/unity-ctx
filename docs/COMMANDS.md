@@ -148,8 +148,11 @@ Committed-write failure output:
 
 ```text
 ERROR WRITE_COMMITTED backup=EnemyConfig.asset.bak field=maxHealth old=200 new=300 type_hint=int changed=1 verified=0 err=...
-ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=EnemyConfig.asset.bak field=maxHealth
+ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=EnemyConfig.asset.bak field=maxHealth old=200 new=300 type_hint=int changed=1 verified=1
 ```
+
+All `WRITE_COMMITTED` lines carry the standard set summary fields
+(`old=`, `new=`, `type_hint=`, `changed=`, `verified=`) so agents parse one shape.
 
 ## v0.4 Foundation Slice
 
