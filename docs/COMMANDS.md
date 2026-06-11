@@ -233,6 +233,7 @@ Optional flags:
 
 - `--json`
 - `--prefab-guid`
+- `--project`
 
 Rules:
 
@@ -243,7 +244,11 @@ Rules:
 - `--position` must be exactly `x,y,z` with finite numeric values.
 - The manifest scene reference must match the requested scene by exact path when possible, otherwise by normalized scene filename plus extension.
 - `patch` is currently a read-only patch-plan generator. It does not write scene files.
-- Without `--prefab-guid`, the planner returns `UNKNOWN ... NEED_PREFAB_GUID` and does not guess a GUID.
+- Without `--prefab-guid`, the planner first tries to resolve the GUID from the
+  prefab's sibling `.meta` file (retrying under `--project` for relative paths).
+  `suggest` inherits the same auto-resolve because it delegates to `patch`.
+- When neither `--prefab-guid` nor a `.meta` lookup yields a GUID, the planner
+  returns `UNKNOWN ... NEED_PREFAB_GUID` and does not guess a GUID.
 - With `--prefab-guid`, the planner can return `OK` for clear placement or `WARN` when overlaps are detected.
 - `--json` returns a deterministic envelope including `schema_version` and `patch_plan`.
 
