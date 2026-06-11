@@ -104,7 +104,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --prefab-guid\n", command)
 		return 2
 	}
-	if command != "scan" && command != "impact" && command != "suggest" && !(command == "set" && namespace == "prefab") && anyFlagVisited(seenFlags, "mode", "project", "scenes", "prefabs") {
+	if command == "patch" && anyFlagVisited(seenFlags, "mode", "scenes", "prefabs") {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --mode, --scenes, or --prefabs\n", command)
+		return 2
+	}
+	if command != "scan" && command != "impact" && command != "suggest" && command != "patch" && !(command == "set" && namespace == "prefab") && anyFlagVisited(seenFlags, "mode", "project", "scenes", "prefabs") {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --mode, --project, --scenes, or --prefabs\n", command)
 		return 2
 	}
@@ -545,6 +549,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			Manifest:    *manifest,
 			Prefab:      *prefab,
 			PrefabGUID:  *prefabGUID,
+			Project:     *project,
 			HasPosition: seenFlags["position"],
 			Position:    parsedPosition,
 		})
@@ -628,6 +633,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			PatchOut:   *out,
 			Pick:       *pick,
 			PrefabGUID: *prefabGUID,
+			Project:    *project,
 		})
 
 		if *jsonOutput {

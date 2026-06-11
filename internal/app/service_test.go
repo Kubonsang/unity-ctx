@@ -2278,6 +2278,71 @@ func TestPatchUnresolvedPrefabReferenceReturnsUnknown(t *testing.T) {
 	}
 }
 
+func TestPatchAutoResolvesPrefabGUIDFromMeta(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	project := t.TempDir()
+	prefabRel := filepath.Join("Assets", "Prefabs", "chair.prefab")
+	prefabAbs := filepath.Join(project, prefabRel)
+	if err := os.MkdirAll(filepath.Dir(prefabAbs), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(prefabAbs, []byte("--- !u!1 &1000\nGameObject:\n  m_Name: chair\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	meta := "fileFormatVersion: 2\nguid: 3e8a1f2b4c5d6e7f8a9b0c1d2e3f4a5b\n"
+	if err := os.WriteFile(prefabAbs+".meta", []byte(meta), 0o644); err != nil {
+		t.Fatalf("WriteFile(.meta) error = %v", err)
+	}
+
+	svc := app.New()
+	got, code := svc.Patch("scene", scenePath, core.ViewCompact, false, app.PatchArgs{
+		Op:          "place_prefab",
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		Project:     project,
+		HasPosition: true,
+		Position:    [3]float64{5, 0, 0},
+	})
+	if code != 0 {
+		t.Fatalf("expected success exit code, got %d body=%q", code, got.Body)
+	}
+	if got.Status != "OK" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "OK")
+	}
+	if got.PatchPlan == nil || got.PatchPlan.PrefabGUID != "3e8a1f2b4c5d6e7f8a9b0c1d2e3f4a5b" {
+		t.Fatalf("PatchPlan guid mismatch: %#v", got.PatchPlan)
+	}
+	if !strings.Contains(got.Body, "PLAN prefab_guid=\"3e8a1f2b4c5d6e7f8a9b0c1d2e3f4a5b\"") {
+		t.Fatalf("body missing resolved guid: %q", got.Body)
+	}
+}
+
+func TestPatchWithoutMetaKeepsNeedPrefabGUID(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+
+	svc := app.New()
+	got, code := svc.Patch("scene", scenePath, core.ViewCompact, false, app.PatchArgs{
+		Op:          "place_prefab",
+		Manifest:    manifestPath,
+		Prefab:      "Assets/Prefabs/chair.prefab",
+		Project:     t.TempDir(),
+		HasPosition: true,
+		Position:    [3]float64{5, 0, 0},
+	})
+	if code != 0 {
+		t.Fatalf("expected unknown success exit code, got %d body=%q", code, got.Body)
+	}
+	if got.Status != "UNKNOWN" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "UNKNOWN")
+	}
+	if got.PatchPlan == nil || got.PatchPlan.Reason != "NEED_PREFAB_GUID" {
+		t.Fatalf("expected NEED_PREFAB_GUID, got %#v", got.PatchPlan)
+	}
+}
+
 func TestDiffReturnsPatchSummaryAndPlan(t *testing.T) {
 	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
 	patchPath := filepath.Join("..", "..", "testdata", "patches", "chair_place_ok.patch.json")
