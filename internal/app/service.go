@@ -600,16 +600,31 @@ func (s *Service) setAsset(path string, args SetArgs, result SetResult) (SetResu
 	finalData, finalErr := os.ReadFile(path)
 	if finalErr != nil {
 		result.Status = "ERROR"
-		result.Body = fmt.Sprintf("ERROR WRITE_COMMITTED backup=%s field=%s err=final re-read failed: %v", backupPath, plan.Field, finalErr)
+		result.Body = fmt.Sprintf(
+			"ERROR WRITE_COMMITTED backup=%s field=%s old=%s new=%s type_hint=%s changed=%d verified=%d err=final re-read failed: %v",
+			backupPath,
+			plan.Field,
+			plan.OldValue,
+			plan.NewValue,
+			plan.TypeHint,
+			boolToInt(plan.Changed),
+			boolToInt(verification.Matched),
+			finalErr,
+		)
 		return result, 1
 	}
 	finalCheck := phaseCheck{phase: safety.PhaseFinal, report: safety.CheckBytes(finalData)}
 	if finalCheck.report.Blocking() {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf(
-			"ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=%s field=%s%s",
+			"ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=%s field=%s old=%s new=%s type_hint=%s changed=%d verified=%d%s",
 			backupPath,
 			plan.Field,
+			plan.OldValue,
+			plan.NewValue,
+			plan.TypeHint,
+			boolToInt(plan.Changed),
+			boolToInt(verification.Matched),
 			checkDetailLines([]phaseCheck{finalCheck}),
 		)
 		result.Safety = newSafetyPayload(append(checks, finalCheck))
@@ -761,16 +776,31 @@ func (s *Service) setPrefab(path string, jsonOut bool, args SetArgs, result SetR
 	finalData, finalErr := os.ReadFile(path)
 	if finalErr != nil {
 		result.Status = "ERROR"
-		result.Body = fmt.Sprintf("ERROR WRITE_COMMITTED backup=%s field=%s err=final re-read failed: %v", backupPath, plan.Field, finalErr)
+		result.Body = fmt.Sprintf(
+			"ERROR WRITE_COMMITTED backup=%s field=%s old=%s new=%s type_hint=%s changed=%d verified=%d err=final re-read failed: %v",
+			backupPath,
+			plan.Field,
+			plan.OldValue,
+			plan.NewValue,
+			plan.TypeHint,
+			boolToInt(plan.Changed),
+			boolToInt(verification.Matched),
+			finalErr,
+		)
 		return result, 1
 	}
 	finalCheck := phaseCheck{phase: safety.PhaseFinal, report: safety.CheckBytes(finalData)}
 	if finalCheck.report.Blocking() {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf(
-			"ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=%s field=%s%s",
+			"ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=%s field=%s old=%s new=%s type_hint=%s changed=%d verified=%d%s",
 			backupPath,
 			plan.Field,
+			plan.OldValue,
+			plan.NewValue,
+			plan.TypeHint,
+			boolToInt(plan.Changed),
+			boolToInt(verification.Matched),
 			checkDetailLines([]phaseCheck{finalCheck}),
 		)
 		result.Safety = newSafetyPayload(append(checks, finalCheck))
