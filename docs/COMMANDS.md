@@ -93,29 +93,44 @@ Rules:
 - `.bak` is created only when a write actually changes the file.
 - `changed=0` write requests return success without mutating the filesystem.
 - `--write` and `--value` are rejected for non-`set` commands.
+- `set` runs the fileid-graph integrity check on the input (`pre_check`), the
+  candidate bytes (`temp_check`), and the re-read file after a committed write
+  (`final_check`). A blocking `ERROR` before the write returns `BLOCKED
+  code=GRAPH_CHECK_FAILED` (exit 0) without touching the file; after the write it
+  returns `ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check` with
+  the backup path (exit 1). `WARN` does not block.
 
 Dry-run output:
 
 ```text
-DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1
+DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1 pre_check=OK temp_check=OK
 ```
 
 Write output:
 
 ```text
-WRITE backup=EnemyConfig.asset.bak field=maxHealth old=200 new=300 type_hint=int changed=1 verified=1
+WRITE backup=EnemyConfig.asset.bak field=maxHealth old=200 new=300 type_hint=int changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK
 ```
 
 No-op write output:
 
 ```text
-OK field=maxHealth old=200 new=200 type_hint=int changed=0 verified=1
+OK field=maxHealth old=200 new=200 type_hint=int changed=0 verified=1 pre_check=OK temp_check=OK
+```
+
+Blocked output (exit 0, file untouched):
+
+```text
+BLOCKED code=GRAPH_CHECK_FAILED phase=pre_check file=EnemyConfig.asset field=maxHealth
+CHECK phase=pre_check status=ERROR errors=1 warnings=0
+ERROR code=DUPLICATE_FILE_ID file_id=11400000 duplicates=2
 ```
 
 Committed-write failure output:
 
 ```text
 ERROR WRITE_COMMITTED backup=EnemyConfig.asset.bak field=maxHealth old=200 new=300 type_hint=int changed=1 verified=0 err=...
+ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=EnemyConfig.asset.bak field=maxHealth
 ```
 
 ## v0.4 Foundation Slice
@@ -572,11 +587,17 @@ Rules:
 - `prefab set --json` may include a nested `impact` payload alongside the normal result envelope. `asset set` JSON shape is unchanged.
 - The impact scan is project-scoped for the provided `--project` and reuses the same nested depth warning behavior as `prefab impact`.
 - When nested traversal reaches the current depth cap, the command keeps the set summary and appends `WARN IMPACT_DEPTH_LIMIT ...`.
+- `prefab set` runs the fileid-graph integrity check on the input (`pre_check`)
+  and the candidate bytes (`temp_check`) before the `--ack-impact` gate, and on
+  the re-read file after a committed write (`final_check`). A blocking `ERROR`
+  before the write returns `BLOCKED code=GRAPH_CHECK_FAILED` (exit 0); after the
+  write it returns `ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED
+  phase=final_check` with the backup path (exit 1). `WARN` does not block.
 
 Dry-run output:
 
 ```text
-DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 ack_required=1
+DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 ack_required=1 pre_check=OK temp_check=OK
 SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000
 PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001
 ```
@@ -584,7 +605,7 @@ PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001
 Write output:
 
 ```text
-WRITE backup=Assets/Prefabs/Enemy.prefab.bak field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 verified=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1
+WRITE backup=Assets/Prefabs/Enemy.prefab.bak field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 verified=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 pre_check=OK temp_check=OK final_check=OK
 SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000
 PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001
 ```
@@ -593,6 +614,14 @@ Write-gate failure:
 
 ```text
 ERROR set requires --ack-impact for prefab writes
+```
+
+Blocked output (exit 0, file untouched, judged before the ack gate):
+
+```text
+BLOCKED code=GRAPH_CHECK_FAILED phase=pre_check file=Assets/Prefabs/Enemy.prefab id=11400000 field=moveSpeed
+CHECK phase=pre_check status=ERROR errors=1 warnings=0
+ERROR code=DUPLICATE_FILE_ID file_id=2000 duplicates=2
 ```
 
 Depth-limit warning suffix:
