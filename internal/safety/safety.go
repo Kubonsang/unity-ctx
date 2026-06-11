@@ -11,6 +11,7 @@ import (
 	fgcore "github.com/Kubonsang/unity-fileid-graph/pkg/core"
 	fggraph "github.com/Kubonsang/unity-fileid-graph/pkg/graph"
 	fgparser "github.com/Kubonsang/unity-fileid-graph/pkg/parser"
+	fgrefs "github.com/Kubonsang/unity-fileid-graph/pkg/refs"
 )
 
 type Phase string
@@ -120,6 +121,55 @@ func CheckBytes(data []byte) Report {
 		})
 	}
 	return report
+}
+
+// Ref is one PPtr/GUID reference extracted from a Unity YAML block.
+type Ref struct {
+	Block   int64
+	Class   string
+	Field   string
+	FileID  int64
+	GUID    string
+	HasGUID bool
+	Type    int
+	HasType bool
+}
+
+type RefsReport struct {
+	Status   string // "OK" | "WARN"
+	Refs     []Ref
+	Warnings []Finding
+}
+
+// ExtractRefs extracts PPtr/GUID reference evidence from raw Unity YAML
+// bytes. It errors only when the bytes cannot be block-parsed.
+func ExtractRefs(data []byte, namespace, file string) (RefsReport, error) {
+	parsed, err := fgparser.Parse(data)
+	if err != nil {
+		return RefsReport{}, err
+	}
+	result := fgrefs.Extract(parsed, namespace, file)
+	report := RefsReport{Status: result.Status}
+	for _, reference := range result.References {
+		report.Refs = append(report.Refs, Ref{
+			Block:   reference.BlockFileID,
+			Class:   reference.TypeName,
+			Field:   reference.Field,
+			FileID:  reference.FileID,
+			GUID:    reference.GUID,
+			HasGUID: reference.HasGUID,
+			Type:    reference.Type,
+			HasType: reference.HasType,
+		})
+	}
+	for _, issue := range result.Issues {
+		report.Warnings = append(report.Warnings, Finding{
+			Severity: StatusWarn,
+			Code:     issue.Code,
+			Detail:   fmt.Sprintf("file_id=%d message=%q", issue.FileID, issue.Message),
+		})
+	}
+	return report, nil
 }
 
 // errorDetail mirrors uyaml's check output field rendering so both tools
