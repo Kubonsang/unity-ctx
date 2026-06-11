@@ -2275,6 +2275,9 @@ func TestApplyDryRunReturnsVerifiedSummaryWithoutWriting(t *testing.T) {
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
+	if got.Safety == nil || got.Safety.PreCheck != "OK" || got.Safety.TempCheck != "OK" || got.Safety.FinalCheck != "" {
+		t.Fatalf("safety payload mismatch: %+v", got.Safety)
+	}
 
 	after, err := os.ReadFile(scenePath)
 	if err != nil {
@@ -2349,6 +2352,12 @@ func TestApplyBlocksWhenPreCheckFails(t *testing.T) {
 	}
 	if lines[2] != "ERROR code=DUPLICATE_FILE_ID file_id=1000 duplicates=2" {
 		t.Fatalf("finding line mismatch: got %q", lines[2])
+	}
+	if got.Safety == nil || got.Safety.PreCheck != "ERROR" || len(got.Safety.Findings) != 1 {
+		t.Fatalf("safety payload mismatch: %+v", got.Safety)
+	}
+	if f := got.Safety.Findings[0]; f.Phase != "pre_check" || f.Code != "DUPLICATE_FILE_ID" {
+		t.Fatalf("safety finding mismatch: %+v", f)
 	}
 
 	after, err := os.ReadFile(scenePath)

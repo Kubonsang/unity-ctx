@@ -42,3 +42,43 @@ func blockedBody(kv string, check phaseCheck) string {
 	body := fmt.Sprintf("BLOCKED code=GRAPH_CHECK_FAILED phase=%s%s", check.phase, kv)
 	return body + checkDetailLines([]phaseCheck{check})
 }
+
+type SafetyFinding struct {
+	Phase    string `json:"phase"`
+	Severity string `json:"severity"`
+	Code     string `json:"code"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+type SafetyPayload struct {
+	PreCheck   string          `json:"pre_check,omitempty"`
+	TempCheck  string          `json:"temp_check,omitempty"`
+	FinalCheck string          `json:"final_check,omitempty"`
+	Findings   []SafetyFinding `json:"findings,omitempty"`
+}
+
+func newSafetyPayload(checks []phaseCheck) *SafetyPayload {
+	if len(checks) == 0 {
+		return nil
+	}
+	payload := &SafetyPayload{}
+	for _, c := range checks {
+		switch c.phase {
+		case safety.PhasePre:
+			payload.PreCheck = c.report.Status
+		case safety.PhaseTemp:
+			payload.TempCheck = c.report.Status
+		case safety.PhaseFinal:
+			payload.FinalCheck = c.report.Status
+		}
+		for _, f := range c.report.Findings {
+			payload.Findings = append(payload.Findings, SafetyFinding{
+				Phase:    string(c.phase),
+				Severity: f.Severity,
+				Code:     f.Code,
+				Detail:   f.Detail,
+			})
+		}
+	}
+	return payload
+}

@@ -192,6 +192,7 @@ type PatchResult struct {
 	SchemaVersion int `json:"schema_version,omitempty"`
 	core.Result
 	PatchPlan *scenepatch.PlacePrefabPlan `json:"patch_plan,omitempty"`
+	Safety    *SafetyPayload              `json:"safety,omitempty"`
 }
 
 type ImpactResult struct {
@@ -1336,6 +1337,7 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 	if preCheck.report.Blocking() {
 		result.Status = "BLOCKED"
 		result.Body = blockedBody(fmt.Sprintf(" patch=%s file=%s", args.Patch, path), preCheck)
+		result.Safety = newSafetyPayload([]phaseCheck{preCheck})
 		return result, 0
 	}
 
@@ -1355,6 +1357,7 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 	if tempCheck.report.Blocking() {
 		result.Status = "BLOCKED"
 		result.Body = blockedBody(fmt.Sprintf(" patch=%s file=%s", args.Patch, path), tempCheck)
+		result.Safety = newSafetyPayload([]phaseCheck{preCheck, tempCheck})
 		return result, 0
 	}
 	checks := []phaseCheck{preCheck, tempCheck}
@@ -1407,6 +1410,7 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 				args.Patch,
 				checkDetailLines([]phaseCheck{finalCheck}),
 			)
+			result.Safety = newSafetyPayload(append(checks, finalCheck))
 			planCopy := envelope.PatchPlan
 			result.PatchPlan = &planCopy
 			return result, 1
@@ -1439,6 +1443,7 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 			checkDetailLines(checks),
 		)
 	}
+	result.Safety = newSafetyPayload(checks)
 	planCopy := envelope.PatchPlan
 	result.PatchPlan = &planCopy
 	return result, 0
