@@ -208,6 +208,7 @@ type SuggestResult struct {
 type SetResult struct {
 	core.Result
 	Impact *ImpactPayload `json:"impact,omitempty"`
+	Safety *SafetyPayload `json:"safety,omitempty"`
 }
 
 type loadedDoc struct {
@@ -607,6 +608,14 @@ func (s *Service) setPrefab(path string, jsonOut bool, args SetArgs, result SetR
 		return result, 1
 	}
 
+	preCheck := phaseCheck{phase: safety.PhasePre, report: safety.CheckBytes(loaded.data)}
+	if preCheck.report.Blocking() {
+		result.Status = "BLOCKED"
+		result.Body = blockedBody(fmt.Sprintf(" file=%s id=%d field=%s", path, args.ID, args.Field), preCheck)
+		result.Safety = newSafetyPayload([]phaseCheck{preCheck})
+		return result, 0
+	}
+
 	plan, err := mutation.PlanPrefabSet(loaded.data, loaded.blocks, mutation.PrefabSetRequest{
 		Path:    path,
 		HasID:   args.HasID,
@@ -620,6 +629,15 @@ func (s *Service) setPrefab(path string, jsonOut bool, args SetArgs, result SetR
 		result.Body = fmt.Sprintf("ERROR %v", err)
 		return result, 1
 	}
+
+	tempCheck := phaseCheck{phase: safety.PhaseTemp, report: safety.CheckBytes(plan.UpdatedData)}
+	if tempCheck.report.Blocking() {
+		result.Status = "BLOCKED"
+		result.Body = blockedBody(fmt.Sprintf(" file=%s id=%d field=%s", path, args.ID, args.Field), tempCheck)
+		result.Safety = newSafetyPayload([]phaseCheck{preCheck, tempCheck})
+		return result, 0
+	}
+	checks := []phaseCheck{preCheck, tempCheck}
 
 	impactResult, err := impactscan.ScanPrefabImpact(impactscan.Request{
 		ProjectPath: project,
@@ -637,13 +655,15 @@ func (s *Service) setPrefab(path string, jsonOut bool, args SetArgs, result SetR
 
 	if !args.Write {
 		result.Status = impactResult.Status
-		result.Body = formatPrefabSetBody("DRY_RUN", "", plan, impactResult, 0, plan.Changed)
+		result.Body = formatPrefabSetBody("DRY_RUN", "", plan, impactResult, 0, plan.Changed, checks)
+		result.Safety = newSafetyPayload(checks)
 		return result, 0
 	}
 	if !plan.Changed {
 		verification := s.verifySetValue(path, args)
 		result.Status = impactResult.Status
-		result.Body = formatPrefabSetBody("OK", "", plan, impactResult, boolToInt(verification.Matched), false)
+		result.Body = formatPrefabSetBody("OK", "", plan, impactResult, boolToInt(verification.Matched), false, checks)
+		result.Safety = newSafetyPayload(checks)
 		return result, 0
 	}
 	if !args.AckImpact {
@@ -692,8 +712,29 @@ func (s *Service) setPrefab(path string, jsonOut bool, args SetArgs, result SetR
 		return result, 1
 	}
 
+	finalData, finalErr := os.ReadFile(path)
+	if finalErr != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR WRITE_COMMITTED backup=%s field=%s err=final re-read failed: %v", backupPath, plan.Field, finalErr)
+		return result, 1
+	}
+	finalCheck := phaseCheck{phase: safety.PhaseFinal, report: safety.CheckBytes(finalData)}
+	if finalCheck.report.Blocking() {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf(
+			"ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=%s field=%s%s",
+			backupPath,
+			plan.Field,
+			checkDetailLines([]phaseCheck{finalCheck}),
+		)
+		result.Safety = newSafetyPayload(append(checks, finalCheck))
+		return result, 1
+	}
+	checks = append(checks, finalCheck)
+
 	result.Status = impactResult.Status
-	result.Body = formatPrefabSetBody("WRITE", backupPath, plan, impactResult, 1, false)
+	result.Body = formatPrefabSetBody("WRITE", backupPath, plan, impactResult, 1, false, checks)
+	result.Safety = newSafetyPayload(checks)
 	return result, 0
 }
 
@@ -1921,7 +1962,7 @@ func formatSuggestBody(manifestPath, prefabPath string, plan suggestplan.Result)
 	return strings.Join(lines, "\n")
 }
 
-func formatPrefabSetBody(prefix, backupPath string, plan mutation.PrefabSetResult, impactResult impactscan.Result, verified int, ackRequired bool) string {
+func formatPrefabSetBody(prefix, backupPath string, plan mutation.PrefabSetResult, impactResult impactscan.Result, verified int, ackRequired bool, checks []phaseCheck) string {
 	summary := prefix
 	if backupPath != "" {
 		summary = fmt.Sprintf("%s backup=%s", summary, backupPath)
@@ -1951,6 +1992,7 @@ func formatPrefabSetBody(prefix, backupPath string, plan mutation.PrefabSetResul
 	if prefix == "DRY_RUN" {
 		summary = fmt.Sprintf("%s ack_required=%d", summary, boolToInt(ackRequired))
 	}
+	summary += checkSuffix(checks)
 
 	lines := []string{
 		summary,
@@ -1960,7 +2002,8 @@ func formatPrefabSetBody(prefix, backupPath string, plan mutation.PrefabSetResul
 	if impactResult.DepthLimitHit {
 		lines = append(lines, fmt.Sprintf("WARN IMPACT_DEPTH_LIMIT prefab=%s depth=%d more_possible=true", impactResult.PrefabPath, impactResult.MaxNestedDepth))
 	}
-	return strings.Join(lines, "\n")
+	body := strings.Join(lines, "\n")
+	return body + checkDetailLines(checks)
 }
 
 func formatImpactHits(hits []impactscan.FileHit) string {

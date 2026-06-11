@@ -1739,7 +1739,7 @@ func TestPrefabSetDryRunReturnsImpactSummary(t *testing.T) {
 	if result.stderr != "" {
 		t.Fatalf("expected empty stderr, got %q", result.stderr)
 	}
-	want := "DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 ack_required=1\n" +
+	want := "DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 ack_required=1 pre_check=OK temp_check=OK\n" +
 		"SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000\n" +
 		"PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001\n"
 	if result.stdout != want {
@@ -3560,10 +3560,18 @@ func writePrefabSetProjectTarget(t *testing.T, prefabPath, guid string) {
 		"--- !u!1 &1000\n" +
 		"GameObject:\n" +
 		"  m_Name: Enemy\n" +
+		"  m_Component:\n" +
+		"  - component: {fileID: 4000}\n" +
+		"  - component: {fileID: 11400000}\n" +
+		"--- !u!4 &4000\n" +
+		"Transform:\n" +
+		"  m_GameObject: {fileID: 1000}\n" +
+		"  m_Father: {fileID: 0}\n" +
+		"  m_Children: []\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
 		"  m_GameObject: {fileID: 1000}\n" +
-		"  m_Script: {fileID: 11500000, guid: fake_enemy_controller_guid, type: 3}\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  moveSpeed: 3.5\n"
 	if err := os.WriteFile(prefabPath, []byte(prefab), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", prefabPath, err)
