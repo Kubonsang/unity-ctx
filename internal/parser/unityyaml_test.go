@@ -30,8 +30,8 @@ func TestParseFileSimpleScenePreservesBlockIdentity(t *testing.T) {
 	if first.StartLine != 3 {
 		t.Fatalf("first StartLine mismatch: got %d want 3", first.StartLine)
 	}
-	if first.EndLine != 6 {
-		t.Fatalf("first EndLine mismatch: got %d want 6", first.EndLine)
+	if first.EndLine != 8 {
+		t.Fatalf("first EndLine mismatch: got %d want 8", first.EndLine)
 	}
 }
 

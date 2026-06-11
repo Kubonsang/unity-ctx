@@ -117,8 +117,11 @@ func TestSceneApplyWriteCreatesBackupAndPreservesParseability(t *testing.T) {
 	if len(blocks) != 6 {
 		t.Fatalf("block count mismatch: got %d want %d", len(blocks), 6)
 	}
-	if !strings.Contains(string(updated), "--- !u!1 &2002\nGameObject:\n  m_Name: chair\n") {
-		t.Fatalf("updated scene missing appended GameObject block:\n%s", string(updated))
+	if !strings.Contains(string(updated), "--- !u!1 &2002\nGameObject:\n  m_Name: chair\n  m_IsActive: 1\n  m_Component:\n  - component: {fileID: 2003}\n") {
+		t.Fatalf("updated scene missing appended GameObject block with component list:\n%s", string(updated))
+	}
+	if !strings.Contains(string(updated), "  m_Father: {fileID: 0}\n  m_Children: []\n") {
+		t.Fatalf("updated scene missing Transform hierarchy fields:\n%s", string(updated))
 	}
 }
 

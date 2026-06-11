@@ -4,19 +4,27 @@
 GameObject:
   m_Name: Table_01
   m_IsActive: 1
+  m_Component:
+  - component: {fileID: 1001}
 --- !u!4 &1001
 Transform:
   m_GameObject: {fileID: 1000}
   m_LocalPosition: {x: 5, y: 0, z: 3}
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalScale: {x: 1, y: 1, z: 1}
+  m_Father: {fileID: 0}
+  m_Children: []
 --- !u!1 &2000
 GameObject:
   m_Name: Chair_01
   m_IsActive: 1
+  m_Component:
+  - component: {fileID: 2001}
 --- !u!4 &2001
 Transform:
   m_GameObject: {fileID: 2000}
   m_LocalPosition: {x: 2.1, y: 0, z: 3.4}
   m_LocalRotation: {x: 0, y: 0.7071, z: 0, w: 0.7071}
   m_LocalScale: {x: 1, y: 1, z: 1}
+  m_Father: {fileID: 0}
+  m_Children: []
