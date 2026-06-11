@@ -22,6 +22,7 @@ import (
 	"unity-ctx/internal/mutation"
 	"unity-ctx/internal/parser"
 	scenepatch "unity-ctx/internal/patch"
+	"unity-ctx/internal/safety"
 	"unity-ctx/internal/scan"
 	suggestplan "unity-ctx/internal/suggest"
 )
@@ -1331,6 +1332,13 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 		return result, 1
 	}
 
+	preCheck := phaseCheck{phase: safety.PhasePre, report: safety.CheckBytes(loaded.data)}
+	if preCheck.report.Blocking() {
+		result.Status = "BLOCKED"
+		result.Body = blockedBody(fmt.Sprintf(" patch=%s file=%s", args.Patch, path), preCheck)
+		return result, 0
+	}
+
 	plan, err := mutation.PlanSceneApply(loaded.data, mutation.SceneApplyRequest{
 		ScenePath: path,
 		PatchPath: args.Patch,
@@ -1342,6 +1350,14 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 		result.Body = fmt.Sprintf("ERROR %v", err)
 		return result, 1
 	}
+
+	tempCheck := phaseCheck{phase: safety.PhaseTemp, report: safety.CheckBytes(plan.UpdatedData)}
+	if tempCheck.report.Blocking() {
+		result.Status = "BLOCKED"
+		result.Body = blockedBody(fmt.Sprintf(" patch=%s file=%s", args.Patch, path), tempCheck)
+		return result, 0
+	}
+	checks := []phaseCheck{preCheck, tempCheck}
 
 	applied := plan
 	if args.Write {
@@ -1378,22 +1394,26 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 	result.Status = "OK"
 	if args.Write {
 		result.Body = fmt.Sprintf(
-			"WRITE backup=%s patch=%s op=%s append_ops=%d changed=%d verified=%d",
+			"WRITE backup=%s patch=%s op=%s append_ops=%d changed=%d verified=%d%s%s",
 			applied.BackupPath,
 			args.Patch,
 			applied.Operation,
 			applied.AppendOps,
 			boolToInt(applied.Changed),
 			boolToInt(applied.Verified),
+			checkSuffix(checks),
+			checkDetailLines(checks),
 		)
 	} else {
 		result.Body = fmt.Sprintf(
-			"DRY_RUN patch=%s op=%s append_ops=%d changed=%d verified=%d",
+			"DRY_RUN patch=%s op=%s append_ops=%d changed=%d verified=%d%s%s",
 			args.Patch,
 			applied.Operation,
 			applied.AppendOps,
 			boolToInt(applied.Changed),
 			boolToInt(applied.Verified),
+			checkSuffix(checks),
+			checkDetailLines(checks),
 		)
 	}
 	planCopy := envelope.PatchPlan

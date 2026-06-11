@@ -2271,7 +2271,7 @@ func TestApplyDryRunReturnsVerifiedSummaryWithoutWriting(t *testing.T) {
 		t.Fatalf("status mismatch: got %q want %q", got.Status, "OK")
 	}
 
-	want := "DRY_RUN patch=" + patchPath + " op=place_prefab append_ops=2 changed=1 verified=1"
+	want := "DRY_RUN patch=" + patchPath + " op=place_prefab append_ops=2 changed=1 verified=1 pre_check=OK temp_check=OK"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
@@ -2298,7 +2298,7 @@ func TestApplyWriteCreatesBackupAndWritesScene(t *testing.T) {
 		t.Fatalf("expected success exit code, got %d body=%q", code, got.Body)
 	}
 
-	want := "WRITE backup=" + scenePath + ".bak patch=" + patchPath + " op=place_prefab append_ops=2 changed=1 verified=1"
+	want := "WRITE backup=" + scenePath + ".bak patch=" + patchPath + " op=place_prefab append_ops=2 changed=1 verified=1 pre_check=OK temp_check=OK"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
@@ -2312,6 +2312,54 @@ func TestApplyWriteCreatesBackupAndWritesScene(t *testing.T) {
 	}
 	if !strings.Contains(string(updated), "--- !u!1 &2002\nGameObject:\n  m_Name: chair\n") {
 		t.Fatalf("updated scene missing appended block:\n%s", string(updated))
+	}
+}
+
+func TestApplyBlocksWhenPreCheckFails(t *testing.T) {
+	scenePath := copyFixtureFile(t, filepath.Join("..", "..", "testdata", "broken", "duplicate_fileid.unity"), "simple_scene.unity")
+	patchPath := filepath.Join("..", "..", "testdata", "patches", "chair_place_ok.patch.json")
+
+	before, err := os.ReadFile(scenePath)
+	if err != nil {
+		t.Fatalf("ReadFile() before error = %v", err)
+	}
+
+	svc := app.New()
+	got, code := svc.Apply("scene", scenePath, core.ViewCompact, false, app.ApplyArgs{
+		Patch: patchPath,
+		Write: true,
+	})
+	if code != 0 {
+		t.Fatalf("BLOCKED must exit 0, got %d body=%q", code, got.Body)
+	}
+	if got.Status != "BLOCKED" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "BLOCKED")
+	}
+
+	wantFirst := "BLOCKED code=GRAPH_CHECK_FAILED phase=pre_check patch=" + patchPath + " file=" + scenePath
+	lines := strings.Split(got.Body, "\n")
+	if lines[0] != wantFirst {
+		t.Fatalf("first line mismatch: got %q want %q", lines[0], wantFirst)
+	}
+	if len(lines) < 3 {
+		t.Fatalf("expected CHECK and finding lines, got %q", got.Body)
+	}
+	if lines[1] != "CHECK phase=pre_check status=ERROR errors=1 warnings=0" {
+		t.Fatalf("CHECK line mismatch: got %q", lines[1])
+	}
+	if lines[2] != "ERROR code=DUPLICATE_FILE_ID file_id=1000 duplicates=2" {
+		t.Fatalf("finding line mismatch: got %q", lines[2])
+	}
+
+	after, err := os.ReadFile(scenePath)
+	if err != nil {
+		t.Fatalf("ReadFile() after error = %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("blocked apply modified the scene file")
+	}
+	if _, err := os.Stat(scenePath + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("blocked apply must not create a backup, stat err = %v", err)
 	}
 }
 

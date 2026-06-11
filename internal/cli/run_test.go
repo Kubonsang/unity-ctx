@@ -1166,7 +1166,7 @@ func TestApplyDryRunReturnsCompactSummary(t *testing.T) {
 		t.Fatalf("expected empty stderr, got %q", result.stderr)
 	}
 
-	want := "DRY_RUN patch=testdata/patches/chair_place_ok.patch.json op=place_prefab append_ops=2 changed=1 verified=1\n"
+	want := "DRY_RUN patch=testdata/patches/chair_place_ok.patch.json op=place_prefab append_ops=2 changed=1 verified=1 pre_check=OK temp_check=OK\n"
 	if result.stdout != want {
 		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
 	}
@@ -1192,7 +1192,7 @@ func TestApplyWriteCreatesBackup(t *testing.T) {
 		t.Fatalf("expected empty stderr, got %q", result.stderr)
 	}
 
-	want := "WRITE backup=" + scenePath + ".bak patch=testdata/patches/chair_place_ok.patch.json op=place_prefab append_ops=2 changed=1 verified=1\n"
+	want := "WRITE backup=" + scenePath + ".bak patch=testdata/patches/chair_place_ok.patch.json op=place_prefab append_ops=2 changed=1 verified=1 pre_check=OK temp_check=OK\n"
 	if result.stdout != want {
 		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
 	}
