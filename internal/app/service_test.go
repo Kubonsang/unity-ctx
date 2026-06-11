@@ -1475,6 +1475,7 @@ func TestSetAssetDryRunDoesNotWriteFile(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: EnemyConfig\n" +
 		"  maxHealth: 200\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1490,7 +1491,7 @@ func TestSetAssetDryRunDoesNotWriteFile(t *testing.T) {
 		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 	}
 
-	want := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1"
+	want := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1 pre_check=OK temp_check=OK"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
@@ -1510,6 +1511,7 @@ func TestSetAssetWriteCreatesBackupAndVerifies(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: EnemyConfig\n" +
 		"  maxHealth: 200\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1526,7 +1528,7 @@ func TestSetAssetWriteCreatesBackupAndVerifies(t *testing.T) {
 		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 	}
 
-	want := "WRITE backup=" + path + ".bak field=maxHealth old=200 new=300 type_hint=int changed=1 verified=1"
+	want := "WRITE backup=" + path + ".bak field=maxHealth old=200 new=300 type_hint=int changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
@@ -1554,6 +1556,7 @@ func TestSetAssetWriteNoOpDoesNotWriteOrCreateBackup(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: EnemyConfig\n" +
 		"  maxHealth: 200\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1580,7 +1583,7 @@ func TestSetAssetWriteNoOpDoesNotWriteOrCreateBackup(t *testing.T) {
 		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 	}
 
-	want := "OK field=maxHealth old=200 new=200 type_hint=int changed=0 verified=1"
+	want := "OK field=maxHealth old=200 new=200 type_hint=int changed=0 verified=1 pre_check=OK temp_check=OK"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
@@ -1644,6 +1647,7 @@ func TestSetAssetWriteVerifiesStringValuesSemantically(t *testing.T) {
 				"%YAML 1.1\n" +
 				"--- !u!114 &11400000\n" +
 				"MonoBehaviour:\n" +
+				"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 				"  m_Name: EnemyConfig\n" +
 				tc.initialLine
 			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1661,7 +1665,7 @@ func TestSetAssetWriteVerifiesStringValuesSemantically(t *testing.T) {
 				t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 			}
 
-			wantPrefix := "WRITE backup=" + path + ".bak field=label old=starter " + tc.wantBodyNew + " type_hint=string changed=1 verified=1"
+			wantPrefix := "WRITE backup=" + path + ".bak field=label old=starter " + tc.wantBodyNew + " type_hint=string changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK"
 			if got.Body != wantPrefix {
 				t.Fatalf("body mismatch: got %q want %q", got.Body, wantPrefix)
 			}
@@ -1683,6 +1687,7 @@ func TestSetAssetWriteVerifiesNaNSemantically(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: EnemyConfig\n" +
 		"  speed: 1.5\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1700,7 +1705,7 @@ func TestSetAssetWriteVerifiesNaNSemantically(t *testing.T) {
 		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 	}
 
-	want := "WRITE backup=" + path + ".bak field=speed old=1.5 new=NaN type_hint=float changed=1 verified=1"
+	want := "WRITE backup=" + path + ".bak field=speed old=1.5 new=NaN type_hint=float changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
@@ -1739,7 +1744,7 @@ func TestSetPrefabDryRunReturnsImpactSummary(t *testing.T) {
 		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 	}
 
-	want := "DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 ack_required=1\n" +
+	want := "DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 ack_required=1 pre_check=OK temp_check=OK\n" +
 		"SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000\n" +
 		"PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001"
 	if got.Body != want {
@@ -1747,6 +1752,55 @@ func TestSetPrefabDryRunReturnsImpactSummary(t *testing.T) {
 	}
 	if got.Impact != nil {
 		t.Fatalf("expected nil impact payload for non-json dry-run, got %#v", got.Impact)
+	}
+}
+
+func TestSetPrefabBlocksWhenPreCheckFails(t *testing.T) {
+	project := copyImpactProjectForService(t)
+	target := filepath.Join(project, "Assets", "Prefabs", "Enemy.prefab")
+	broken, err := os.ReadFile(filepath.Join("..", "..", "testdata", "broken", "duplicate_fileid.prefab"))
+	if err != nil {
+		t.Fatalf("ReadFile(broken fixture) error = %v", err)
+	}
+	if err := os.WriteFile(target, broken, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	svc := app.New()
+	got, code := svc.Set("prefab", target, core.ViewCompact, false, app.SetArgs{
+		HasID:     true,
+		ID:        1000,
+		Field:     "m_IsActive",
+		Value:     "0",
+		Project:   project,
+		Write:     true,
+		AckImpact: true,
+	})
+	if code != 0 {
+		t.Fatalf("BLOCKED must exit 0, got %d body=%q", code, got.Body)
+	}
+	if got.Status != "BLOCKED" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "BLOCKED")
+	}
+
+	lines := strings.Split(got.Body, "\n")
+	wantFirst := "BLOCKED code=GRAPH_CHECK_FAILED phase=pre_check file=" + target + " id=1000 field=m_IsActive"
+	if lines[0] != wantFirst {
+		t.Fatalf("first line mismatch: got %q want %q", lines[0], wantFirst)
+	}
+	if len(lines) < 3 || lines[2] != "ERROR code=DUPLICATE_FILE_ID file_id=2000 duplicates=2" {
+		t.Fatalf("finding line mismatch: got %q", got.Body)
+	}
+
+	after, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile() after error = %v", err)
+	}
+	if string(after) != string(broken) {
+		t.Fatal("blocked set modified the prefab")
+	}
+	if _, err := os.Stat(target + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("blocked set must not create a backup, stat err = %v", err)
 	}
 }
 
@@ -1807,7 +1861,7 @@ func TestSetPrefabWriteCreatesBackupAndVerifies(t *testing.T) {
 		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 	}
 
-	want := "WRITE backup=" + target + ".bak field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 verified=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1\n" +
+	want := "WRITE backup=" + target + ".bak field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 verified=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 pre_check=OK temp_check=OK final_check=OK\n" +
 		"SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000\n" +
 		"PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001"
 	if got.Body != want {
@@ -1851,7 +1905,7 @@ func TestSetPrefabWriteNoOpDoesNotCreateBackup(t *testing.T) {
 		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 	}
 
-	want := "OK field=moveSpeed old=3.5 new=3.5 type_hint=float changed=0 verified=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1\n" +
+	want := "OK field=moveSpeed old=3.5 new=3.5 type_hint=float changed=0 verified=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 pre_check=OK temp_check=OK\n" +
 		"SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000\n" +
 		"PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001"
 	if got.Body != want {
@@ -1882,7 +1936,7 @@ func TestSetPrefabWarnsWithImpactDepthLimit(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 	}
-	want := "DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=WARN scenes=2 scene_refs=3 prefabs=1 prefab_refs=1 nested_depth=3 ack_required=1\n" +
+	want := "DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=WARN scenes=2 scene_refs=3 prefabs=1 prefab_refs=1 nested_depth=3 ack_required=1 pre_check=OK temp_check=OK\n" +
 		"SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000\n" +
 		"PREFABS Assets/Prefabs/EnemyElite.prefab refs=1 fileIDs=3000\n" +
 		"WARN IMPACT_DEPTH_LIMIT prefab=Assets/Prefabs/Enemy.prefab depth=3 more_possible=true"
@@ -2393,16 +2447,68 @@ func TestApplyRejectsUnknownPatchStatus(t *testing.T) {
 	}
 }
 
+func TestSetAssetBlocksWhenPreCheckFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "broken.asset")
+	content := "" +
+		"%YAML 1.1\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
+		"  m_Name: ConfigA\n" +
+		"  maxHealth: 100\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
+		"  m_Name: ConfigA\n" +
+		"  maxHealth: 200\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	svc := app.New()
+	got, code := svc.Set("asset", path, core.ViewCompact, false, app.SetArgs{
+		Field: "maxHealth",
+		Value: "300",
+		Write: true,
+	})
+	if code != 0 {
+		t.Fatalf("BLOCKED must exit 0, got %d body=%q", code, got.Body)
+	}
+	if got.Status != "BLOCKED" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "BLOCKED")
+	}
+	lines := strings.Split(got.Body, "\n")
+	wantFirst := "BLOCKED code=GRAPH_CHECK_FAILED phase=pre_check file=" + path + " field=maxHealth"
+	if lines[0] != wantFirst {
+		t.Fatalf("first line mismatch: got %q want %q", lines[0], wantFirst)
+	}
+	if len(lines) < 3 || lines[2] != "ERROR code=DUPLICATE_FILE_ID file_id=11400000 duplicates=2" {
+		t.Fatalf("finding line mismatch: got %q", got.Body)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() after error = %v", err)
+	}
+	if string(after) != content {
+		t.Fatal("blocked asset set modified the file")
+	}
+	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("blocked asset set must not create a backup, stat err = %v", err)
+	}
+}
+
 func TestSetAssetSupportsIDSelection(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "multi.asset")
 	content := "" +
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: ConfigA\n" +
 		"  maxHealth: 100\n" +
 		"--- !u!114 &11400001\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: ConfigB\n" +
 		"  maxHealth: 200\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -2420,7 +2526,7 @@ func TestSetAssetSupportsIDSelection(t *testing.T) {
 		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 	}
 
-	want := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1"
+	want := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1 pre_check=OK temp_check=OK"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
@@ -2902,10 +3008,12 @@ func TestAssetInspectAndGetHonorSelectorsWithoutComponent(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: ConfigA\n" +
 		"  maxHealth: 200\n" +
 		"--- !u!114 &11400001\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: ConfigB\n" +
 		"  maxHealth: 350\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -3011,10 +3119,12 @@ func TestAssetInspectAmbiguousComponentPreservesAmbiguity(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: ConfigA\n" +
 		"  maxHealth: 200\n" +
 		"--- !u!114 &11400001\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: ConfigB\n" +
 		"  maxHealth: 300\n"
 
@@ -3102,10 +3212,18 @@ func writePrefabSetTarget(t *testing.T, prefabPath, guid string) {
 		"--- !u!1 &1000\n" +
 		"GameObject:\n" +
 		"  m_Name: Enemy\n" +
+		"  m_Component:\n" +
+		"  - component: {fileID: 4000}\n" +
+		"  - component: {fileID: 11400000}\n" +
+		"--- !u!4 &4000\n" +
+		"Transform:\n" +
+		"  m_GameObject: {fileID: 1000}\n" +
+		"  m_Father: {fileID: 0}\n" +
+		"  m_Children: []\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
 		"  m_GameObject: {fileID: 1000}\n" +
-		"  m_Script: {fileID: 11500000, guid: fake_enemy_controller_guid, type: 3}\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  moveSpeed: 3.5\n"
 	if err := os.WriteFile(prefabPath, []byte(prefab), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", prefabPath, err)

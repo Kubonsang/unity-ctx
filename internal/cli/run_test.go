@@ -1065,6 +1065,7 @@ func TestSetAssetDryRunReturnsPlanAndDoesNotWrite(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: EnemyConfig\n" +
 		"  maxHealth: 200\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1089,7 +1090,7 @@ func TestSetAssetDryRunReturnsPlanAndDoesNotWrite(t *testing.T) {
 		t.Fatalf("expected empty stderr, got %q", result.stderr)
 	}
 
-	want := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1\n"
+	want := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1 pre_check=OK temp_check=OK\n"
 	if result.stdout != want {
 		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
 	}
@@ -1233,6 +1234,7 @@ func TestSetAssetWriteCreatesBackupAndVerifies(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: EnemyConfig\n" +
 		"  maxHealth: 200\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1258,7 +1260,7 @@ func TestSetAssetWriteCreatesBackupAndVerifies(t *testing.T) {
 		t.Fatalf("expected empty stderr, got %q", result.stderr)
 	}
 
-	want := "WRITE backup=" + path + ".bak field=maxHealth old=200 new=300 type_hint=int changed=1 verified=1\n"
+	want := "WRITE backup=" + path + ".bak field=maxHealth old=200 new=300 type_hint=int changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK\n"
 	if result.stdout != want {
 		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
 	}
@@ -1270,6 +1272,7 @@ func TestSetAssetWriteNoOpDoesNotWriteOrCreateBackup(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: EnemyConfig\n" +
 		"  maxHealth: 200\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1305,7 +1308,7 @@ func TestSetAssetWriteNoOpDoesNotWriteOrCreateBackup(t *testing.T) {
 		t.Fatalf("expected empty stderr, got %q", result.stderr)
 	}
 
-	want := "OK field=maxHealth old=200 new=200 type_hint=int changed=0 verified=1\n"
+	want := "OK field=maxHealth old=200 new=200 type_hint=int changed=0 verified=1 pre_check=OK temp_check=OK\n"
 	if result.stdout != want {
 		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
 	}
@@ -1337,6 +1340,7 @@ func TestSetAssetWriteVerifiesStringLookingScalarSemantically(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: EnemyConfig\n" +
 		"  label: starter\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1362,7 +1366,7 @@ func TestSetAssetWriteVerifiesStringLookingScalarSemantically(t *testing.T) {
 		t.Fatalf("expected empty stderr, got %q", result.stderr)
 	}
 
-	want := "WRITE backup=" + path + ".bak field=label old=starter new=\"001\" type_hint=string changed=1 verified=1\n"
+	want := "WRITE backup=" + path + ".bak field=label old=starter new=\"001\" type_hint=string changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK\n"
 	if result.stdout != want {
 		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
 	}
@@ -1462,6 +1466,7 @@ func TestSetAllowsExplicitEmptyValue(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: EnemyConfig\n" +
 		"  label: starter\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1486,7 +1491,7 @@ func TestSetAllowsExplicitEmptyValue(t *testing.T) {
 		t.Fatalf("expected empty stderr, got %q", result.stderr)
 	}
 
-	want := "DRY_RUN field=label old=starter new=\"\" type_hint=string changed=1\n"
+	want := "DRY_RUN field=label old=starter new=\"\" type_hint=string changed=1 pre_check=OK temp_check=OK\n"
 	if result.stdout != want {
 		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
 	}
@@ -1525,10 +1530,12 @@ func TestSetSupportsIDSelection(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: ConfigA\n" +
 		"  maxHealth: 100\n" +
 		"--- !u!114 &11400001\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: ConfigB\n" +
 		"  maxHealth: 200\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1555,7 +1562,7 @@ func TestSetSupportsIDSelection(t *testing.T) {
 		t.Fatalf("expected empty stderr, got %q", result.stderr)
 	}
 
-	want := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1\n"
+	want := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1 pre_check=OK temp_check=OK\n"
 	if result.stdout != want {
 		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
 	}
@@ -1567,6 +1574,7 @@ func TestSetJSONReturnsResultEnvelope(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: EnemyConfig\n" +
 		"  maxHealth: 200\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1619,7 +1627,7 @@ func TestSetJSONReturnsResultEnvelope(t *testing.T) {
 	if got.View != "compact" {
 		t.Fatalf("view mismatch: got %q want %q", got.View, "compact")
 	}
-	wantBody := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1"
+	wantBody := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1 pre_check=OK temp_check=OK"
 	if got.Body != wantBody {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, wantBody)
 	}
@@ -1739,7 +1747,7 @@ func TestPrefabSetDryRunReturnsImpactSummary(t *testing.T) {
 	if result.stderr != "" {
 		t.Fatalf("expected empty stderr, got %q", result.stderr)
 	}
-	want := "DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 ack_required=1\n" +
+	want := "DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 ack_required=1 pre_check=OK temp_check=OK\n" +
 		"SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000\n" +
 		"PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001\n"
 	if result.stdout != want {
@@ -3560,10 +3568,18 @@ func writePrefabSetProjectTarget(t *testing.T, prefabPath, guid string) {
 		"--- !u!1 &1000\n" +
 		"GameObject:\n" +
 		"  m_Name: Enemy\n" +
+		"  m_Component:\n" +
+		"  - component: {fileID: 4000}\n" +
+		"  - component: {fileID: 11400000}\n" +
+		"--- !u!4 &4000\n" +
+		"Transform:\n" +
+		"  m_GameObject: {fileID: 1000}\n" +
+		"  m_Father: {fileID: 0}\n" +
+		"  m_Children: []\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
 		"  m_GameObject: {fileID: 1000}\n" +
-		"  m_Script: {fileID: 11500000, guid: fake_enemy_controller_guid, type: 3}\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  moveSpeed: 3.5\n"
 	if err := os.WriteFile(prefabPath, []byte(prefab), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", prefabPath, err)
