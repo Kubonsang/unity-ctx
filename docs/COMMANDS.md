@@ -825,6 +825,35 @@ unity-ctx scene bench Assets/Scenes/Stage01.unity --task "inspect placement safe
 - `bench` does not use Unity Editor integration.
 - `bench` requires `--view compact` (the default).
 
+## v0.6 Safety Integration
+
+### meta guid
+
+```bash
+unity-ctx meta guid Assets/Prefabs/Chair.prefab
+unity-ctx meta guid Assets/Prefabs/Chair.prefab --project /Users/me/MyUnityProject
+unity-ctx meta guid Assets/Prefabs/Chair.prefab --json
+```
+
+Optional flags:
+
+- `--project` — retried as `<project>/<file>` when the path is relative and not found directly
+- `--json`
+
+Rules:
+
+- `guid` is the only command in the `meta` namespace.
+- The GUID is read from the sibling `<file>.meta`; the asset file itself is not parsed.
+- A missing `.meta` or missing `guid:` entry returns `NEED_PREFAB_GUID` with a
+  `reason` (`meta_not_found` | `guid_missing`), exit 0. The tool never guesses.
+
+Output:
+
+```text
+OK guid=3e8a1f2b4c5d6e7f8a9b0c1d2e3f4a5b file=Assets/Prefabs/Chair.prefab meta=Assets/Prefabs/Chair.prefab.meta
+NEED_PREFAB_GUID file=Assets/Prefabs/Chair.prefab reason=meta_not_found
+```
+
 ## Output Stability Rules
 
 - No timestamps in default output.

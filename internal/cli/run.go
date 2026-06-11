@@ -32,6 +32,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	command := args[1]
 	file := args[2]
 
+	if namespace == "meta" {
+		return runMetaGUID(command, file, args[3:], stdout, stderr)
+	}
+
 	flagSet := flag.NewFlagSet("unity-ctx", flag.ContinueOnError)
 	flagSet.SetOutput(io.Discard)
 
@@ -849,4 +853,40 @@ func isHelpArgs(args []string) bool {
 
 func usageText() string {
 	return "usage: unity-ctx <namespace> <command> <file> [flags]\n"
+}
+
+func runMetaGUID(command, file string, rest []string, stdout, stderr io.Writer) int {
+	if command != "guid" {
+		_, _ = fmt.Fprintf(stderr, "ERROR meta supports only the guid command\n")
+		return 2
+	}
+
+	flagSet := flag.NewFlagSet("unity-ctx meta", flag.ContinueOnError)
+	flagSet.SetOutput(io.Discard)
+	project := flagSet.String("project", "", "")
+	jsonOutput := flagSet.Bool("json", false, "")
+	if err := flagSet.Parse(rest); err != nil {
+		_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
+		return 2
+	}
+	if flagSet.NArg() > 0 {
+		_, _ = fmt.Fprintf(stderr, "ERROR unexpected trailing arguments: %s\n", strings.Join(flagSet.Args(), " "))
+		return 2
+	}
+
+	service := app.New()
+	result, exitCode := service.MetaGUID(file, *project, *jsonOutput)
+
+	if *jsonOutput {
+		encoder := json.NewEncoder(stdout)
+		encoder.SetEscapeHTML(false)
+		if err := encoder.Encode(result); err != nil {
+			_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
+			return 2
+		}
+		return exitCode
+	}
+
+	_, _ = io.WriteString(stdout, result.Body+"\n")
+	return exitCode
 }
