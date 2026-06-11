@@ -859,6 +859,37 @@ OK guid=3e8a1f2b4c5d6e7f8a9b0c1d2e3f4a5b file=Assets/Prefabs/Chair.prefab meta=A
 NEED_PREFAB_GUID file=Assets/Prefabs/Chair.prefab reason=meta_not_found
 ```
 
+### refs
+
+```bash
+unity-ctx prefab refs Assets/Prefabs/Enemy.prefab
+unity-ctx scene refs Assets/Scenes/Dungeon.unity
+unity-ctx asset refs Assets/Configs/EnemyConfig.asset --json
+```
+
+Optional flags:
+
+- `--json`
+
+Rules:
+
+- `refs` is implemented for the `scene`, `prefab`, and `asset` namespaces.
+- `refs` is read-only PPtr/GUID evidence extraction backed by the
+  unity-fileid-graph safety kernel; the REF line dialect matches `uyaml refs`.
+- Field paths are best-effort evidence labels, not a YAML AST path contract.
+- `WARN` status means warning-only extraction issues; exit code stays 0.
+
+Output:
+
+```text
+OK refs file=Assets/Prefabs/Enemy.prefab count=2 warnings=0
+REF block=1000 class=GameObject field=m_Component[0].component file_id=2000
+REF block=3000 class=MonoBehaviour field=m_Script file_id=11500000 guid=a1b2c3d4e5f60718293a4b5c6d7e8f90 type=3
+```
+
+`--json` adds a `refs` payload with `references[]`
+(`block_file_id`, `class`, `field`, `file_id`, `guid?`, `type?`) and `warnings`.
+
 ## Output Stability Rules
 
 - No timestamps in default output.

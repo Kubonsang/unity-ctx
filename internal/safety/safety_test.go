@@ -116,3 +116,58 @@ func TestCheckBytesMalformedHeaderReportsParseFailed(t *testing.T) {
 		t.Fatalf("expected single PARSE_FAILED finding, got %v", report.Findings)
 	}
 }
+
+const refsPrefab = `--- !u!1 &1000
+GameObject:
+  m_Name: Enemy
+  m_Component:
+  - component: {fileID: 4000}
+  - component: {fileID: 11400000}
+--- !u!4 &4000
+Transform:
+  m_GameObject: {fileID: 1000}
+  m_Father: {fileID: 0}
+  m_Children: []
+--- !u!114 &11400000
+MonoBehaviour:
+  m_GameObject: {fileID: 1000}
+  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}
+  maxHealth: 200
+`
+
+func TestExtractRefsReturnsScriptReference(t *testing.T) {
+	report, err := ExtractRefs([]byte(refsPrefab), "prefab", "Enemy.prefab")
+	if err != nil {
+		t.Fatalf("ExtractRefs() error = %v", err)
+	}
+	if report.Status != StatusOK {
+		t.Fatalf("status mismatch: got %s warnings=%v", report.Status, report.Warnings)
+	}
+	found := false
+	for _, ref := range report.Refs {
+		if ref.Field == "m_Script" {
+			found = true
+			if ref.Block != 11400000 || ref.Class != "MonoBehaviour" {
+				t.Fatalf("ref owner mismatch: %+v", ref)
+			}
+			if !ref.HasGUID || ref.GUID != "a1b2c3d4e5f60718293a4b5c6d7e8f90" {
+				t.Fatalf("ref guid mismatch: %+v", ref)
+			}
+			if !ref.HasType || ref.Type != 3 {
+				t.Fatalf("ref type mismatch: %+v", ref)
+			}
+		}
+		if ref.Field == "m_GameObject" || ref.Field == "m_Father" {
+			t.Fatalf("graph-structural field must be skipped: %+v", ref)
+		}
+	}
+	if !found {
+		t.Fatalf("expected m_Script ref, got %+v", report.Refs)
+	}
+}
+
+func TestExtractRefsErrorsOnUnparseableInput(t *testing.T) {
+	if _, err := ExtractRefs([]byte("--- !u!abc &xyz\n"), "prefab", "x.prefab"); err == nil {
+		t.Fatal("expected parse error")
+	}
+}

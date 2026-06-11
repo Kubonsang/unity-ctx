@@ -477,6 +477,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
+	if command == "refs" {
+		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "value", "write", "manifest", "prefab", "position", "op", "prefab-guid", "task", "focus", "max-tokens", "out", "mode", "project", "scenes", "prefabs", "patch") {
+			_, _ = io.WriteString(stderr, "ERROR refs accepts only --json and --view compact\n")
+			return 2
+		}
+	}
 	if command == "suggest" {
 		if namespace != "scene" {
 			_, _ = fmt.Fprintf(stderr, "ERROR suggest not implemented for namespace=%s\n", namespace)
@@ -603,6 +609,22 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 		_, _ = io.WriteString(stdout, applyResult.Body+"\n")
 		return applyExitCode
+	}
+	if command == "refs" {
+		refsResult, refsExitCode := service.Refs(namespace, file, selectedView, *jsonOutput)
+
+		if *jsonOutput {
+			encoder := json.NewEncoder(stdout)
+			encoder.SetEscapeHTML(false)
+			if err := encoder.Encode(refsResult); err != nil {
+				_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
+				return 2
+			}
+			return refsExitCode
+		}
+
+		_, _ = io.WriteString(stdout, refsResult.Body+"\n")
+		return refsExitCode
 	}
 	if command == "impact" {
 		impactResult, impactExitCode := service.Impact(namespace, file, selectedView, *jsonOutput, app.ImpactArgs{

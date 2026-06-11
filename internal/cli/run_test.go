@@ -3432,8 +3432,8 @@ func TestBenchJSONIncludesNestedPayload(t *testing.T) {
 	var got struct {
 		Command string `json:"command"`
 		Bench   struct {
-			RawBytes  int `json:"raw_bytes"`
-			RawTokens int `json:"raw_tokens"`
+			RawBytes    int `json:"raw_bytes"`
+			RawTokens   int `json:"raw_tokens"`
 			ContextPack *struct {
 				Tokens int `json:"tokens"`
 			} `json:"context_pack"`
@@ -3632,6 +3632,21 @@ func TestMetaGUIDResolvesFromMetaFile(t *testing.T) {
 	}
 }
 
+func TestRefsReturnsReferenceEvidence(t *testing.T) {
+	result := runCLI(t, "prefab", "refs", "testdata/prefabs/enemy.prefab")
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d stderr=%q", result.exitCode, result.stderr)
+	}
+	want := "OK refs file=testdata/prefabs/enemy.prefab count=4 warnings=0\n" +
+		"REF block=1000 class=GameObject field=m_Component[0].component file_id=2000\n" +
+		"REF block=1000 class=GameObject field=m_Component[1].component file_id=3000\n" +
+		"REF block=1000 class=GameObject field=m_Component[2].component file_id=4000\n" +
+		"REF block=3000 class=MonoBehaviour field=m_Script file_id=11500000 guid=a1b2c3d4e5f60718293a4b5c6d7e8f90 type=3\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
 func TestMetaGUIDResolvesRelativePathViaProject(t *testing.T) {
 	dir := t.TempDir()
 	prefabRel := filepath.Join("Assets", "Prefabs", "Chair.prefab")
@@ -3703,5 +3718,67 @@ func TestMetaGUIDRejectsUnknownCommandAndFlags(t *testing.T) {
 	result = runCLI(t, "meta", "guid", "Chair.prefab", "--write")
 	if result.exitCode != 2 {
 		t.Fatalf("expected usage error for --write, got %d", result.exitCode)
+	}
+}
+
+func TestRefsJSONReturnsPayload(t *testing.T) {
+	result := runCLI(t, "prefab", "refs", "testdata/prefabs/enemy.prefab", "--json")
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d stderr=%q", result.exitCode, result.stderr)
+	}
+
+	var got struct {
+		Status string `json:"status"`
+		Refs   struct {
+			References []struct {
+				BlockFileID int64  `json:"block_file_id"`
+				Class       string `json:"class"`
+				Field       string `json:"field"`
+				FileID      int64  `json:"file_id"`
+				GUID        string `json:"guid"`
+				Type        *int   `json:"type"`
+			} `json:"references"`
+			Warnings int `json:"warnings"`
+		} `json:"refs"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &got); err != nil {
+		t.Fatalf("parse stdout json: %v\nstdout=%q", err, result.stdout)
+	}
+	if got.Status != "OK" {
+		t.Fatalf("status mismatch: got %q", got.Status)
+	}
+	if len(got.Refs.References) != 4 {
+		t.Fatalf("reference count mismatch: got %d want 4", len(got.Refs.References))
+	}
+	last := got.Refs.References[3]
+	if last.Field != "m_Script" || last.GUID != "a1b2c3d4e5f60718293a4b5c6d7e8f90" || last.Type == nil || *last.Type != 3 {
+		t.Fatalf("script reference mismatch: %+v", last)
+	}
+}
+
+func TestRefsSceneNamespaceWorks(t *testing.T) {
+	result := runCLI(t, "scene", "refs", "testdata/scenes/simple_scene.unity")
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d stderr=%q", result.exitCode, result.stderr)
+	}
+	if !strings.HasPrefix(result.stdout, "OK refs file=testdata/scenes/simple_scene.unity count=2 warnings=0\n") {
+		t.Fatalf("stdout mismatch: got %q", result.stdout)
+	}
+}
+
+func TestRefsRejectsIrrelevantFlags(t *testing.T) {
+	result := runCLI(t, "prefab", "refs", "testdata/prefabs/enemy.prefab", "--id", "1000")
+	if result.exitCode != 2 {
+		t.Fatalf("expected usage error, got %d stdout=%q", result.exitCode, result.stdout)
+	}
+}
+
+func TestRefsRejectsUnknownNamespace(t *testing.T) {
+	result := runCLI(t, "manifest", "refs", "testdata/prefabs/enemy.prefab")
+	if result.exitCode != 1 {
+		t.Fatalf("expected error exit, got %d stdout=%q", result.exitCode, result.stdout)
+	}
+	if !strings.HasPrefix(result.stdout, "") && result.stderr == "" {
+		t.Fatalf("expected error output, got stdout=%q stderr=%q", result.stdout, result.stderr)
 	}
 }

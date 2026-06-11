@@ -213,6 +213,25 @@ type SetResult struct {
 	Safety *SafetyPayload `json:"safety,omitempty"`
 }
 
+type RefsPayloadReference struct {
+	BlockFileID int64  `json:"block_file_id"`
+	Class       string `json:"class"`
+	Field       string `json:"field"`
+	FileID      int64  `json:"file_id"`
+	GUID        string `json:"guid,omitempty"`
+	Type        *int   `json:"type,omitempty"`
+}
+
+type RefsPayload struct {
+	References []RefsPayloadReference `json:"references"`
+	Warnings   int                    `json:"warnings"`
+}
+
+type RefsResult struct {
+	core.Result
+	Refs *RefsPayload `json:"refs,omitempty"`
+}
+
 type loadedDoc struct {
 	data   []byte
 	blocks []parser.Block
@@ -941,6 +960,91 @@ func (s *Service) MetaGUID(path string, project string, jsonOut bool) (core.Resu
 
 	result.Status = "OK"
 	result.Body = fmt.Sprintf("OK guid=%s file=%s meta=%s.meta", guid, resolved, resolved)
+	return result, 0
+}
+
+// Refs surfaces the safety kernel's PPtr/GUID reference evidence so agents
+// can trace what a file points at without reading raw YAML.
+func (s *Service) Refs(namespace, path string, view core.View, jsonOut bool) (RefsResult, int) {
+	result := RefsResult{
+		Result: core.Result{
+			Namespace: namespace,
+			Command:   "refs",
+			File:      path,
+			View:      view,
+		},
+	}
+
+	if namespace != "scene" && namespace != "prefab" && namespace != "asset" {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR refs not implemented for namespace=%s", namespace)
+		return result, 1
+	}
+	if view != core.ViewCompact {
+		result.Status = "ERROR"
+		result.Body = "ERROR refs supports only --view compact"
+		return result, 1
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	report, err := safety.ExtractRefs(data, namespace, path)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	lines := []string{fmt.Sprintf(
+		"%s refs file=%s count=%d warnings=%d",
+		report.Status,
+		path,
+		len(report.Refs),
+		len(report.Warnings),
+	)}
+	for _, ref := range report.Refs {
+		line := fmt.Sprintf("REF block=%d class=%s field=%s file_id=%d", ref.Block, ref.Class, ref.Field, ref.FileID)
+		if ref.HasGUID {
+			line += fmt.Sprintf(" guid=%s", ref.GUID)
+		}
+		if ref.HasType {
+			line += fmt.Sprintf(" type=%d", ref.Type)
+		}
+		lines = append(lines, line)
+	}
+	for _, warning := range report.Warnings {
+		lines = append(lines, fmt.Sprintf("WARN code=%s %s", warning.Code, warning.Detail))
+	}
+
+	result.Status = report.Status
+	result.Body = strings.Join(lines, "\n")
+
+	if jsonOut {
+		payload := &RefsPayload{References: []RefsPayloadReference{}, Warnings: len(report.Warnings)}
+		for _, ref := range report.Refs {
+			jsonRef := RefsPayloadReference{
+				BlockFileID: ref.Block,
+				Class:       ref.Class,
+				Field:       ref.Field,
+				FileID:      ref.FileID,
+			}
+			if ref.HasGUID {
+				jsonRef.GUID = ref.GUID
+			}
+			if ref.HasType {
+				refType := ref.Type
+				jsonRef.Type = &refType
+			}
+			payload.References = append(payload.References, jsonRef)
+		}
+		result.Refs = payload
+	}
+
 	return result, 0
 }
 
