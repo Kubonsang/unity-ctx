@@ -3,6 +3,6 @@
 --- !u!114 &11400000
 MonoBehaviour:
   m_Name: EnemyConfig
-  m_Script: {fileID: 11500000, guid: fake_config_script_guid, type: 3}
+  m_Script: {fileID: 11500000, guid: f0e1d2c3b4a5968778695a4b3c2d1e0f, type: 3}
   maxHealth: 200
   moveSpeed: 3.5
