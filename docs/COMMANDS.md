@@ -14,9 +14,12 @@ Namespaces:
 
 ## Exit Codes
 
-- `0`: OK / WARN / UNKNOWN only
+- `0`: OK / WARN / UNKNOWN / BLOCKED / NEED_PREFAB_GUID
 - `1`: ERROR condition
 - `2`: tool execution error
+
+`BLOCKED` and `NEED_PREFAB_GUID` exit 0 because the tool worked correctly:
+the result is a safety-policy refusal or a missing precondition, not a failure.
 
 ## Output Prefixes
 
@@ -29,6 +32,21 @@ Namespaces:
 - `INDEX_STALE`
 - `DRY_RUN`
 - `WRITE`
+- `BLOCKED` — write refused by a graph-check failure (`code=GRAPH_CHECK_FAILED phase=...`); never bypass by editing raw YAML
+- `CHECK` — per-phase graph-check detail line (`phase=... status=... errors=N warnings=M`)
+- `REF` — one PPtr/GUID reference evidence line from `refs`
+- `NEED_PREFAB_GUID` — GUID could not be resolved from `.meta`; supply `--prefab-guid` or fix the meta file
+
+## Write Command Policy
+
+Every write command (`asset set`, `prefab set`, `scene apply`) follows:
+
+- dry-run first; `--write` required
+- target by fileID, not name
+- `pre_check` before mutation, `temp_check` before commit, `final_check` after commit
+- graph-check `ERROR` blocks the write; `WARN` is surfaced but does not block
+- backup path printed for every committed write
+- ambiguous or unresolvable input returns `NEED_*`/`BLOCKED`/`UNKNOWN`, never a guess
 
 ## v0.1 Commands
 
@@ -130,8 +148,11 @@ Committed-write failure output:
 
 ```text
 ERROR WRITE_COMMITTED backup=EnemyConfig.asset.bak field=maxHealth old=200 new=300 type_hint=int changed=1 verified=0 err=...
-ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=EnemyConfig.asset.bak field=maxHealth
+ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=EnemyConfig.asset.bak field=maxHealth old=200 new=300 type_hint=int changed=1 verified=1
 ```
+
+All `WRITE_COMMITTED` lines carry the standard set summary fields
+(`old=`, `new=`, `type_hint=`, `changed=`, `verified=`) so agents parse one shape.
 
 ## v0.4 Foundation Slice
 

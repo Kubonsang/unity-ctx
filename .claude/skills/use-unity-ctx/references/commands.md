@@ -12,7 +12,7 @@ Namespaces: `scene` | `prefab` | `asset`
 
 | Code | Meaning |
 |------|---------|
-| `0` | OK / WARN / UNKNOWN only |
+| `0` | OK / WARN / UNKNOWN / BLOCKED / NEED_PREFAB_GUID |
 | `1` | ERROR condition |
 | `2` | Tool execution error |
 
@@ -33,6 +33,10 @@ Namespaces: `scene` | `prefab` | `asset`
 | `PLAN` | patch 계획 라인 |
 | `PATCH_OUT` | suggest --out 결과 라인 |
 | `SCENES` / `PREFABS` | impact 결과 라인 |
+| `BLOCKED` | graph check 실패로 write 거부 (`code=GRAPH_CHECK_FAILED phase=...`) — raw YAML로 우회 금지 |
+| `CHECK` | safety check 단계별 상세 라인 (`phase=... status=... errors=N warnings=M`) |
+| `REF` | refs 커맨드의 참조 evidence 라인 |
+| `NEED_PREFAB_GUID` | `.meta`에서 GUID를 찾지 못함 — `meta guid`로 확인, 추측 금지 |
 
 ---
 
@@ -335,3 +339,48 @@ DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=
 SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 ...
 PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001
 ```
+
+## v0.6 Safety Integration Commands
+
+### meta guid
+
+프리팹/에셋의 GUID를 옆의 `.meta` 파일에서 읽는다. 추측하지 않는다.
+
+```bash
+unity-ctx meta guid Assets/Prefabs/Chair.prefab
+unity-ctx meta guid Assets/Prefabs/Chair.prefab --project /Users/me/MyUnityProject
+```
+
+Optional: `--project` (상대 경로일 때 `<project>/<file>`로 재시도), `--json`
+
+Output:
+```
+OK guid=3e8a1f2b4c5d6e7f8a9b0c1d2e3f4a5b file=... meta=....meta
+NEED_PREFAB_GUID file=... reason=meta_not_found|guid_missing
+```
+
+### refs
+
+파일이 참조하는 fileID/GUID evidence를 raw YAML 없이 추출한다 (read-only).
+
+```bash
+unity-ctx prefab refs Assets/Prefabs/Enemy.prefab
+unity-ctx scene refs Assets/Scenes/Stage01.unity --json
+```
+
+Output:
+```
+OK refs file=Assets/Prefabs/Enemy.prefab count=4 warnings=0
+REF block=1000 class=GameObject field=m_Component[0].component file_id=2000
+REF block=3000 class=MonoBehaviour field=m_Script file_id=11500000 guid=a1b2... type=3
+```
+
+### write 커맨드 공통 safety check
+
+`asset set` / `prefab set` / `scene apply`는 fileid-graph 안전 검증을 3단계로 수행한다:
+
+- `pre_check` — 대상 파일이 이미 깨져 있으면 `BLOCKED` (dry-run 포함, exit 0, 파일 미변경)
+- `temp_check` — 변경 결과 후보 바이트 검증, 실패 시 `BLOCKED`
+- `final_check` — write 후 재독 검증, 실패 시 `ERROR WRITE_COMMITTED ... backup=<경로>` (exit 1) → `.bak`으로 복원
+
+`WARN`은 차단하지 않으며 summary 라인(`pre_check=WARN`)과 `CHECK` 상세 라인으로 표시된다.

@@ -71,14 +71,15 @@ unity-ctx scene apply Stage01.unity --patch /tmp/chair.patch.json --write
 
 ### GUID 확보 방법
 
-프리팹 GUID는 `.prefab` 파일 옆의 `.meta` 파일에 있다:
+`meta guid`가 `.prefab` 옆의 `.meta` 파일에서 GUID를 읽는다:
 ```bash
-grep "^guid:" Assets/Prefabs/Chair.prefab.meta
-# guid: abc-guid-123
+unity-ctx meta guid Assets/Prefabs/Chair.prefab --project /Users/me/MyUnityProject
+# OK guid=abc-guid-123 file=... meta=...
 ```
 
-GUID를 모르면 `--prefab-guid` 없이 suggest를 실행한다. patch가 `UNKNOWN` 상태로 저장되며
-`scene apply`는 UNKNOWN patch를 거부하므로 GUID 확보 전까지 apply할 수 없다.
+`patch`/`suggest`는 `--prefab-guid`를 생략하면 같은 방식으로 자동 resolve를 시도한다.
+resolve에 실패하면 patch가 `UNKNOWN NEED_PREFAB_GUID` 상태로 저장되며
+`scene apply`는 UNKNOWN patch를 거부하므로 GUID 확보 전까지 apply할 수 없다. GUID를 추측하지 않는다.
 
 ### 안티패턴
 
@@ -174,3 +175,25 @@ PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001
 
 - impact 없이 프리팹을 수정한다 — 참조 씬이 많으면 예상치 못한 런타임 변화가 생긴다.
 - `WARN IMPACT_DEPTH_LIMIT`을 무시한다 — 표시된 것보다 더 많은 참조가 존재할 수 있다.
+
+---
+
+## 5. 실패 복구 규칙 (Failure Recovery)
+
+write 커맨드가 safety check에 걸렸을 때의 표준 대응.
+
+| 상황 | 대응 |
+|------|------|
+| `BLOCKED code=GRAPH_CHECK_FAILED phase=pre_check` | 대상 파일이 이미 구조적으로 깨져 있음. **수정 시도 중단**, `CHECK`/`ERROR` 라인을 사용자에게 보고. raw YAML 편집으로 우회 금지 |
+| `BLOCKED ... phase=temp_check` | 이 변경을 적용하면 파일이 깨짐. mutation plan을 폐기하고 query/inspect 단계로 돌아가 원인 분석 |
+| `ERROR WRITE_COMMITTED ... phase=final_check backup=<경로>` | write는 이미 커밋됨. 출력된 backup 경로의 `.bak` 파일로 복원: `cp <경로>.bak <원본>` 후 사용자에게 보고 |
+| `NEED_PREFAB_GUID` | `unity-ctx meta guid <prefab> --project <루트>` 실행. `.meta`가 없으면 Unity Editor에서 에셋 임포트 필요 — 사용자에게 알림 |
+| `UNKNOWN` (patch) | GUID 확보 전까지 apply 금지 |
+| `OMITTED` (context-pack) | `--max-tokens` 증액 또는 query 범위 축소 |
+| check `WARN` | read-only 작업은 계속 가능. write 전에는 관련 fileID를 inspect로 확인 |
+
+### 안티패턴
+
+- `BLOCKED`를 보고 raw YAML을 직접 편집해 우회한다 — safety policy 위반이며 corruption을 확산시킨다.
+- `final_check` 실패 후 `.bak` 복원 없이 추가 수정을 시도한다 — 깨진 파일 위에 변경이 쌓인다.
+- `NEED_PREFAB_GUID`에서 GUID를 임의 문자열로 채운다 — Unity가 참조를 해석하지 못한다.
