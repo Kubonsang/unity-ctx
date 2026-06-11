@@ -2298,7 +2298,7 @@ func TestApplyWriteCreatesBackupAndWritesScene(t *testing.T) {
 		t.Fatalf("expected success exit code, got %d body=%q", code, got.Body)
 	}
 
-	want := "WRITE backup=" + scenePath + ".bak patch=" + patchPath + " op=place_prefab append_ops=2 changed=1 verified=1 pre_check=OK temp_check=OK"
+	want := "WRITE backup=" + scenePath + ".bak patch=" + patchPath + " op=place_prefab append_ops=2 changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}

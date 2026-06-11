@@ -1389,6 +1389,29 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 			result.PatchPlan = &planCopy
 			return result, 1
 		}
+
+		finalData, err := os.ReadFile(path)
+		if err != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR WRITE_COMMITTED backup=%s patch=%s err=final re-read failed: %v", applied.BackupPath, args.Patch, err)
+			planCopy := envelope.PatchPlan
+			result.PatchPlan = &planCopy
+			return result, 1
+		}
+		finalCheck := phaseCheck{phase: safety.PhaseFinal, report: safety.CheckBytes(finalData)}
+		if finalCheck.report.Blocking() {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf(
+				"ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=%s patch=%s%s",
+				applied.BackupPath,
+				args.Patch,
+				checkDetailLines([]phaseCheck{finalCheck}),
+			)
+			planCopy := envelope.PatchPlan
+			result.PatchPlan = &planCopy
+			return result, 1
+		}
+		checks = append(checks, finalCheck)
 	}
 
 	result.Status = "OK"
