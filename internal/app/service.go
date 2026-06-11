@@ -490,6 +490,14 @@ func (s *Service) setAsset(path string, args SetArgs, result SetResult) (SetResu
 		return result, 1
 	}
 
+	preCheck := phaseCheck{phase: safety.PhasePre, report: safety.CheckBytes(loaded.data)}
+	if preCheck.report.Blocking() {
+		result.Status = "BLOCKED"
+		result.Body = blockedBody(fmt.Sprintf(" file=%s field=%s", path, args.Field), preCheck)
+		result.Safety = newSafetyPayload([]phaseCheck{preCheck})
+		return result, 0
+	}
+
 	plan, err := mutation.PlanAssetSet(loaded.data, loaded.blocks, mutation.AssetSetRequest{
 		Path:    path,
 		HasID:   args.HasID,
@@ -504,16 +512,28 @@ func (s *Service) setAsset(path string, args SetArgs, result SetResult) (SetResu
 		return result, 1
 	}
 
+	tempCheck := phaseCheck{phase: safety.PhaseTemp, report: safety.CheckBytes(plan.UpdatedData)}
+	if tempCheck.report.Blocking() {
+		result.Status = "BLOCKED"
+		result.Body = blockedBody(fmt.Sprintf(" file=%s field=%s", path, args.Field), tempCheck)
+		result.Safety = newSafetyPayload([]phaseCheck{preCheck, tempCheck})
+		return result, 0
+	}
+	checks := []phaseCheck{preCheck, tempCheck}
+
 	if !args.Write {
 		result.Status = "OK"
 		result.Body = fmt.Sprintf(
-			"DRY_RUN field=%s old=%s new=%s type_hint=%s changed=%d",
+			"DRY_RUN field=%s old=%s new=%s type_hint=%s changed=%d%s%s",
 			plan.Field,
 			plan.OldValue,
 			plan.NewValue,
 			plan.TypeHint,
 			boolToInt(plan.Changed),
+			checkSuffix(checks),
+			checkDetailLines(checks),
 		)
+		result.Safety = newSafetyPayload(checks)
 		return result, 0
 	}
 
@@ -521,14 +541,17 @@ func (s *Service) setAsset(path string, args SetArgs, result SetResult) (SetResu
 		verification := s.verifySetValue(path, args)
 		result.Status = "OK"
 		result.Body = fmt.Sprintf(
-			"OK field=%s old=%s new=%s type_hint=%s changed=%d verified=%d",
+			"OK field=%s old=%s new=%s type_hint=%s changed=%d verified=%d%s%s",
 			plan.Field,
 			plan.OldValue,
 			plan.NewValue,
 			plan.TypeHint,
 			boolToInt(plan.Changed),
 			boolToInt(verification.Matched),
+			checkSuffix(checks),
+			checkDetailLines(checks),
 		)
+		result.Safety = newSafetyPayload(checks)
 		return result, 0
 	}
 
@@ -574,9 +597,29 @@ func (s *Service) setAsset(path string, args SetArgs, result SetResult) (SetResu
 		return result, 1
 	}
 
+	finalData, finalErr := os.ReadFile(path)
+	if finalErr != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR WRITE_COMMITTED backup=%s field=%s err=final re-read failed: %v", backupPath, plan.Field, finalErr)
+		return result, 1
+	}
+	finalCheck := phaseCheck{phase: safety.PhaseFinal, report: safety.CheckBytes(finalData)}
+	if finalCheck.report.Blocking() {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf(
+			"ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=%s field=%s%s",
+			backupPath,
+			plan.Field,
+			checkDetailLines([]phaseCheck{finalCheck}),
+		)
+		result.Safety = newSafetyPayload(append(checks, finalCheck))
+		return result, 1
+	}
+	checks = append(checks, finalCheck)
+
 	result.Status = "OK"
 	result.Body = fmt.Sprintf(
-		"WRITE backup=%s field=%s old=%s new=%s type_hint=%s changed=%d verified=%d",
+		"WRITE backup=%s field=%s old=%s new=%s type_hint=%s changed=%d verified=%d%s%s",
 		backupPath,
 		plan.Field,
 		plan.OldValue,
@@ -584,7 +627,10 @@ func (s *Service) setAsset(path string, args SetArgs, result SetResult) (SetResu
 		plan.TypeHint,
 		boolToInt(plan.Changed),
 		boolToInt(verification.Matched),
+		checkSuffix(checks),
+		checkDetailLines(checks),
 	)
+	result.Safety = newSafetyPayload(checks)
 	return result, 0
 }
 

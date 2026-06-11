@@ -1475,6 +1475,7 @@ func TestSetAssetDryRunDoesNotWriteFile(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: EnemyConfig\n" +
 		"  maxHealth: 200\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1490,7 +1491,7 @@ func TestSetAssetDryRunDoesNotWriteFile(t *testing.T) {
 		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 	}
 
-	want := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1"
+	want := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1 pre_check=OK temp_check=OK"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
@@ -1510,6 +1511,7 @@ func TestSetAssetWriteCreatesBackupAndVerifies(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: EnemyConfig\n" +
 		"  maxHealth: 200\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1526,7 +1528,7 @@ func TestSetAssetWriteCreatesBackupAndVerifies(t *testing.T) {
 		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 	}
 
-	want := "WRITE backup=" + path + ".bak field=maxHealth old=200 new=300 type_hint=int changed=1 verified=1"
+	want := "WRITE backup=" + path + ".bak field=maxHealth old=200 new=300 type_hint=int changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
@@ -1554,6 +1556,7 @@ func TestSetAssetWriteNoOpDoesNotWriteOrCreateBackup(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: EnemyConfig\n" +
 		"  maxHealth: 200\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1580,7 +1583,7 @@ func TestSetAssetWriteNoOpDoesNotWriteOrCreateBackup(t *testing.T) {
 		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 	}
 
-	want := "OK field=maxHealth old=200 new=200 type_hint=int changed=0 verified=1"
+	want := "OK field=maxHealth old=200 new=200 type_hint=int changed=0 verified=1 pre_check=OK temp_check=OK"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
@@ -1644,6 +1647,7 @@ func TestSetAssetWriteVerifiesStringValuesSemantically(t *testing.T) {
 				"%YAML 1.1\n" +
 				"--- !u!114 &11400000\n" +
 				"MonoBehaviour:\n" +
+				"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 				"  m_Name: EnemyConfig\n" +
 				tc.initialLine
 			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1661,7 +1665,7 @@ func TestSetAssetWriteVerifiesStringValuesSemantically(t *testing.T) {
 				t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 			}
 
-			wantPrefix := "WRITE backup=" + path + ".bak field=label old=starter " + tc.wantBodyNew + " type_hint=string changed=1 verified=1"
+			wantPrefix := "WRITE backup=" + path + ".bak field=label old=starter " + tc.wantBodyNew + " type_hint=string changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK"
 			if got.Body != wantPrefix {
 				t.Fatalf("body mismatch: got %q want %q", got.Body, wantPrefix)
 			}
@@ -1683,6 +1687,7 @@ func TestSetAssetWriteVerifiesNaNSemantically(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: EnemyConfig\n" +
 		"  speed: 1.5\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1700,7 +1705,7 @@ func TestSetAssetWriteVerifiesNaNSemantically(t *testing.T) {
 		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 	}
 
-	want := "WRITE backup=" + path + ".bak field=speed old=1.5 new=NaN type_hint=float changed=1 verified=1"
+	want := "WRITE backup=" + path + ".bak field=speed old=1.5 new=NaN type_hint=float changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
@@ -2442,16 +2447,68 @@ func TestApplyRejectsUnknownPatchStatus(t *testing.T) {
 	}
 }
 
+func TestSetAssetBlocksWhenPreCheckFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "broken.asset")
+	content := "" +
+		"%YAML 1.1\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
+		"  m_Name: ConfigA\n" +
+		"  maxHealth: 100\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
+		"  m_Name: ConfigA\n" +
+		"  maxHealth: 200\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	svc := app.New()
+	got, code := svc.Set("asset", path, core.ViewCompact, false, app.SetArgs{
+		Field: "maxHealth",
+		Value: "300",
+		Write: true,
+	})
+	if code != 0 {
+		t.Fatalf("BLOCKED must exit 0, got %d body=%q", code, got.Body)
+	}
+	if got.Status != "BLOCKED" {
+		t.Fatalf("status mismatch: got %q want %q", got.Status, "BLOCKED")
+	}
+	lines := strings.Split(got.Body, "\n")
+	wantFirst := "BLOCKED code=GRAPH_CHECK_FAILED phase=pre_check file=" + path + " field=maxHealth"
+	if lines[0] != wantFirst {
+		t.Fatalf("first line mismatch: got %q want %q", lines[0], wantFirst)
+	}
+	if len(lines) < 3 || lines[2] != "ERROR code=DUPLICATE_FILE_ID file_id=11400000 duplicates=2" {
+		t.Fatalf("finding line mismatch: got %q", got.Body)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() after error = %v", err)
+	}
+	if string(after) != content {
+		t.Fatal("blocked asset set modified the file")
+	}
+	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("blocked asset set must not create a backup, stat err = %v", err)
+	}
+}
+
 func TestSetAssetSupportsIDSelection(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "multi.asset")
 	content := "" +
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: ConfigA\n" +
 		"  maxHealth: 100\n" +
 		"--- !u!114 &11400001\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: ConfigB\n" +
 		"  maxHealth: 200\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -2469,7 +2526,7 @@ func TestSetAssetSupportsIDSelection(t *testing.T) {
 		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
 	}
 
-	want := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1"
+	want := "DRY_RUN field=maxHealth old=200 new=300 type_hint=int changed=1 pre_check=OK temp_check=OK"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
@@ -2951,10 +3008,12 @@ func TestAssetInspectAndGetHonorSelectorsWithoutComponent(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: ConfigA\n" +
 		"  maxHealth: 200\n" +
 		"--- !u!114 &11400001\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: ConfigB\n" +
 		"  maxHealth: 350\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -3060,10 +3119,12 @@ func TestAssetInspectAmbiguousComponentPreservesAmbiguity(t *testing.T) {
 		"%YAML 1.1\n" +
 		"--- !u!114 &11400000\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: ConfigA\n" +
 		"  maxHealth: 200\n" +
 		"--- !u!114 &11400001\n" +
 		"MonoBehaviour:\n" +
+		"  m_Script: {fileID: 11500000, guid: a1b2c3d4e5f60718293a4b5c6d7e8f90, type: 3}\n" +
 		"  m_Name: ConfigB\n" +
 		"  maxHealth: 300\n"
 
