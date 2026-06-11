@@ -785,6 +785,44 @@ func (s *Service) ContextPack(namespace, path string, view core.View, jsonOut bo
 	return contextPackResultFromLoaded(namespace, path, view, loaded, args)
 }
 
+// MetaGUID resolves the GUID of an asset from its sibling .meta file.
+// It never guesses: a missing .meta or guid entry yields NEED_PREFAB_GUID
+// (exit 0) so callers can ask the user instead of proceeding.
+func (s *Service) MetaGUID(path string, project string, jsonOut bool) (core.Result, int) {
+	_ = jsonOut
+
+	result := core.Result{
+		Namespace: "meta",
+		Command:   "guid",
+		File:      path,
+		View:      core.ViewCompact,
+	}
+
+	resolved := path
+	guid, err := impactscan.LoadPrefabGUID(resolved)
+	if err != nil && strings.TrimSpace(project) != "" && !filepath.IsAbs(path) {
+		joined := filepath.Join(project, path)
+		if joinedGUID, joinedErr := impactscan.LoadPrefabGUID(joined); joinedErr == nil {
+			resolved = joined
+			guid = joinedGUID
+			err = nil
+		}
+	}
+	if err != nil {
+		reason := "guid_missing"
+		if strings.Contains(err.Error(), "meta not found") {
+			reason = "meta_not_found"
+		}
+		result.Status = "NEED_PREFAB_GUID"
+		result.Body = fmt.Sprintf("NEED_PREFAB_GUID file=%s reason=%s", path, reason)
+		return result, 0
+	}
+
+	result.Status = "OK"
+	result.Body = fmt.Sprintf("OK guid=%s file=%s meta=%s.meta", guid, resolved, resolved)
+	return result, 0
+}
+
 func (s *Service) Impact(namespace, path string, view core.View, jsonOut bool, args ImpactArgs) (ImpactResult, int) {
 	result := ImpactResult{
 		Result: core.Result{

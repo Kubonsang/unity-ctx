@@ -3594,3 +3594,98 @@ func buildCLI(t *testing.T) string {
 
 	return binary
 }
+
+func TestMetaGUIDResolvesFromMetaFile(t *testing.T) {
+	dir := t.TempDir()
+	prefabPath := filepath.Join(dir, "Chair.prefab")
+	if err := os.WriteFile(prefabPath, []byte("--- !u!1 &1000\nGameObject:\n  m_Name: Chair\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	meta := "fileFormatVersion: 2\nguid: 3e8a1f2b4c5d6e7f8a9b0c1d2e3f4a5b\nPrefabImporter:\n  externalObjects: {}\n"
+	if err := os.WriteFile(prefabPath+".meta", []byte(meta), 0o644); err != nil {
+		t.Fatalf("WriteFile(.meta) error = %v", err)
+	}
+
+	result := runCLI(t, "meta", "guid", prefabPath)
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d stderr=%q", result.exitCode, result.stderr)
+	}
+	want := "OK guid=3e8a1f2b4c5d6e7f8a9b0c1d2e3f4a5b file=" + prefabPath + " meta=" + prefabPath + ".meta\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestMetaGUIDResolvesRelativePathViaProject(t *testing.T) {
+	dir := t.TempDir()
+	prefabRel := filepath.Join("Assets", "Prefabs", "Chair.prefab")
+	prefabAbs := filepath.Join(dir, prefabRel)
+	if err := os.MkdirAll(filepath.Dir(prefabAbs), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(prefabAbs, []byte("--- !u!1 &1000\nGameObject:\n  m_Name: Chair\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	meta := "fileFormatVersion: 2\nguid: 3e8a1f2b4c5d6e7f8a9b0c1d2e3f4a5b\n"
+	if err := os.WriteFile(prefabAbs+".meta", []byte(meta), 0o644); err != nil {
+		t.Fatalf("WriteFile(.meta) error = %v", err)
+	}
+
+	result := runCLI(t, "meta", "guid", prefabRel, "--project", dir)
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d stderr=%q", result.exitCode, result.stderr)
+	}
+	want := "OK guid=3e8a1f2b4c5d6e7f8a9b0c1d2e3f4a5b file=" + prefabAbs + " meta=" + prefabAbs + ".meta\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestMetaGUIDMissingMetaReturnsNeedPrefabGUID(t *testing.T) {
+	dir := t.TempDir()
+	prefabPath := filepath.Join(dir, "Chair.prefab")
+	if err := os.WriteFile(prefabPath, []byte("--- !u!1 &1000\nGameObject:\n  m_Name: Chair\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	result := runCLI(t, "meta", "guid", prefabPath)
+	if result.exitCode != 0 {
+		t.Fatalf("NEED_PREFAB_GUID must exit 0, got %d stderr=%q", result.exitCode, result.stderr)
+	}
+	want := "NEED_PREFAB_GUID file=" + prefabPath + " reason=meta_not_found\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestMetaGUIDMissingGUIDEntryReturnsNeedPrefabGUID(t *testing.T) {
+	dir := t.TempDir()
+	prefabPath := filepath.Join(dir, "Chair.prefab")
+	if err := os.WriteFile(prefabPath, []byte("--- !u!1 &1000\nGameObject:\n  m_Name: Chair\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.WriteFile(prefabPath+".meta", []byte("fileFormatVersion: 2\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(.meta) error = %v", err)
+	}
+
+	result := runCLI(t, "meta", "guid", prefabPath)
+	if result.exitCode != 0 {
+		t.Fatalf("NEED_PREFAB_GUID must exit 0, got %d stderr=%q", result.exitCode, result.stderr)
+	}
+	want := "NEED_PREFAB_GUID file=" + prefabPath + " reason=guid_missing\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+	}
+}
+
+func TestMetaGUIDRejectsUnknownCommandAndFlags(t *testing.T) {
+	result := runCLI(t, "meta", "summarize", "Chair.prefab")
+	if result.exitCode != 2 {
+		t.Fatalf("expected usage error, got %d", result.exitCode)
+	}
+
+	result = runCLI(t, "meta", "guid", "Chair.prefab", "--write")
+	if result.exitCode != 2 {
+		t.Fatalf("expected usage error for --write, got %d", result.exitCode)
+	}
+}
