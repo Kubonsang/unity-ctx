@@ -1338,6 +1338,8 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 		result.Status = "BLOCKED"
 		result.Body = blockedBody(fmt.Sprintf(" patch=%s file=%s", args.Patch, path), preCheck)
 		result.Safety = newSafetyPayload([]phaseCheck{preCheck})
+		planCopy := envelope.PatchPlan
+		result.PatchPlan = &planCopy
 		return result, 0
 	}
 
@@ -1358,6 +1360,8 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 		result.Status = "BLOCKED"
 		result.Body = blockedBody(fmt.Sprintf(" patch=%s file=%s", args.Patch, path), tempCheck)
 		result.Safety = newSafetyPayload([]phaseCheck{preCheck, tempCheck})
+		planCopy := envelope.PatchPlan
+		result.PatchPlan = &planCopy
 		return result, 0
 	}
 	checks := []phaseCheck{preCheck, tempCheck}
@@ -1396,7 +1400,16 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 		finalData, err := os.ReadFile(path)
 		if err != nil {
 			result.Status = "ERROR"
-			result.Body = fmt.Sprintf("ERROR WRITE_COMMITTED backup=%s patch=%s err=final re-read failed: %v", applied.BackupPath, args.Patch, err)
+			result.Body = fmt.Sprintf(
+				"ERROR WRITE_COMMITTED backup=%s patch=%s op=%s append_ops=%d changed=%d verified=%d err=final re-read failed: %v",
+				applied.BackupPath,
+				args.Patch,
+				applied.Operation,
+				applied.AppendOps,
+				boolToInt(applied.Changed),
+				boolToInt(applied.Verified),
+				err,
+			)
 			planCopy := envelope.PatchPlan
 			result.PatchPlan = &planCopy
 			return result, 1
@@ -1405,9 +1418,13 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 		if finalCheck.report.Blocking() {
 			result.Status = "ERROR"
 			result.Body = fmt.Sprintf(
-				"ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=%s patch=%s%s",
+				"ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=%s patch=%s op=%s append_ops=%d changed=%d verified=%d%s",
 				applied.BackupPath,
 				args.Patch,
+				applied.Operation,
+				applied.AppendOps,
+				boolToInt(applied.Changed),
+				boolToInt(applied.Verified),
 				checkDetailLines([]phaseCheck{finalCheck}),
 			)
 			result.Safety = newSafetyPayload(append(checks, finalCheck))

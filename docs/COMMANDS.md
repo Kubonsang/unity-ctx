@@ -757,8 +757,11 @@ ERROR apply supports only --view compact
 ERROR PATCH_STATUS_UNRESOLVED status=UNKNOWN reason=NEED_PREFAB_GUID
 ERROR APPLY_VERIFY_FAILED expected_objects=2 actual_objects=1
 ERROR patch scene mismatch file=Stage01.unity patch_file=OtherScene.unity
-ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=Stage01.unity.bak patch=patches/chair_place_ok.patch.json
+ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=Stage01.unity.bak patch=patches/chair_place_ok.patch.json op=place_prefab append_ops=2 changed=1 verified=1
 ```
+
+All `WRITE_COMMITTED` lines carry the standard summary fields
+(`op=`, `append_ops=`, `changed=`, `verified=`) so agents can parse one shape.
 
 JSON output adds a `safety` object when checks ran:
 
@@ -772,6 +775,8 @@ JSON output adds a `safety` object when checks ran:
 ```
 
 Each finding carries `phase`, `severity`, `code`, and `detail`.
+`BLOCKED` responses still include `patch_plan` and the `safety` payload, so a
+JSON consumer always sees the same envelope shape regardless of verdict.
 
 ## v0.2x Bench Backfill
 

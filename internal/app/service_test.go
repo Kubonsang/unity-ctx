@@ -2359,6 +2359,9 @@ func TestApplyBlocksWhenPreCheckFails(t *testing.T) {
 	if f := got.Safety.Findings[0]; f.Phase != "pre_check" || f.Code != "DUPLICATE_FILE_ID" {
 		t.Fatalf("safety finding mismatch: %+v", f)
 	}
+	if got.PatchPlan == nil {
+		t.Fatal("BLOCKED result must still carry the patch plan envelope")
+	}
 
 	after, err := os.ReadFile(scenePath)
 	if err != nil {
