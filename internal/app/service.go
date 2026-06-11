@@ -93,6 +93,7 @@ type PatchArgs struct {
 	Manifest    string
 	Prefab      string
 	PrefabGUID  string
+	Project     string
 	HasPosition bool
 	Position    [3]float64
 }
@@ -127,6 +128,7 @@ type SuggestArgs struct {
 	PatchOut   string
 	Pick       int
 	PrefabGUID string
+	Project    string
 }
 
 type ImpactFileHit struct {
@@ -927,6 +929,7 @@ func (s *Service) Suggest(namespace, path string, view core.View, jsonOut bool, 
 			Manifest:    args.Manifest,
 			Prefab:      args.Prefab,
 			PrefabGUID:  args.PrefabGUID,
+			Project:     args.Project,
 			HasPosition: true,
 			Position:    [3]float64(candidate.Position),
 		})
@@ -1130,6 +1133,22 @@ func (s *Service) Check(namespace, path string, view core.View, jsonOut bool, ar
 	return result, 0
 }
 
+// resolvePrefabGUID looks up the prefab GUID from its .meta file, retrying
+// under the project root for relative paths. It returns "" when nothing can
+// be resolved so the patch planner falls back to its NEED_PREFAB_GUID
+// contract instead of guessing.
+func resolvePrefabGUID(prefabPath, project string) string {
+	if guid, err := impactscan.LoadPrefabGUID(prefabPath); err == nil {
+		return guid
+	}
+	if strings.TrimSpace(project) != "" && !filepath.IsAbs(prefabPath) {
+		if guid, err := impactscan.LoadPrefabGUID(filepath.Join(project, prefabPath)); err == nil {
+			return guid
+		}
+	}
+	return ""
+}
+
 func (s *Service) Patch(namespace, path string, view core.View, jsonOut bool, args PatchArgs) (PatchResult, int) {
 	_ = jsonOut
 
@@ -1203,12 +1222,17 @@ func (s *Service) Patch(namespace, path string, view core.View, jsonOut bool, ar
 		return result, 1
 	}
 
+	prefabGUID := strings.TrimSpace(args.PrefabGUID)
+	if prefabGUID == "" {
+		prefabGUID = resolvePrefabGUID(args.Prefab, args.Project)
+	}
+
 	plan, err := scenepatch.PlanPlacePrefab(scenepatch.PlacePrefabRequest{
 		SceneBlocks: loaded.blocks,
 		Manifest:    manifest,
 		PrefabPath:  args.Prefab,
 		PrefabRef: scenepatch.PrefabReference{
-			GUID: args.PrefabGUID,
+			GUID: prefabGUID,
 		},
 		Position: bounds.Vec3(args.Position),
 	})
