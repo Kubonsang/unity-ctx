@@ -495,7 +495,7 @@ func (s *Service) setAsset(path string, args SetArgs, result SetResult) (SetResu
 		ID:      args.ID,
 		Field:   args.Field,
 		Value:   args.Value,
-		Rewrite: args.Write,
+		Rewrite: true,
 	})
 	if err != nil {
 		result.Status = "ERROR"
@@ -613,7 +613,7 @@ func (s *Service) setPrefab(path string, jsonOut bool, args SetArgs, result SetR
 		ID:      args.ID,
 		Field:   args.Field,
 		Value:   args.Value,
-		Rewrite: args.Write && args.AckImpact,
+		Rewrite: true,
 	})
 	if err != nil {
 		result.Status = "ERROR"
