@@ -1,0 +1,9 @@
+# golangci-lint configuration (advisory).
+# A reasonable, non-strict set of linters. See https://golangci-lint.run/.
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - ineffassign
+    - errcheck
+    - unused
