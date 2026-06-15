@@ -2,6 +2,8 @@
 
 **Go CLI that gives AI coding agents a token-safe read/write interface to Unity scenes, prefabs, and assets — no raw YAML, no silent corruption.**
 
+[![CI](https://github.com/Kubonsang/unity-ctx/actions/workflows/ci.yml/badge.svg)](https://github.com/Kubonsang/unity-ctx/actions/workflows/ci.yml)
+
 [한국어](README.ko.md) | English
 
 ---
@@ -213,6 +215,30 @@ unity-ctx scene bench Assets/Scenes/Stage01.unity --task "inspect placement safe
 ```
 
 `context-pack` is measured only when `--task` is provided.
+
+#### Benchmarks
+
+Real numbers from `bench` against the repo fixtures. Token estimate is
+`ceil(utf8_bytes / 4)`, so these are reproducible with no tokenizer:
+
+```bash
+unity-ctx scene bench testdata/scenes/simple_scene.unity \
+  --task "place a chair near Table_01"
+unity-ctx prefab bench testdata/prefabs/enemy.prefab \
+  --task "inspect placement safety"
+```
+
+| Fixture | raw tokens | summarize | context-pack (`--task`) |
+|---|---|---|---|
+| `testdata/scenes/simple_scene.unity` | 175 | 22 (−87%) | 50 (−71%) |
+| `testdata/prefabs/enemy.prefab` | 186 | 21 (−89%) | 36 (−81%) |
+
+These fixtures are tiny (sub-1 KB, hand-authored), so the absolute token counts
+are small — the point is the *ratio*. `summarize` already strips ~88% of the
+tokens a raw read would cost, and `context-pack` stays token-bounded while
+keeping task-relevant context. On real Unity scenes (tens of KB to multiple MB)
+the same code path produces far larger reductions, because raw YAML grows with
+object count while `summarize`/`context-pack` output stays compact.
 
 ---
 
