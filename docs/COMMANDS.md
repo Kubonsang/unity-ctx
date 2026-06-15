@@ -923,6 +923,43 @@ count, and `issues[]` carrying the warning detail (`severity`, `code`,
 `file_id?`, `message?`) — mirroring `uyaml refs --json` so agents can read *why*
 a result is `WARN` without parsing the text body.
 
+### validate
+
+```bash
+unity-ctx prefab validate Assets/Prefabs/Enemy.prefab
+unity-ctx scene validate Assets/Scenes/Dungeon.unity --json
+```
+
+Optional flags:
+
+- `--json`
+
+Rules:
+
+- `validate` is implemented for the `scene`, `prefab`, and `asset` namespaces.
+- It is the **read-only** form of the unity-fileid-graph integrity check that
+  gates every write path — run it to confirm a file is structurally sound before
+  editing. Nothing is mutated.
+- First-line status is the kernel verdict: `OK` (sound), `WARN` (non-blocking
+  issues like unknown class IDs), or `ERROR` (broken graph: duplicate fileIDs,
+  missing component/GameObject blocks, back-reference mismatch, ...).
+- Exit codes: `OK`/`WARN` → `0`, `ERROR` → `1` (matches `uyaml check`).
+
+Output:
+
+```text
+OK validate file=Assets/Configs/EnemyConfig.asset blocks=1 gameobjects=0 components=1 transforms=0 errors=0 warnings=0
+
+WARN validate file=Assets/Prefabs/Enemy.prefab blocks=4 gameobjects=1 components=2 transforms=1 errors=0 warnings=1
+WARN code=UNKNOWN_CLASS_ID file_id=4000 message="graph build skipped unsupported class id"
+
+ERROR validate file=Stage01.unity blocks=3 gameobjects=1 components=1 transforms=1 errors=1 warnings=0
+ERROR code=DUPLICATE_FILE_ID file_id=1000 duplicates=2
+```
+
+`--json` adds a `validate` payload with the counts plus `findings[]`
+(`severity`, `code`, `detail?`).
+
 ## Output Stability Rules
 
 - No timestamps in default output.

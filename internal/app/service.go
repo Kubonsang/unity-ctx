@@ -857,6 +857,90 @@ func (s *Service) Refs(namespace, path string, view core.View, jsonOut bool) (Re
 	return result, 0
 }
 
+// Validate runs the unity-fileid-graph integrity check over a file and reports
+// the result without mutating anything. It is the read-only form of the check
+// that gates every write path, so agents can confirm a file is structurally
+// sound before editing it. OK/WARN exit 0; ERROR (broken graph) exits 1.
+func (s *Service) Validate(namespace, path string, view core.View, jsonOut bool) (ValidateResult, int) {
+	result := ValidateResult{
+		Result: core.Result{
+			Namespace: namespace,
+			Command:   "validate",
+			File:      path,
+			View:      view,
+		},
+	}
+
+	if namespace != "scene" && namespace != "prefab" && namespace != "asset" {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR validate not implemented for namespace=%s", namespace)
+		return result, 1
+	}
+	if view != core.ViewCompact {
+		result.Status = "ERROR"
+		result.Body = "ERROR validate supports only --view compact"
+		return result, 1
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	report := safety.CheckBytes(data)
+	errors, warnings := 0, 0
+	for _, f := range report.Findings {
+		if f.Severity == "ERROR" {
+			errors++
+		} else {
+			warnings++
+		}
+	}
+
+	lines := []string{fmt.Sprintf(
+		"%s validate file=%s blocks=%d gameobjects=%d components=%d transforms=%d errors=%d warnings=%d",
+		report.Status, path, report.Blocks, report.GameObjects, report.Components, report.Transforms, errors, warnings,
+	)}
+	for _, f := range report.Findings {
+		line := fmt.Sprintf("%s code=%s", f.Severity, f.Code)
+		if f.Detail != "" {
+			line += " " + f.Detail
+		}
+		lines = append(lines, line)
+	}
+
+	result.Status = report.Status
+	result.Body = strings.Join(lines, "\n")
+
+	if jsonOut {
+		payload := &ValidatePayload{
+			Blocks:      report.Blocks,
+			GameObjects: report.GameObjects,
+			Components:  report.Components,
+			Transforms:  report.Transforms,
+			Errors:      errors,
+			Warnings:    warnings,
+			Findings:    []ValidateFinding{},
+		}
+		for _, f := range report.Findings {
+			payload.Findings = append(payload.Findings, ValidateFinding{
+				Severity: f.Severity,
+				Code:     f.Code,
+				Detail:   f.Detail,
+			})
+		}
+		result.Validate = payload
+	}
+
+	exitCode := 0
+	if report.Status == "ERROR" {
+		exitCode = 1
+	}
+	return result, exitCode
+}
+
 func (s *Service) Impact(namespace, path string, view core.View, jsonOut bool, args ImpactArgs) (ImpactResult, int) {
 	result := ImpactResult{
 		Result: core.Result{

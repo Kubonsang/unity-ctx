@@ -210,6 +210,27 @@ type RefsPayload struct {
 	Issues     []RefsPayloadIssue     `json:"issues"`
 }
 
+type ValidateFinding struct {
+	Severity string `json:"severity"`
+	Code     string `json:"code"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+type ValidatePayload struct {
+	Blocks      int               `json:"blocks"`
+	GameObjects int               `json:"gameobjects"`
+	Components  int               `json:"components"`
+	Transforms  int               `json:"transforms"`
+	Errors      int               `json:"errors"`
+	Warnings    int               `json:"warnings"`
+	Findings    []ValidateFinding `json:"findings"`
+}
+
+type ValidateResult struct {
+	core.Result
+	Validate *ValidatePayload `json:"validate,omitempty"`
+}
+
 type RefsResult struct {
 	core.Result
 	Refs *RefsPayload `json:"refs,omitempty"`
