@@ -503,6 +503,67 @@ REF block=3000 class=MonoBehaviour field=m_Script file_id=11500000 guid=a1b2c3d4
 
 `--json` adds a `refs` payload with `references[]`, a `warnings` count, and `issues[]` (warning detail).
 
+---
+
+### `unity-ctx validate`
+
+Read-only fileID graph integrity check — the same check that gates every write path, run on its own so an agent can confirm a file is sound *before* editing.
+
+```bash
+unity-ctx prefab validate Assets/Prefabs/Enemy.prefab
+unity-ctx scene validate Stage01.unity --json
+```
+
+`OK`/`WARN` exit `0`; `ERROR` (broken graph) exits `1`.
+
+---
+
+### `unity-ctx changes`
+
+Structural diff of a file against its `<file>.bak` — what the last committed `set`/`apply` changed — by matching blocks on fileID.
+
+```bash
+unity-ctx asset changes EnemyConfig.asset
+```
+
+Reports `ADDED`/`REMOVED`/`CHANGED` per object. Exit `1` if no backup exists.
+
+---
+
+### `unity-ctx restore`
+
+Recover a file from its `<file>.bak`, undoing the last committed write. Atomic; reports the restored content's integrity (`check=`).
+
+```bash
+unity-ctx asset restore EnemyConfig.asset
+```
+
+---
+
+### `unity-ctx deps`
+
+Forward asset dependencies: the GUIDs a file references, resolved to asset paths under `--project`. `--out` writes a Graphviz graph.
+
+```bash
+unity-ctx prefab deps Assets/Prefabs/Enemy.prefab --project /path/to/project
+unity-ctx scene deps Stage01.unity --project . --out deps.dot
+```
+
+Unresolved GUIDs are reported as `UNKNOWN`, never guessed.
+
+---
+
+### `unity-ctx mcp`
+
+Run an [MCP](https://modelcontextprotocol.io) server over stdio so MCP hosts (Claude Code, etc.) call unity-ctx's read-only commands as native tools.
+
+```bash
+unity-ctx mcp
+claude mcp add unity-ctx -- unity-ctx mcp
+```
+
+Exposes read-only tools (`unity_summarize`, `unity_validate`, `unity_refs`, `unity_query`, `unity_get`, `unity_deps`, `unity_impact`). Mutations stay behind the CLI's `--write` contract.
+
 ## Output Prefixes
 
 Every command produces a single-prefix first line. Automated callers can branch on the prefix without parsing the rest.

@@ -61,11 +61,37 @@ Status:
 
 - `v0.2x` complete: token reduction `bench` backfill
 
+## v0.6 — YAML Safety Integration
+
+Status: complete (tag `v0.6.0`)
+
+- unity-fileid-graph safety kernel (`v0.9.0`) integrated as a Go library
+- pre/temp/final graph-integrity check on every write path (`scene apply`, `prefab set`, `asset set`)
+- `meta guid`, prefab GUID auto-resolve for `patch`/`suggest`
+- `refs` (scene/prefab/asset, text + JSON)
+
+## v0.7 — Agent Tooling Expansion
+
+Status: complete (tag `v0.7.0`)
+
+- `validate` — read-only graph integrity check
+- `changes` — structural diff vs `<file>.bak`
+- `restore` — recover from `<file>.bak`
+- `deps` — forward asset dependency export (text / DOT / JSON)
+- `mcp` — MCP server over stdio (read-only tools for Claude Code etc.)
+- CI/CD (GitHub Actions), Makefile, golangci config
+- `samples/MiniDungeon` sample project + benchmarks
+- `internal/app` god-object split (types.go / format.go)
+
+Deferred this cycle (low ROI / out of scope): full CLI flag-gating rewrite,
+status/prefix const enum, watch mode. See
+`docs/BRAINSTORM-improvements-and-features.md`.
+
 ## v1.0 — Agent Harness Release
 
-- SKILL docs
-- AGENTS.md integration guide
+- batch / transaction patch (multi-op atomic apply)
+- project-wide index & cross-scene search
+- structural mutation (component add/remove, GameObject create/delete, Transform
+  reparent) — requires structural-mutation support in the safety kernel first
 - installers
-- sample Unity project
-- CI examples
 - testplay-runner integration

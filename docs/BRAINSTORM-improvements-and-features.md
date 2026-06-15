@@ -8,6 +8,31 @@
 
 ---
 
+## 진행 현황 (2026-06-15 갱신)
+
+**완료 (머지됨)**
+- A2 — service.go 분할 (types.go / format.go) ✅ #22
+- C5 — `validate` (graph-integrity 읽기 전용) ✅ #23
+- C10 — `restore` (.bak 복구) ✅ #24
+- C2 — `deps` (forward 의존성 + DOT/JSON) ✅ #25
+- C1/D2 — `mcp` (MCP 서버) ✅ #26
+- C4 — `changes` (.bak 대비 구조 diff) ✅ #27
+- D1 — CI/CD + Makefile + golangci ✅ #20 / B-series parser·mutation·samples·docs ✅ #17–19,21
+- v0.6 safety integration 전체 ✅ #3–16 (+ fileid-graph #19)
+
+**보류 (판단: 저ROI / 흡수됨)**
+- A1 게이팅 전면 재작성 — 에러메시지 단언 테스트 60개, invisible, 회귀 리스크 큼
+- A4 잔여 / A5 enum / A6 타입에러 — 출력이 테스트로 고정된 invisible churn
+- C6 refs↔impact — `deps`가 forward 의존성 커버해 흡수
+- C11 watch — 에이전트(행동 주도) 사용 패턴에 부적합
+
+**남음 (각각 독립 세션급)**
+- A3 write-path 중복 제거 (안전 리팩터, invisible)
+- C8 배치 트랜잭션 patch / C3 프로젝트 인덱스 (대형 기능)
+- C12–14 구조적 변경 — unity-fileid-graph 커널 structural mutation 선행 필요
+
+---
+
 ## 0. 현재 상태 스냅샷
 
 ### 기능 표면 (17개 명령, 4 네임스페이스)
