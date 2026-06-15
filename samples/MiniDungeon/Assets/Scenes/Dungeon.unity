@@ -1,0 +1,65 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &1000
+GameObject:
+  m_Name: Floor
+  m_IsActive: 1
+  m_Component:
+  - component: {fileID: 1001}
+--- !u!4 &1001
+Transform:
+  m_GameObject: {fileID: 1000}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_Father: {fileID: 0}
+  m_Children: []
+--- !u!1 &2000
+GameObject:
+  m_Name: SpawnPoint
+  m_IsActive: 1
+  m_Component:
+  - component: {fileID: 2001}
+  - component: {fileID: 2002}
+--- !u!4 &2001
+Transform:
+  m_GameObject: {fileID: 2000}
+  m_LocalPosition: {x: -2, y: 0, z: 4}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_Father: {fileID: 0}
+  m_Children: []
+--- !u!114 &2002
+MonoBehaviour:
+  m_GameObject: {fileID: 2000}
+  m_Script: {fileID: 11500000, guid: c0ffee00d15ea5e0b16b00b5cafe1234, type: 3}
+  spawnRadius: 2.5
+  maxEnemies: 4
+--- !u!1 &3000
+GameObject:
+  m_Name: Crate_01
+  m_IsActive: 1
+  m_Component:
+  - component: {fileID: 3001}
+--- !u!4 &3001
+Transform:
+  m_GameObject: {fileID: 3000}
+  m_LocalPosition: {x: 3, y: 0, z: 1.5}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_Father: {fileID: 0}
+  m_Children: []
+--- !u!1 &4000
+GameObject:
+  m_Name: Chair_01
+  m_IsActive: 1
+  m_Component:
+  - component: {fileID: 4001}
+--- !u!4 &4001
+Transform:
+  m_GameObject: {fileID: 4000}
+  m_LocalPosition: {x: 1.2, y: 0, z: 3.4}
+  m_LocalRotation: {x: 0, y: 0.7071, z: 0, w: 0.7071}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_Father: {fileID: 0}
+  m_Children: []
