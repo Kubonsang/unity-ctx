@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"unity-ctx/internal/cli"
+	"github.com/Kubonsang/unity-ctx/internal/cli"
 )
 
 func main() {

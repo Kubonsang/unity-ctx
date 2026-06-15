@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"unity-ctx/internal/bounds"
+	"github.com/Kubonsang/unity-ctx/internal/bounds"
 )
 
 const editorManifestVersion = 1

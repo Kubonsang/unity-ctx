@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"unity-ctx/internal/core"
-	"unity-ctx/internal/patch"
+	"github.com/Kubonsang/unity-ctx/internal/core"
+	"github.com/Kubonsang/unity-ctx/internal/patch"
 )
 
 func TestLoadFileLoadsPersistedPatchFixtures(t *testing.T) {

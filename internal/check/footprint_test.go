@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"unity-ctx/internal/bounds"
+	"github.com/Kubonsang/unity-ctx/internal/bounds"
 )
 
 func TestCheckPlacementReturnsTranslatedPlacementAABB(t *testing.T) {

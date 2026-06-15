@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"unity-ctx/internal/parser"
-	"unity-ctx/internal/patch"
+	"github.com/Kubonsang/unity-ctx/internal/parser"
+	"github.com/Kubonsang/unity-ctx/internal/patch"
 )
 
 func TestSceneApplyDiffSummaryReportsAppendOpsAndReservedIDs(t *testing.T) {

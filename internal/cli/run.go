@@ -11,12 +11,12 @@ import (
 	"strconv"
 	"strings"
 
-	"unity-ctx/internal/app"
-	"unity-ctx/internal/bounds"
-	"unity-ctx/internal/contextpack"
-	"unity-ctx/internal/core"
-	"unity-ctx/internal/mcp"
-	"unity-ctx/internal/parser"
+	"github.com/Kubonsang/unity-ctx/internal/app"
+	"github.com/Kubonsang/unity-ctx/internal/bounds"
+	"github.com/Kubonsang/unity-ctx/internal/contextpack"
+	"github.com/Kubonsang/unity-ctx/internal/core"
+	"github.com/Kubonsang/unity-ctx/internal/mcp"
+	"github.com/Kubonsang/unity-ctx/internal/parser"
 )
 
 func Run(args []string, stdout, stderr io.Writer) int {

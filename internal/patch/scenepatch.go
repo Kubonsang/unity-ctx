@@ -3,9 +3,9 @@ package patch
 import (
 	"strings"
 
-	"unity-ctx/internal/bounds"
-	"unity-ctx/internal/check"
-	"unity-ctx/internal/parser"
+	"github.com/Kubonsang/unity-ctx/internal/bounds"
+	"github.com/Kubonsang/unity-ctx/internal/check"
+	"github.com/Kubonsang/unity-ctx/internal/parser"
 )
 
 type Status string

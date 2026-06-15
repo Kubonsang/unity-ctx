@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"unity-ctx/internal/safety"
+	"github.com/Kubonsang/unity-ctx/internal/safety"
 )
 
 // phaseCheck pairs a safety report with the write-path phase it ran in.

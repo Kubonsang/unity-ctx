@@ -13,8 +13,8 @@ import (
 	"fmt"
 	"io"
 
-	"unity-ctx/internal/app"
-	"unity-ctx/internal/core"
+	"github.com/Kubonsang/unity-ctx/internal/app"
+	"github.com/Kubonsang/unity-ctx/internal/core"
 )
 
 const protocolVersion = "2024-11-05"

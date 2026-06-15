@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"unity-ctx/internal/parser"
+	"github.com/Kubonsang/unity-ctx/internal/parser"
 )
 
 type Request struct {

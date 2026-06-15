@@ -5,9 +5,9 @@ import (
 	"reflect"
 	"testing"
 
-	"unity-ctx/internal/bounds"
-	"unity-ctx/internal/parser"
-	"unity-ctx/internal/patch"
+	"github.com/Kubonsang/unity-ctx/internal/bounds"
+	"github.com/Kubonsang/unity-ctx/internal/parser"
+	"github.com/Kubonsang/unity-ctx/internal/patch"
 )
 
 func TestPlanPlacePrefabClearPlacementReturnsDeterministicPlan(t *testing.T) {

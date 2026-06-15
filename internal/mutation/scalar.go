@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"unity-ctx/internal/parser"
+	"github.com/Kubonsang/unity-ctx/internal/parser"
 )
 
 func coerceScalar(oldValue any, raw string) (string, string, bool, error) {

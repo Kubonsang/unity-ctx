@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"unity-ctx/internal/parser"
+	"github.com/Kubonsang/unity-ctx/internal/parser"
 )
 
 func TestBuildFindByFileIDReturnsMatchingBlock(t *testing.T) {

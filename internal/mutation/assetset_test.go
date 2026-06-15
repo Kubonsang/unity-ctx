@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"unity-ctx/internal/parser"
+	"github.com/Kubonsang/unity-ctx/internal/parser"
 )
 
 func TestPlanAssetSetDryRunPreservesSourceAndReportsTypeHint(t *testing.T) {
