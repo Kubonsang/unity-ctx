@@ -299,9 +299,9 @@ unity-ctx scene patch Stage01.unity \
 ```
 
 Required: `--op place_prefab`, `--manifest`, `--prefab`, `--position`
-Optional: `--prefab-guid`, `--json`
+Optional: `--prefab-guid`, `--project`, `--json`
 
-Without `--prefab-guid`, returns `UNKNOWN ... NEED_PREFAB_GUID`. The GUID is in `<prefab>.meta` (`grep "^guid:" Chair.prefab.meta`).
+With `--project`, the prefab GUID is auto-resolved from `<prefab>.meta` when `--prefab-guid` is omitted. If it still cannot be resolved, the command returns `UNKNOWN ... NEED_PREFAB_GUID` — it never guesses. You can also look the GUID up explicitly with `unity-ctx meta guid`.
 
 Output:
 ```
@@ -434,10 +434,48 @@ Targeting is fileID-only. `--name` and `--component` are not supported for `pref
 
 Output (dry-run):
 ```
-DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 ack_required=1
+DRY_RUN field=moveSpeed old=3.5 new=4.0 type_hint=float changed=1 impact_status=OK scenes=2 scene_refs=3 prefabs=1 prefab_refs=2 nested_depth=1 ack_required=1 pre_check=OK temp_check=OK
 SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 Assets/Scenes/Stage01.unity refs=2 fileIDs=1000,2000
 PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001
 ```
+
+> `scene apply`, `prefab set`, and `asset set` all carry `pre_check`/`temp_check`/`final_check` fields and refuse unsafe writes — see [Safety Integration](#safety-integration-v06) above.
+
+---
+
+### `unity-ctx meta guid`
+
+Resolves a prefab/asset GUID from its sibling `.meta` file. Never guesses.
+
+```bash
+unity-ctx meta guid Assets/Prefabs/Chair.prefab --project /Users/me/MyUnityProject
+```
+
+Output:
+```
+OK guid=3e8a1f2b4c5d6e7f8a9b0c1d2e3f4a5b file=Assets/Prefabs/Chair.prefab meta=Assets/Prefabs/Chair.prefab.meta
+NEED_PREFAB_GUID file=Assets/Prefabs/Chair.prefab reason=meta_not_found
+```
+
+---
+
+### `unity-ctx refs`
+
+Read-only PPtr/GUID reference evidence for a file, backed by the safety kernel. Lets an agent trace what a file points at without reading raw YAML.
+
+```bash
+unity-ctx prefab refs Assets/Prefabs/Enemy.prefab
+unity-ctx scene refs Assets/Scenes/Stage01.unity --json
+```
+
+Output:
+```
+OK refs file=Assets/Prefabs/Enemy.prefab count=2 warnings=0
+REF block=1000 class=GameObject field=m_Component[0].component file_id=2000
+REF block=3000 class=MonoBehaviour field=m_Script file_id=11500000 guid=a1b2c3d4e5f60718293a4b5c6d7e8f90 type=3
+```
+
+`--json` adds a `refs` payload with `references[]`, a `warnings` count, and `issues[]` (warning detail).
 
 ## Output Prefixes
 
@@ -457,8 +495,12 @@ Every command produces a single-prefix first line. Automated callers can branch 
 | `PLAN` | Patch plan detail line |
 | `PATCH_OUT` | Patch artifact written by `suggest --out` |
 | `SCENES` / `PREFABS` | Impact analysis result lines |
+| `BLOCKED` | Write refused by a graph-integrity failure (`code=GRAPH_CHECK_FAILED`) |
+| `CHECK` | Per-phase safety-check detail line |
+| `REF` | Reference evidence line from `refs` |
+| `NEED_PREFAB_GUID` | GUID could not be resolved from `.meta` |
 
-Exit codes: `0` = OK/WARN/UNKNOWN only, `1` = ERROR, `2` = tool execution error.
+Exit codes: `0` = OK / WARN / UNKNOWN / BLOCKED / NEED_PREFAB_GUID, `1` = ERROR, `2` = tool execution error. `BLOCKED` and `NEED_PREFAB_GUID` exit `0` because the tool worked correctly — the result is a refusal, not a crash.
 
 ## Recommended Agent Flow
 
@@ -468,11 +510,11 @@ unity-ctx scene summarize Stage01.unity
 unity-ctx scene query Stage01.unity --name Table_01   # → get fileID
 unity-ctx scene inspect Stage01.unity --id 1000 --component Rigidbody
 
-# Place a prefab
+# Place a prefab (GUID auto-resolved from .meta via --project)
 unity-ctx scene scan Stage01.unity --mode editor --project /path/to/project --out stage01.bounds.json
-unity-ctx scene suggest Stage01.unity --manifest stage01.bounds.json --prefab Chair.prefab --near 1000 --prefab-guid <guid> --out chair.patch.json
+unity-ctx scene suggest Stage01.unity --manifest stage01.bounds.json --prefab Chair.prefab --near 1000 --project /path/to/project --pick 1 --out chair.patch.json
 unity-ctx scene diff Stage01.unity --patch chair.patch.json
-unity-ctx scene apply Stage01.unity --patch chair.patch.json --write
+unity-ctx scene apply Stage01.unity --patch chair.patch.json --write   # runs pre/temp/final graph checks
 
 # Modify a prefab field
 unity-ctx prefab impact Enemy.prefab --project /path/to/project
@@ -499,7 +541,15 @@ go test ./...
 go run ./cmd/unity-ctx --help
 ```
 
-See [`docs/TESTING.md`](docs/TESTING.md) for the testing guide and [`docs/COMMANDS.md`](docs/COMMANDS.md) for the full command contract.
+## Documentation
+
+| Audience | Document |
+|----------|----------|
+| Full command contract — flags, output, exit codes | [`docs/COMMANDS.md`](docs/COMMANDS.md) |
+| AI agent **using** the CLI — operating manual | [`docs/AGENT-USAGE.md`](docs/AGENT-USAGE.md) |
+| AI agent **contributing to** the codebase | [`AGENTS.md`](AGENTS.md) |
+| Testing guide | [`docs/TESTING.md`](docs/TESTING.md) |
+| Roadmap | [`docs/ROADMAP.md`](docs/ROADMAP.md) |
 
 ## Known Limitations
 
@@ -522,7 +572,7 @@ Standalone bounds generation without the Editor is not yet implemented.
 
 ## Status
 
-Currently at **v0.5d**. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full roadmap.
+Currently at **[v0.6.0 — YAML Safety Integration](https://github.com/Kubonsang/unity-ctx/releases/tag/v0.6.0)**. Every write path is gated by the [unity-fileid-graph](https://github.com/Kubonsang/unity-fileid-graph) safety kernel. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full roadmap.
 
 Next milestone: **v1.0 Agent Harness Release** — sample Unity project, CI examples, installer.
 
