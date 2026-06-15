@@ -222,9 +222,17 @@ type RefsPayloadReference struct {
 	Type        *int   `json:"type,omitempty"`
 }
 
+type RefsPayloadIssue struct {
+	Severity string `json:"severity"`
+	Code     string `json:"code"`
+	FileID   int64  `json:"file_id,omitempty"`
+	Message  string `json:"message,omitempty"`
+}
+
 type RefsPayload struct {
 	References []RefsPayloadReference `json:"references"`
 	Warnings   int                    `json:"warnings"`
+	Issues     []RefsPayloadIssue     `json:"issues"`
 }
 
 type RefsResult struct {
@@ -1018,14 +1026,18 @@ func (s *Service) Refs(namespace, path string, view core.View, jsonOut bool) (Re
 		lines = append(lines, line)
 	}
 	for _, warning := range report.Warnings {
-		lines = append(lines, fmt.Sprintf("WARN code=%s %s", warning.Code, warning.Detail))
+		lines = append(lines, fmt.Sprintf("WARN code=%s file_id=%d message=%q", warning.Code, warning.FileID, warning.Message))
 	}
 
 	result.Status = report.Status
 	result.Body = strings.Join(lines, "\n")
 
 	if jsonOut {
-		payload := &RefsPayload{References: []RefsPayloadReference{}, Warnings: len(report.Warnings)}
+		payload := &RefsPayload{
+			References: []RefsPayloadReference{},
+			Warnings:   len(report.Warnings),
+			Issues:     []RefsPayloadIssue{},
+		}
 		for _, ref := range report.Refs {
 			jsonRef := RefsPayloadReference{
 				BlockFileID: ref.Block,
@@ -1041,6 +1053,14 @@ func (s *Service) Refs(namespace, path string, view core.View, jsonOut bool) (Re
 				jsonRef.Type = &refType
 			}
 			payload.References = append(payload.References, jsonRef)
+		}
+		for _, warning := range report.Warnings {
+			payload.Issues = append(payload.Issues, RefsPayloadIssue{
+				Severity: "WARN",
+				Code:     warning.Code,
+				FileID:   warning.FileID,
+				Message:  warning.Message,
+			})
 		}
 		result.Refs = payload
 	}

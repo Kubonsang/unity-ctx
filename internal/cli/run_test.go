@@ -2453,9 +2453,44 @@ func TestSceneSuggestRejectsIrrelevantFlags(t *testing.T) {
 	if result.stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", result.stdout)
 	}
-	want := "ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --project, --scenes, --prefabs, --position, --op, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode\n"
+	want := "ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --scenes, --prefabs, --position, --op, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode\n"
 	if result.stderr != want {
 		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSceneSuggestAcceptsProjectForGUIDAutoResolve(t *testing.T) {
+	project := t.TempDir()
+	prefabAbs := filepath.Join(project, "Assets", "Prefabs", "chair.prefab")
+	if err := os.MkdirAll(filepath.Dir(prefabAbs), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(prefabAbs, []byte("--- !u!1 &1000\nGameObject:\n  m_Name: chair\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.WriteFile(prefabAbs+".meta", []byte("fileFormatVersion: 2\nguid: 3e8a1f2b4c5d6e7f8a9b0c1d2e3f4a5b\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(.meta) error = %v", err)
+	}
+
+	outFile := filepath.Join(project, "out.patch.json")
+	result := runCLI(t,
+		"scene", "suggest", "testdata/scenes/simple_scene.unity",
+		"--manifest", "testdata/manifests/simple_scene.bounds.json",
+		"--prefab", "Assets/Prefabs/chair.prefab",
+		"--near", "1000",
+		"--project", project,
+		"--pick", "1",
+		"--out", outFile,
+	)
+	if result.exitCode != 0 {
+		t.Fatalf("expected exit 0, got %d stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("patch file not created: %v", err)
+	}
+	if !strings.Contains(string(data), `"prefab_guid":"3e8a1f2b4c5d6e7f8a9b0c1d2e3f4a5b"`) {
+		t.Fatalf("patch did not carry the auto-resolved guid:\n%s", string(data))
 	}
 }
 
@@ -3753,6 +3788,39 @@ func TestRefsJSONReturnsPayload(t *testing.T) {
 	last := got.Refs.References[3]
 	if last.Field != "m_Script" || last.GUID != "a1b2c3d4e5f60718293a4b5c6d7e8f90" || last.Type == nil || *last.Type != 3 {
 		t.Fatalf("script reference mismatch: %+v", last)
+	}
+}
+
+func TestRefsJSONCarriesIssueDetail(t *testing.T) {
+	result := runCLI(t, "prefab", "refs", "testdata/prefabs/refs_warn.prefab", "--json")
+	if result.exitCode != 0 {
+		t.Fatalf("WARN refs must exit 0, got %d stderr=%q", result.exitCode, result.stderr)
+	}
+
+	var got struct {
+		Status string `json:"status"`
+		Refs   struct {
+			Warnings int `json:"warnings"`
+			Issues   []struct {
+				Severity string `json:"severity"`
+				Code     string `json:"code"`
+				FileID   int64  `json:"file_id"`
+				Message  string `json:"message"`
+			} `json:"issues"`
+		} `json:"refs"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &got); err != nil {
+		t.Fatalf("parse stdout json: %v\nstdout=%q", err, result.stdout)
+	}
+	if got.Status != "WARN" {
+		t.Fatalf("status mismatch: got %q want WARN", got.Status)
+	}
+	if got.Refs.Warnings != 1 || len(got.Refs.Issues) != 1 {
+		t.Fatalf("expected one issue, got warnings=%d issues=%+v", got.Refs.Warnings, got.Refs.Issues)
+	}
+	issue := got.Refs.Issues[0]
+	if issue.Severity != "WARN" || issue.Code != "UNKNOWN_FIELD_SHAPE" || issue.FileID != 11400000 || issue.Message == "" {
+		t.Fatalf("issue detail mismatch: %+v", issue)
 	}
 }
 

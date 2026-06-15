@@ -336,6 +336,7 @@ Optional flags:
 - `--count`
 - `--align`
 - `--json`
+- `--project` (with `--out`: auto-resolve the prefab GUID from `.meta`; see v0.5d below)
 
 Rules:
 
@@ -417,7 +418,7 @@ ERROR suggest requires --near
 ERROR suggest requires --count >= 1
 ERROR suggest supports only --align floor|grid
 ERROR suggest supports only --view compact
-ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --project, --scenes, --prefabs, --position, --op, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode
+ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --scenes, --prefabs, --position, --op, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode
 ERROR missing anchor near="Missing"
 ERROR AMBIGUOUS_NAME name="Table_01" matches=2
 ERROR missing prefab manifest entry for path="Assets/Prefabs/Missing.prefab"
@@ -455,6 +456,7 @@ unity-ctx scene apply Stage01.unity --patch chair.patch.json --write
 - `--out <file>` triggers patch output: writes a diff/apply-compatible patch artifact for the selected candidate rank.
 - `--pick <n>` (default `1`) selects which candidate rank to write. Requires `--out`.
 - `--prefab-guid <guid>` embeds the GUID in the written patch. Requires `--out`. Without it, the patch has `status=UNKNOWN`.
+- `--project <root>` lets suggest auto-resolve the prefab GUID from its `.meta` file when `--prefab-guid` is omitted (relative prefab paths are retried under the project root). Same behavior as `scene patch --project`. If resolution fails, the patch stays `status=UNKNOWN` — never a guess.
 - `--pick` and `--prefab-guid` are rejected when `--out` is not set.
 - Without `--out`, suggest output is byte-for-byte identical to v0.5c behavior.
 - The written patch file is identical in schema to `scene patch --json` output and is usable by `scene diff` and `scene apply --write`.
@@ -908,8 +910,18 @@ REF block=1000 class=GameObject field=m_Component[0].component file_id=2000
 REF block=3000 class=MonoBehaviour field=m_Script file_id=11500000 guid=a1b2c3d4e5f60718293a4b5c6d7e8f90 type=3
 ```
 
+WARN output (warning-only extraction issue, exit 0):
+
+```text
+WARN refs file=Assets/Prefabs/Enemy.prefab count=0 warnings=1
+WARN code=UNKNOWN_FIELD_SHAPE file_id=11400000 message="unsupported PPtr fileID"
+```
+
 `--json` adds a `refs` payload with `references[]`
-(`block_file_id`, `class`, `field`, `file_id`, `guid?`, `type?`) and `warnings`.
+(`block_file_id`, `class`, `field`, `file_id`, `guid?`, `type?`), a `warnings`
+count, and `issues[]` carrying the warning detail (`severity`, `code`,
+`file_id?`, `message?`) — mirroring `uyaml refs --json` so agents can read *why*
+a result is `WARN` without parsing the text body.
 
 ## Output Stability Rules
 

@@ -512,8 +512,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			_, _ = io.WriteString(stderr, "ERROR suggest supports only --align floor|grid\n")
 			return 2
 		}
-		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "value", "write", "project", "scenes", "prefabs", "position", "op", "task", "focus", "max-tokens", "patch", "ack-impact", "mode") {
-			_, _ = io.WriteString(stderr, "ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --project, --scenes, --prefabs, --position, --op, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode\n")
+		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "value", "write", "scenes", "prefabs", "position", "op", "task", "focus", "max-tokens", "patch", "ack-impact", "mode") {
+			_, _ = io.WriteString(stderr, "ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --scenes, --prefabs, --position, --op, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode\n")
 			return 2
 		}
 		if seenFlags["pick"] && *pick < 1 {
