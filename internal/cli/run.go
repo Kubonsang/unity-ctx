@@ -20,8 +20,15 @@ import (
 )
 
 func Run(args []string, stdout, stderr io.Writer) int {
-	if isHelpArgs(args) {
-		_, _ = io.WriteString(stdout, usageText())
+	if wantsHelp(args) {
+		ns, command := "", ""
+		if len(args) >= 1 && !strings.HasPrefix(args[0], "-") {
+			ns = args[0]
+		}
+		if len(args) >= 2 && !strings.HasPrefix(args[1], "-") {
+			command = args[1]
+		}
+		_, _ = io.WriteString(stdout, helpText(ns, command))
 		return 0
 	}
 
@@ -33,9 +40,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	if len(args) < 3 {
-		_, _ = io.WriteString(stderr, "ERROR missing file argument\n")
-		return 2
+	if msg, code, stop := diagnoseShape(args); stop {
+		_, _ = io.WriteString(stderr, msg+"\n")
+		return code
 	}
 
 	namespace := args[0]
@@ -974,14 +981,6 @@ func samePath(left, right string) bool {
 		rightAbs = resolved
 	}
 	return filepath.Clean(leftAbs) == filepath.Clean(rightAbs)
-}
-
-func isHelpArgs(args []string) bool {
-	return len(args) == 1 && (args[0] == "--help" || args[0] == "-h")
-}
-
-func usageText() string {
-	return "usage: unity-ctx <namespace> <command> <file> [flags]\n"
 }
 
 func runMetaGUID(command, file string, rest []string, stdout, stderr io.Writer) int {

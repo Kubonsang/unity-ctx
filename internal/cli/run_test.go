@@ -40,14 +40,57 @@ func TestHelp(t *testing.T) {
 	if result.exitCode != 0 {
 		t.Fatalf("exit code mismatch: got %d want 0", result.exitCode)
 	}
-
 	if result.stderr != "" {
 		t.Fatalf("expected empty stderr, got %q", result.stderr)
 	}
+	if !strings.Contains(result.stdout, "usage: unity-ctx <namespace> <command> <file> [flags]") {
+		t.Fatalf("general help missing usage line: %q", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "read commands:") || !strings.Contains(result.stdout, "write commands:") {
+		t.Fatalf("general help missing command lists: %q", result.stdout)
+	}
+}
 
-	want := "usage: unity-ctx <namespace> <command> <file> [flags]\n"
-	if result.stdout != want {
-		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
+func TestPerCommandHelp(t *testing.T) {
+	result := runCLI(t, "scene", "suggest", "--help")
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q", result.exitCode, result.stderr)
+	}
+	if !strings.HasPrefix(result.stdout, "unity-ctx scene suggest <file> [flags]") {
+		t.Fatalf("per-command help header mismatch: %q", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "--manifest") || !strings.Contains(result.stdout, "--near") {
+		t.Fatalf("per-command help missing flags: %q", result.stdout)
+	}
+}
+
+func TestNamespaceOmittedGivesHelpfulError(t *testing.T) {
+	result := runCLI(t, "bench", "testdata/scenes/simple_scene.unity")
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if !strings.Contains(result.stderr, "is a command, not a namespace") {
+		t.Fatalf("expected namespace-omitted hint, got %q", result.stderr)
+	}
+}
+
+func TestUnknownNamespaceError(t *testing.T) {
+	result := runCLI(t, "scenez", "summarize", "x.unity")
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if !strings.Contains(result.stderr, "unknown namespace") {
+		t.Fatalf("expected unknown-namespace error, got %q", result.stderr)
+	}
+}
+
+func TestUnknownCommandError(t *testing.T) {
+	result := runCLI(t, "scene", "frobnicate", "x.unity")
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if !strings.Contains(result.stderr, "unknown command") {
+		t.Fatalf("expected unknown-command error, got %q", result.stderr)
 	}
 }
 
@@ -3842,12 +3885,14 @@ func TestRefsRejectsIrrelevantFlags(t *testing.T) {
 }
 
 func TestRefsRejectsUnknownNamespace(t *testing.T) {
+	// An unknown namespace is now caught by the early shape diagnosis (exit 2,
+	// "unknown namespace") before reaching the refs dispatch.
 	result := runCLI(t, "manifest", "refs", "testdata/prefabs/enemy.prefab")
-	if result.exitCode != 1 {
-		t.Fatalf("expected error exit, got %d stdout=%q", result.exitCode, result.stdout)
+	if result.exitCode != 2 {
+		t.Fatalf("expected usage error exit 2, got %d stdout=%q", result.exitCode, result.stdout)
 	}
-	if !strings.HasPrefix(result.stdout, "") && result.stderr == "" {
-		t.Fatalf("expected error output, got stdout=%q stderr=%q", result.stdout, result.stderr)
+	if !strings.Contains(result.stderr, "unknown namespace") {
+		t.Fatalf("expected unknown-namespace error, got stderr=%q", result.stderr)
 	}
 }
 
