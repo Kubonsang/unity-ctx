@@ -990,6 +990,36 @@ ERROR restore no backup found backup=EnemyConfig.asset.bak
 
 `--json` adds a `restore` payload (`backup`, `bytes`, `check`).
 
+### changes
+
+```bash
+unity-ctx asset changes EnemyConfig.asset
+unity-ctx scene changes Stage01.unity --json
+```
+
+Optional flags:
+
+- `--json`
+
+Rules:
+
+- `changes` is implemented for the `scene`, `prefab`, and `asset` namespaces.
+- It diffs `<file>` against its sibling `<file>.bak` (the backup the last
+  committed `set`/`apply` left) by matching blocks on fileID, reporting
+  `ADDED`/`REMOVED`/`CHANGED` per object. Read-only.
+- Errors with exit `1` if no `<file>.bak` exists. Output is deterministic
+  (sorted by fileID).
+
+Output:
+
+```text
+OK changes file=EnemyConfig.asset vs=EnemyConfig.asset.bak added=0 removed=0 changed=1
+CHANGED fileID=11400000 type=MonoBehaviour
+```
+
+`--json` adds a `changes` payload (`backup`, `added`, `removed`, `changed`,
+`edits[]` with `kind`/`file_id`/`type`).
+
 ### deps
 
 ```bash

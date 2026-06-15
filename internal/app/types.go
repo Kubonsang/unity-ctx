@@ -210,6 +210,25 @@ type RefsPayload struct {
 	Issues     []RefsPayloadIssue     `json:"issues"`
 }
 
+type ChangeEdit struct {
+	Kind   string `json:"kind"`
+	FileID int64  `json:"file_id"`
+	Type   string `json:"type"`
+}
+
+type ChangesPayload struct {
+	Backup  string       `json:"backup"`
+	Added   int          `json:"added"`
+	Removed int          `json:"removed"`
+	Changed int          `json:"changed"`
+	Edits   []ChangeEdit `json:"edits"`
+}
+
+type ChangesResult struct {
+	core.Result
+	Changes *ChangesPayload `json:"changes,omitempty"`
+}
+
 type DepsArgs struct {
 	Project string
 	Out     string

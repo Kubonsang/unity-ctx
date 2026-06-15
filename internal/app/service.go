@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -940,6 +941,111 @@ func (s *Service) Validate(namespace, path string, view core.View, jsonOut bool)
 		exitCode = 1
 	}
 	return result, exitCode
+}
+
+// Changes reports the structural difference between a file and its sibling
+// <file>.bak — i.e. what the last committed write changed — by matching blocks
+// on fileID. Read-only; pairs with restore for inspecting/recovering an edit.
+func (s *Service) Changes(namespace, path string, view core.View, jsonOut bool) (ChangesResult, int) {
+	result := ChangesResult{
+		Result: core.Result{
+			Namespace: namespace,
+			Command:   "changes",
+			File:      path,
+			View:      view,
+		},
+	}
+
+	if namespace != "scene" && namespace != "prefab" && namespace != "asset" {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR changes not implemented for namespace=%s", namespace)
+		return result, 1
+	}
+	if view != core.ViewCompact {
+		result.Status = "ERROR"
+		result.Body = "ERROR changes supports only --view compact"
+		return result, 1
+	}
+
+	backupPath := path + ".bak"
+	current, err := parser.ParseFile(path)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	if _, statErr := os.Stat(backupPath); statErr != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR changes no backup found backup=%s", backupPath)
+		return result, 1
+	}
+	previous, err := parser.ParseFile(backupPath)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	prevByID := map[int64]parser.Block{}
+	for _, b := range previous {
+		prevByID[b.FileID] = b
+	}
+	curByID := map[int64]parser.Block{}
+	for _, b := range current {
+		curByID[b.FileID] = b
+	}
+
+	var edits []ChangeEdit
+	for _, b := range current {
+		old, ok := prevByID[b.FileID]
+		if !ok {
+			edits = append(edits, ChangeEdit{Kind: "ADDED", FileID: b.FileID, Type: b.TypeName})
+		} else if old.RawBody != b.RawBody {
+			edits = append(edits, ChangeEdit{Kind: "CHANGED", FileID: b.FileID, Type: b.TypeName})
+		}
+	}
+	for _, b := range previous {
+		if _, ok := curByID[b.FileID]; !ok {
+			edits = append(edits, ChangeEdit{Kind: "REMOVED", FileID: b.FileID, Type: b.TypeName})
+		}
+	}
+	sort.Slice(edits, func(i, j int) bool {
+		if edits[i].FileID != edits[j].FileID {
+			return edits[i].FileID < edits[j].FileID
+		}
+		return edits[i].Kind < edits[j].Kind
+	})
+
+	added, removed, changed := 0, 0, 0
+	for _, e := range edits {
+		switch e.Kind {
+		case "ADDED":
+			added++
+		case "REMOVED":
+			removed++
+		case "CHANGED":
+			changed++
+		}
+	}
+
+	lines := []string{fmt.Sprintf(
+		"OK changes file=%s vs=%s added=%d removed=%d changed=%d",
+		path, backupPath, added, removed, changed,
+	)}
+	for _, e := range edits {
+		lines = append(lines, fmt.Sprintf("%s fileID=%d type=%s", e.Kind, e.FileID, e.Type))
+	}
+
+	result.Status = "OK"
+	result.Body = strings.Join(lines, "\n")
+	if jsonOut {
+		payload := &ChangesPayload{Backup: backupPath, Added: added, Removed: removed, Changed: changed, Edits: edits}
+		if payload.Edits == nil {
+			payload.Edits = []ChangeEdit{}
+		}
+		result.Changes = payload
+	}
+	return result, 0
 }
 
 // Deps reports the external asset dependencies of a file: the GUIDs it

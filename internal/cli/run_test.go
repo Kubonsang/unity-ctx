@@ -4038,3 +4038,47 @@ func TestDepsWritesDOT(t *testing.T) {
 		t.Fatalf("dot content mismatch: %q", string(data))
 	}
 }
+
+func TestChangesReportsChangedBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.asset")
+	src := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!114 &11400000\nMonoBehaviour:\n  m_Name: Cfg\n" +
+		"  m_Script: {fileID: 11500000, guid: f0e1d2c3b4a5968778695a4b3c2d1e0f, type: 3}\n  maxHealth: 200\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	w := runCLI(t, "asset", "set", path, "--field", "maxHealth", "--value", "777", "--write")
+	if w.exitCode != 0 {
+		t.Fatalf("set --write failed: %d %q", w.exitCode, w.stdout)
+	}
+	r := runCLI(t, "asset", "changes", path)
+	if r.exitCode != 0 {
+		t.Fatalf("changes exit: %d stderr=%q", r.exitCode, r.stderr)
+	}
+	if !strings.Contains(r.stdout, "added=0 removed=0 changed=1") {
+		t.Fatalf("summary mismatch: %q", r.stdout)
+	}
+	if !strings.Contains(r.stdout, "CHANGED fileID=11400000 type=MonoBehaviour") {
+		t.Fatalf("edit line missing: %q", r.stdout)
+	}
+}
+
+func TestChangesErrorsWhenNoBackup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.asset")
+	if err := os.WriteFile(path, []byte("--- !u!114 &1\nMonoBehaviour:\n  m_Name: X\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	r := runCLI(t, "asset", "changes", path)
+	if r.exitCode != 1 || !strings.HasPrefix(r.stdout, "ERROR changes no backup found") {
+		t.Fatalf("expected no-backup error, got %d %q", r.exitCode, r.stdout)
+	}
+}
+
+func TestChangesRejectsIrrelevantFlags(t *testing.T) {
+	r := runCLI(t, "asset", "changes", "testdata/assets/enemy_config.asset", "--field", "x")
+	if r.exitCode != 2 {
+		t.Fatalf("expected usage error, got %d %q", r.exitCode, r.stdout)
+	}
+}
