@@ -910,8 +910,18 @@ REF block=1000 class=GameObject field=m_Component[0].component file_id=2000
 REF block=3000 class=MonoBehaviour field=m_Script file_id=11500000 guid=a1b2c3d4e5f60718293a4b5c6d7e8f90 type=3
 ```
 
+WARN output (warning-only extraction issue, exit 0):
+
+```text
+WARN refs file=Assets/Prefabs/Enemy.prefab count=0 warnings=1
+WARN code=UNKNOWN_FIELD_SHAPE file_id=11400000 message="unsupported PPtr fileID"
+```
+
 `--json` adds a `refs` payload with `references[]`
-(`block_file_id`, `class`, `field`, `file_id`, `guid?`, `type?`) and `warnings`.
+(`block_file_id`, `class`, `field`, `file_id`, `guid?`, `type?`), a `warnings`
+count, and `issues[]` carrying the warning detail (`severity`, `code`,
+`file_id?`, `message?`) — mirroring `uyaml refs --json` so agents can read *why*
+a result is `WARN` without parsing the text body.
 
 ## Output Stability Rules
 

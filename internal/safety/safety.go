@@ -135,10 +135,18 @@ type Ref struct {
 	HasType bool
 }
 
+// RefIssue is a structured warning from refs extraction, mirroring the
+// fields uyaml emits in its refs JSON issues[] (severity is always WARN).
+type RefIssue struct {
+	Code    string
+	FileID  int64
+	Message string
+}
+
 type RefsReport struct {
 	Status   string // "OK" | "WARN"
 	Refs     []Ref
-	Warnings []Finding
+	Warnings []RefIssue
 }
 
 // ExtractRefs extracts PPtr/GUID reference evidence from raw Unity YAML
@@ -163,10 +171,10 @@ func ExtractRefs(data []byte, namespace, file string) (RefsReport, error) {
 		})
 	}
 	for _, issue := range result.Issues {
-		report.Warnings = append(report.Warnings, Finding{
-			Severity: StatusWarn,
-			Code:     issue.Code,
-			Detail:   fmt.Sprintf("file_id=%d message=%q", issue.FileID, issue.Message),
+		report.Warnings = append(report.Warnings, RefIssue{
+			Code:    issue.Code,
+			FileID:  issue.FileID,
+			Message: issue.Message,
 		})
 	}
 	return report, nil

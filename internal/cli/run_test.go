@@ -3791,6 +3791,39 @@ func TestRefsJSONReturnsPayload(t *testing.T) {
 	}
 }
 
+func TestRefsJSONCarriesIssueDetail(t *testing.T) {
+	result := runCLI(t, "prefab", "refs", "testdata/prefabs/refs_warn.prefab", "--json")
+	if result.exitCode != 0 {
+		t.Fatalf("WARN refs must exit 0, got %d stderr=%q", result.exitCode, result.stderr)
+	}
+
+	var got struct {
+		Status string `json:"status"`
+		Refs   struct {
+			Warnings int `json:"warnings"`
+			Issues   []struct {
+				Severity string `json:"severity"`
+				Code     string `json:"code"`
+				FileID   int64  `json:"file_id"`
+				Message  string `json:"message"`
+			} `json:"issues"`
+		} `json:"refs"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &got); err != nil {
+		t.Fatalf("parse stdout json: %v\nstdout=%q", err, result.stdout)
+	}
+	if got.Status != "WARN" {
+		t.Fatalf("status mismatch: got %q want WARN", got.Status)
+	}
+	if got.Refs.Warnings != 1 || len(got.Refs.Issues) != 1 {
+		t.Fatalf("expected one issue, got warnings=%d issues=%+v", got.Refs.Warnings, got.Refs.Issues)
+	}
+	issue := got.Refs.Issues[0]
+	if issue.Severity != "WARN" || issue.Code != "UNKNOWN_FIELD_SHAPE" || issue.FileID != 11400000 || issue.Message == "" {
+		t.Fatalf("issue detail mismatch: %+v", issue)
+	}
+}
+
 func TestRefsSceneNamespaceWorks(t *testing.T) {
 	result := runCLI(t, "scene", "refs", "testdata/scenes/simple_scene.unity")
 	if result.exitCode != 0 {
