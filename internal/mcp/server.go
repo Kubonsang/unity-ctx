@@ -15,6 +15,7 @@ import (
 
 	"github.com/Kubonsang/unity-ctx/internal/app"
 	"github.com/Kubonsang/unity-ctx/internal/core"
+	"github.com/Kubonsang/unity-ctx/internal/version"
 )
 
 const protocolVersion = "2024-11-05"
@@ -86,7 +87,7 @@ func dispatch(svc *app.Service, tools []tool, req rpcRequest) (rpcResponse, bool
 		base.Result = map[string]any{
 			"protocolVersion": protocolVersion,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "unity-ctx", "version": "0.6.0"},
+			"serverInfo":      map[string]any{"name": "unity-ctx", "version": version.Version},
 		}
 	case "ping":
 		base.Result = map[string]any{}

@@ -4127,3 +4127,18 @@ func TestChangesRejectsIrrelevantFlags(t *testing.T) {
 		t.Fatalf("expected usage error, got %d %q", r.exitCode, r.stdout)
 	}
 }
+
+func TestVersionFlag(t *testing.T) {
+	for _, arg := range []string{"--version", "-v"} {
+		result := runCLI(t, arg)
+		if result.exitCode != 0 {
+			t.Fatalf("%s exit code: got %d want 0", arg, result.exitCode)
+		}
+		if !strings.HasPrefix(result.stdout, "unity-ctx ") {
+			t.Fatalf("%s stdout mismatch: %q", arg, result.stdout)
+		}
+		if result.stderr != "" {
+			t.Fatalf("%s expected empty stderr, got %q", arg, result.stderr)
+		}
+	}
+}

@@ -17,9 +17,15 @@ import (
 	"github.com/Kubonsang/unity-ctx/internal/core"
 	"github.com/Kubonsang/unity-ctx/internal/mcp"
 	"github.com/Kubonsang/unity-ctx/internal/parser"
+	"github.com/Kubonsang/unity-ctx/internal/version"
 )
 
 func Run(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 1 && (args[0] == "--version" || args[0] == "-v") {
+		_, _ = fmt.Fprintf(stdout, "unity-ctx %s\n", version.Version)
+		return 0
+	}
+
 	if wantsHelp(args) {
 		ns, command := "", ""
 		if len(args) >= 1 && !strings.HasPrefix(args[0], "-") {

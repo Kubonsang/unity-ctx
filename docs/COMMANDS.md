@@ -12,6 +12,17 @@ Namespaces:
 - `prefab`
 - `asset`
 
+## Version
+
+```bash
+unity-ctx --version    # or -v
+```
+
+Prints `unity-ctx <version>` and exits 0. Source builds report `dev`; release
+binaries embed the git tag (injected via
+`-ldflags "-X github.com/Kubonsang/unity-ctx/internal/version.Version=<tag>"`).
+The MCP server's `serverInfo.version` reports the same value.
+
 ## Help
 
 ```bash

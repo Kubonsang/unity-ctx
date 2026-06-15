@@ -37,7 +37,8 @@ jobs:
           CGO_ENABLED: '0'
         run: |
           out="unity-ctx-${GOOS}-${GOARCH}"
-          go build -ldflags "-s -w" -o "${out}" ./cmd/unity-ctx
+          ver="${GITHUB_REF_NAME:-dev}"
+          go build -ldflags "-s -w -X github.com/Kubonsang/unity-ctx/internal/version.Version=${ver}" -o "${out}" ./cmd/unity-ctx
           echo "ARTIFACT=${out}" >> "$GITHUB_ENV"
 
       - name: Upload to release
