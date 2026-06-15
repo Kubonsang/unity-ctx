@@ -3850,3 +3850,73 @@ func TestRefsRejectsUnknownNamespace(t *testing.T) {
 		t.Fatalf("expected error output, got stdout=%q stderr=%q", result.stdout, result.stderr)
 	}
 }
+
+func TestValidateReturnsOKForSoundFile(t *testing.T) {
+	result := runCLI(t, "asset", "validate", "testdata/assets/enemy_config.asset")
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d stderr=%q", result.exitCode, result.stderr)
+	}
+	if !strings.HasPrefix(result.stdout, "OK validate file=testdata/assets/enemy_config.asset blocks=1 ") {
+		t.Fatalf("stdout mismatch: got %q", result.stdout)
+	}
+}
+
+func TestValidateWarnsButExitsZero(t *testing.T) {
+	result := runCLI(t, "prefab", "validate", "testdata/prefabs/enemy.prefab")
+	if result.exitCode != 0 {
+		t.Fatalf("WARN must exit 0, got %d stderr=%q", result.exitCode, result.stderr)
+	}
+	if !strings.HasPrefix(result.stdout, "WARN validate ") {
+		t.Fatalf("expected WARN prefix, got %q", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "WARN code=UNKNOWN_CLASS_ID") {
+		t.Fatalf("expected finding line, got %q", result.stdout)
+	}
+}
+
+func TestValidateErrorsAndExitsOneOnBrokenGraph(t *testing.T) {
+	result := runCLI(t, "scene", "validate", "testdata/broken/duplicate_fileid.unity")
+	if result.exitCode != 1 {
+		t.Fatalf("ERROR must exit 1, got %d stdout=%q", result.exitCode, result.stdout)
+	}
+	lines := strings.Split(strings.TrimSpace(result.stdout), "\n")
+	if !strings.HasPrefix(lines[0], "ERROR validate ") || !strings.Contains(lines[0], "errors=1") {
+		t.Fatalf("first line mismatch: got %q", lines[0])
+	}
+	if lines[1] != "ERROR code=DUPLICATE_FILE_ID file_id=1000 duplicates=2" {
+		t.Fatalf("finding line mismatch: got %q", lines[1])
+	}
+}
+
+func TestValidateJSONCarriesPayload(t *testing.T) {
+	result := runCLI(t, "scene", "validate", "testdata/broken/duplicate_fileid.unity", "--json")
+	if result.exitCode != 1 {
+		t.Fatalf("exit code mismatch: got %d", result.exitCode)
+	}
+	var got struct {
+		Status   string `json:"status"`
+		Validate struct {
+			Errors   int `json:"errors"`
+			Findings []struct {
+				Severity string `json:"severity"`
+				Code     string `json:"code"`
+			} `json:"findings"`
+		} `json:"validate"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &got); err != nil {
+		t.Fatalf("parse json: %v\nstdout=%q", err, result.stdout)
+	}
+	if got.Status != "ERROR" || got.Validate.Errors != 1 || len(got.Validate.Findings) != 1 {
+		t.Fatalf("payload mismatch: %+v", got)
+	}
+	if got.Validate.Findings[0].Code != "DUPLICATE_FILE_ID" {
+		t.Fatalf("finding code mismatch: %+v", got.Validate.Findings[0])
+	}
+}
+
+func TestValidateRejectsIrrelevantFlags(t *testing.T) {
+	result := runCLI(t, "prefab", "validate", "testdata/prefabs/enemy.prefab", "--id", "1000")
+	if result.exitCode != 2 {
+		t.Fatalf("expected usage error, got %d stdout=%q", result.exitCode, result.stdout)
+	}
+}
