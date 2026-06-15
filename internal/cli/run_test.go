@@ -2453,9 +2453,44 @@ func TestSceneSuggestRejectsIrrelevantFlags(t *testing.T) {
 	if result.stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", result.stdout)
 	}
-	want := "ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --project, --scenes, --prefabs, --position, --op, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode\n"
+	want := "ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --scenes, --prefabs, --position, --op, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode\n"
 	if result.stderr != want {
 		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
+	}
+}
+
+func TestSceneSuggestAcceptsProjectForGUIDAutoResolve(t *testing.T) {
+	project := t.TempDir()
+	prefabAbs := filepath.Join(project, "Assets", "Prefabs", "chair.prefab")
+	if err := os.MkdirAll(filepath.Dir(prefabAbs), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(prefabAbs, []byte("--- !u!1 &1000\nGameObject:\n  m_Name: chair\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.WriteFile(prefabAbs+".meta", []byte("fileFormatVersion: 2\nguid: 3e8a1f2b4c5d6e7f8a9b0c1d2e3f4a5b\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(.meta) error = %v", err)
+	}
+
+	outFile := filepath.Join(project, "out.patch.json")
+	result := runCLI(t,
+		"scene", "suggest", "testdata/scenes/simple_scene.unity",
+		"--manifest", "testdata/manifests/simple_scene.bounds.json",
+		"--prefab", "Assets/Prefabs/chair.prefab",
+		"--near", "1000",
+		"--project", project,
+		"--pick", "1",
+		"--out", outFile,
+	)
+	if result.exitCode != 0 {
+		t.Fatalf("expected exit 0, got %d stderr=%q stdout=%q", result.exitCode, result.stderr, result.stdout)
+	}
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("patch file not created: %v", err)
+	}
+	if !strings.Contains(string(data), `"prefab_guid":"3e8a1f2b4c5d6e7f8a9b0c1d2e3f4a5b"`) {
+		t.Fatalf("patch did not carry the auto-resolved guid:\n%s", string(data))
 	}
 }
 

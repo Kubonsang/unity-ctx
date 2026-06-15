@@ -336,6 +336,7 @@ Optional flags:
 - `--count`
 - `--align`
 - `--json`
+- `--project` (with `--out`: auto-resolve the prefab GUID from `.meta`; see v0.5d below)
 
 Rules:
 
@@ -417,7 +418,7 @@ ERROR suggest requires --near
 ERROR suggest requires --count >= 1
 ERROR suggest supports only --align floor|grid
 ERROR suggest supports only --view compact
-ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --project, --scenes, --prefabs, --position, --op, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode
+ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --scenes, --prefabs, --position, --op, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode
 ERROR missing anchor near="Missing"
 ERROR AMBIGUOUS_NAME name="Table_01" matches=2
 ERROR missing prefab manifest entry for path="Assets/Prefabs/Missing.prefab"
@@ -455,6 +456,7 @@ unity-ctx scene apply Stage01.unity --patch chair.patch.json --write
 - `--out <file>` triggers patch output: writes a diff/apply-compatible patch artifact for the selected candidate rank.
 - `--pick <n>` (default `1`) selects which candidate rank to write. Requires `--out`.
 - `--prefab-guid <guid>` embeds the GUID in the written patch. Requires `--out`. Without it, the patch has `status=UNKNOWN`.
+- `--project <root>` lets suggest auto-resolve the prefab GUID from its `.meta` file when `--prefab-guid` is omitted (relative prefab paths are retried under the project root). Same behavior as `scene patch --project`. If resolution fails, the patch stays `status=UNKNOWN` — never a guess.
 - `--pick` and `--prefab-guid` are rejected when `--out` is not set.
 - Without `--out`, suggest output is byte-for-byte identical to v0.5c behavior.
 - The written patch file is identical in schema to `scene patch --json` output and is usable by `scene diff` and `scene apply --write`.
