@@ -106,7 +106,7 @@ unity-ctx scene apply Stage01.unity --patch /tmp/chair.patch.json --write
 |-----------|----------|
 | `BLOCKED ... phase=pre_check` | Target file is already broken. Stop. Report the `CHECK`/`ERROR` lines. Never patch raw YAML. |
 | `BLOCKED ... phase=temp_check` | This change would corrupt the file. Discard the plan; go back to `inspect`/`query`. |
-| `ERROR WRITE_COMMITTED ... phase=final_check backup=<p>` | Write committed then failed verification. Restore from `<p>` (the `.bak`), then report. |
+| `ERROR WRITE_COMMITTED ... phase=final_check backup=<p>` | Write committed then failed verification. Recover with `unity-ctx <ns> restore <file>` (restores `<file>.bak`), then report. |
 | `NEED_PREFAB_GUID` | Run `unity-ctx meta guid <prefab> --project .`. If `.meta` is absent, the asset must be imported in Unity. |
 | `UNKNOWN` (patch) | Do not `apply` until the GUID is resolved. |
 | `OMITTED` | Raise `--max-tokens` or narrow the query. |

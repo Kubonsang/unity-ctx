@@ -3920,3 +3920,62 @@ func TestValidateRejectsIrrelevantFlags(t *testing.T) {
 		t.Fatalf("expected usage error, got %d stdout=%q", result.exitCode, result.stdout)
 	}
 }
+
+func TestRestoreRecoversFromBackup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.asset")
+	src := []byte("%YAML 1.1\n" +
+		"%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: EnemyConfig\n" +
+		"  m_Script: {fileID: 11500000, guid: f0e1d2c3b4a5968778695a4b3c2d1e0f, type: 3}\n" +
+		"  maxHealth: 200\n")
+	if err := os.WriteFile(path, src, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Mutate (creates .bak), then restore.
+	w := runCLI(t, "asset", "set", path, "--field", "maxHealth", "--value", "999", "--write")
+	if w.exitCode != 0 || !strings.HasPrefix(w.stdout, "WRITE ") {
+		t.Fatalf("set --write failed: code=%d stdout=%q", w.exitCode, w.stdout)
+	}
+
+	r := runCLI(t, "asset", "restore", path)
+	if r.exitCode != 0 {
+		t.Fatalf("restore exit code: got %d stderr=%q", r.exitCode, r.stderr)
+	}
+	if !strings.HasPrefix(r.stdout, "OK restore file="+path+" backup="+path+".bak bytes=") || !strings.Contains(r.stdout, "check=OK") {
+		t.Fatalf("restore stdout mismatch: got %q", r.stdout)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if string(after) != string(src) {
+		t.Fatalf("restore did not recover original content")
+	}
+}
+
+func TestRestoreErrorsWhenNoBackup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.asset")
+	if err := os.WriteFile(path, []byte("--- !u!114 &1\nMonoBehaviour:\n  m_Name: X\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	r := runCLI(t, "asset", "restore", path)
+	if r.exitCode != 1 {
+		t.Fatalf("expected exit 1, got %d stdout=%q", r.exitCode, r.stdout)
+	}
+	if !strings.HasPrefix(r.stdout, "ERROR restore no backup found backup="+path+".bak") {
+		t.Fatalf("stdout mismatch: got %q", r.stdout)
+	}
+}
+
+func TestRestoreRejectsIrrelevantFlags(t *testing.T) {
+	r := runCLI(t, "asset", "restore", "testdata/assets/enemy_config.asset", "--field", "x")
+	if r.exitCode != 2 {
+		t.Fatalf("expected usage error, got %d stdout=%q", r.exitCode, r.stdout)
+	}
+}
