@@ -1,9 +1,9 @@
 package app
 
 import (
-	"unity-ctx/internal/bounds"
-	"unity-ctx/internal/core"
-	scenepatch "unity-ctx/internal/patch"
+	"github.com/Kubonsang/unity-ctx/internal/bounds"
+	"github.com/Kubonsang/unity-ctx/internal/core"
+	scenepatch "github.com/Kubonsang/unity-ctx/internal/patch"
 )
 
 type QueryArgs struct {

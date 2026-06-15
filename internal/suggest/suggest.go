@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"unity-ctx/internal/bounds"
-	"unity-ctx/internal/check"
+	"github.com/Kubonsang/unity-ctx/internal/bounds"
+	"github.com/Kubonsang/unity-ctx/internal/check"
 )
 
 type Align string

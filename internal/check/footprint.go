@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"unity-ctx/internal/bounds"
+	"github.com/Kubonsang/unity-ctx/internal/bounds"
 )
 
 type PlacementResult struct {

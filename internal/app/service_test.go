@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"unity-ctx/internal/app"
-	"unity-ctx/internal/bounds"
-	"unity-ctx/internal/contextpack"
-	"unity-ctx/internal/core"
+	"github.com/Kubonsang/unity-ctx/internal/app"
+	"github.com/Kubonsang/unity-ctx/internal/bounds"
+	"github.com/Kubonsang/unity-ctx/internal/contextpack"
+	"github.com/Kubonsang/unity-ctx/internal/core"
 )
 
 type fakeScanRunner struct {

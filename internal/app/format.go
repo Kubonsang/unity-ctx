@@ -7,14 +7,15 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unity-ctx/internal/bench"
-	"unity-ctx/internal/core"
-	"unity-ctx/internal/document"
-	impactscan "unity-ctx/internal/impact"
-	"unity-ctx/internal/mutation"
-	"unity-ctx/internal/parser"
-	scenepatch "unity-ctx/internal/patch"
-	suggestplan "unity-ctx/internal/suggest"
+
+	"github.com/Kubonsang/unity-ctx/internal/bench"
+	"github.com/Kubonsang/unity-ctx/internal/core"
+	"github.com/Kubonsang/unity-ctx/internal/document"
+	impactscan "github.com/Kubonsang/unity-ctx/internal/impact"
+	"github.com/Kubonsang/unity-ctx/internal/mutation"
+	"github.com/Kubonsang/unity-ctx/internal/parser"
+	scenepatch "github.com/Kubonsang/unity-ctx/internal/patch"
+	suggestplan "github.com/Kubonsang/unity-ctx/internal/suggest"
 )
 
 func formatCheckBody(prefix, manifestPath, prefabPath string, position [3]float64, overlapIDs []int64) string {

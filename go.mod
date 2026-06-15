@@ -1,4 +1,4 @@
-module unity-ctx
+module github.com/Kubonsang/unity-ctx
 
 go 1.22
 

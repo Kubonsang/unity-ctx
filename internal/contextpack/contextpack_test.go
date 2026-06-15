@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"unity-ctx/internal/parser"
+	"github.com/Kubonsang/unity-ctx/internal/parser"
 )
 
 func TestEstimateTokensUsesUtf8BytesDiv4(t *testing.T) {

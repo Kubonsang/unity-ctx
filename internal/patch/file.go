@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"unity-ctx/internal/bounds"
-	"unity-ctx/internal/core"
+	"github.com/Kubonsang/unity-ctx/internal/bounds"
+	"github.com/Kubonsang/unity-ctx/internal/core"
 )
 
 const FileSchemaVersion = 1

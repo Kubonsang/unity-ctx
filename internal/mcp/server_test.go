@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"unity-ctx/internal/app"
+	"github.com/Kubonsang/unity-ctx/internal/app"
 )
 
 // run feeds the given JSON-RPC request lines through Serve and returns the

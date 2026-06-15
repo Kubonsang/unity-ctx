@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"unity-ctx/internal/document"
-	"unity-ctx/internal/parser"
+	"github.com/Kubonsang/unity-ctx/internal/document"
+	"github.com/Kubonsang/unity-ctx/internal/parser"
 )
 
 var renameFile = os.Rename

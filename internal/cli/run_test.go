@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"unity-ctx/internal/bounds"
-	"unity-ctx/internal/contextpack"
+	"github.com/Kubonsang/unity-ctx/internal/bounds"
+	"github.com/Kubonsang/unity-ctx/internal/contextpack"
 )
 
 func TestMainMissingFileArgument(t *testing.T) {
