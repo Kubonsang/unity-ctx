@@ -12,11 +12,33 @@ Namespaces:
 - `prefab`
 - `asset`
 
+## Help
+
+```bash
+unity-ctx --help                       # overview: namespaces + command lists
+unity-ctx scene suggest --help         # per-command synopsis + flags
+```
+
+`--help`/`-h` anywhere on the line prints usage and exits `0`. With a known
+command present it prints that command's synopsis and flags; otherwise the
+general overview.
+
+## Argument diagnostics
+
+Malformed invocations name the real problem instead of a generic error:
+
+```text
+unity-ctx bench Stage01.unity       → ERROR "bench" is a command, not a namespace — did you omit the namespace? e.g. unity-ctx scene bench ...
+unity-ctx scenez summarize x.unity  → ERROR unknown namespace "scenez" (expected scene, prefab, asset, meta, mcp)
+unity-ctx scene frobnicate x.unity  → ERROR unknown command "frobnicate" for namespace "scene"
+unity-ctx scene summarize           → ERROR missing file argument
+```
+
 ## Exit Codes
 
 - `0`: OK / WARN / UNKNOWN / BLOCKED / NEED_PREFAB_GUID
 - `1`: ERROR condition
-- `2`: tool execution error
+- `2`: tool execution error (incl. usage errors: unknown/omitted namespace or command, missing file)
 
 `BLOCKED` and `NEED_PREFAB_GUID` exit 0 because the tool worked correctly:
 the result is a safety-policy refusal or a missing precondition, not a failure.
