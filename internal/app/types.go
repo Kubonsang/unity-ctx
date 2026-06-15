@@ -210,6 +210,17 @@ type RefsPayload struct {
 	Issues     []RefsPayloadIssue     `json:"issues"`
 }
 
+type RestorePayload struct {
+	Backup string `json:"backup"`
+	Bytes  int    `json:"bytes"`
+	Check  string `json:"check"`
+}
+
+type RestoreResult struct {
+	core.Result
+	Restore *RestorePayload `json:"restore,omitempty"`
+}
+
 type ValidateFinding struct {
 	Severity string `json:"severity"`
 	Code     string `json:"code"`

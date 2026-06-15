@@ -130,6 +130,24 @@ func WriteWithBackup(path string, updated []byte) (string, error) {
 	return backupPath, nil
 }
 
+// RestoreFromBackup atomically overwrites path with the contents of backupPath,
+// returning the number of bytes restored. It is the inverse of the .bak written
+// by WriteWithBackup, used to recover from a committed write.
+func RestoreFromBackup(path, backupPath string) (int, error) {
+	data, err := os.ReadFile(backupPath)
+	if err != nil {
+		return 0, err
+	}
+	mode := os.FileMode(0o644)
+	if info, statErr := os.Stat(path); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := writeFileAtomically(path, data, mode); err != nil {
+		return 0, err
+	}
+	return len(data), nil
+}
+
 func writeFileAtomically(path string, data []byte, mode os.FileMode) (err error) {
 	dir := filepath.Dir(path)
 	pattern := filepath.Base(path) + ".tmp-*"

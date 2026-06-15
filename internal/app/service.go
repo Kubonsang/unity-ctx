@@ -941,6 +941,59 @@ func (s *Service) Validate(namespace, path string, view core.View, jsonOut bool)
 	return result, exitCode
 }
 
+// Restore overwrites a file with its sibling <file>.bak, recovering the
+// pre-write state left by the last committed mutation. It reports the
+// integrity status of the restored content so an agent knows what state it
+// recovered to.
+func (s *Service) Restore(namespace, path string, view core.View, jsonOut bool) (RestoreResult, int) {
+	result := RestoreResult{
+		Result: core.Result{
+			Namespace: namespace,
+			Command:   "restore",
+			File:      path,
+			View:      view,
+		},
+	}
+
+	if namespace != "scene" && namespace != "prefab" && namespace != "asset" {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR restore not implemented for namespace=%s", namespace)
+		return result, 1
+	}
+	if view != core.ViewCompact {
+		result.Status = "ERROR"
+		result.Body = "ERROR restore supports only --view compact"
+		return result, 1
+	}
+
+	backupPath := path + ".bak"
+	if _, err := os.Stat(backupPath); err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR restore no backup found backup=%s", backupPath)
+		return result, 1
+	}
+
+	bytesWritten, err := mutation.RestoreFromBackup(path, backupPath)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	restored, readErr := os.ReadFile(path)
+	check := "UNKNOWN"
+	if readErr == nil {
+		check = safety.CheckBytes(restored).Status
+	}
+
+	result.Status = "OK"
+	result.Body = fmt.Sprintf("OK restore file=%s backup=%s bytes=%d check=%s", path, backupPath, bytesWritten, check)
+	if jsonOut {
+		result.Restore = &RestorePayload{Backup: backupPath, Bytes: bytesWritten, Check: check}
+	}
+	return result, 0
+}
+
 func (s *Service) Impact(namespace, path string, view core.View, jsonOut bool, args ImpactArgs) (ImpactResult, int) {
 	result := ImpactResult{
 		Result: core.Result{

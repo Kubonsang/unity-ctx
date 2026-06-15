@@ -960,6 +960,36 @@ ERROR code=DUPLICATE_FILE_ID file_id=1000 duplicates=2
 `--json` adds a `validate` payload with the counts plus `findings[]`
 (`severity`, `code`, `detail?`).
 
+### restore
+
+```bash
+unity-ctx asset restore EnemyConfig.asset
+unity-ctx scene restore Stage01.unity --json
+```
+
+Optional flags:
+
+- `--json`
+
+Rules:
+
+- `restore` is implemented for the `scene`, `prefab`, and `asset` namespaces.
+- It overwrites `<file>` with its sibling `<file>.bak` — the pre-write backup
+  every committed mutation (`set`/`apply`) leaves behind — recovering the
+  prior state. The write is atomic.
+- `check=` reports the integrity status of the restored content (`OK`/`WARN`/
+  `ERROR`) so an agent knows what state it recovered to.
+- Exit `0` on success; `1` if no `<file>.bak` exists or the write fails.
+
+Output:
+
+```text
+OK restore file=EnemyConfig.asset backup=EnemyConfig.asset.bak bytes=213 check=OK
+ERROR restore no backup found backup=EnemyConfig.asset.bak
+```
+
+`--json` adds a `restore` payload (`backup`, `bytes`, `check`).
+
 ## Output Stability Rules
 
 - No timestamps in default output.
