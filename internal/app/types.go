@@ -210,6 +210,30 @@ type RefsPayload struct {
 	Issues     []RefsPayloadIssue     `json:"issues"`
 }
 
+type DepsArgs struct {
+	Project string
+	Out     string
+}
+
+type DepEdge struct {
+	GUID     string `json:"guid"`
+	Path     string `json:"path,omitempty"`
+	Resolved bool   `json:"resolved"`
+}
+
+type DepsPayload struct {
+	Project      string    `json:"project"`
+	Refs         int       `json:"refs"`
+	Resolved     int       `json:"resolved"`
+	Unresolved   int       `json:"unresolved"`
+	Dependencies []DepEdge `json:"dependencies"`
+}
+
+type DepsResult struct {
+	core.Result
+	Deps *DepsPayload `json:"deps,omitempty"`
+}
+
 type RestorePayload struct {
 	Backup string `json:"backup"`
 	Bytes  int    `json:"bytes"`

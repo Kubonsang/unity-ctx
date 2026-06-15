@@ -990,6 +990,46 @@ ERROR restore no backup found backup=EnemyConfig.asset.bak
 
 `--json` adds a `restore` payload (`backup`, `bytes`, `check`).
 
+### deps
+
+```bash
+unity-ctx prefab deps Assets/Prefabs/Enemy.prefab --project /path/to/project
+unity-ctx scene deps Assets/Scenes/Dungeon.unity --project . --out deps.dot
+unity-ctx asset deps Assets/Mats/Wood.mat --project . --json
+```
+
+Required flags:
+
+- `--project`
+
+Optional flags:
+
+- `--out` (write a Graphviz DOT graph to the given file)
+- `--json`
+
+Rules:
+
+- `deps` is implemented for the `scene`, `prefab`, and `asset` namespaces.
+- It lists the **external asset dependencies** of a file: the GUIDs it
+  references (extracted via the safety kernel) resolved to asset paths by
+  scanning the project's `.meta` files. Read-only.
+- A GUID with no matching `.meta` under `--project` is reported `path=UNKNOWN`
+  (e.g. a script whose `.cs.meta` is absent) — never guessed.
+- Output is deterministic (dependencies sorted by GUID). Exit `0`.
+
+Output:
+
+```text
+OK deps file=Assets/Prefabs/Box.prefab project=. refs=2 resolved=1 unresolved=1
+DEP guid=0123456789abcdef0123456789abcdef path=Assets/Materials/Wood.mat
+DEP guid=ffffffffffffffffffffffffffffffff path=UNKNOWN
+DOT_OUT file=deps.dot
+```
+
+`--out` writes a `digraph deps { ... }` (file → dependency edges; unresolved
+targets shown as `guid:<g>`), pipeable to `dot -Tpng`. `--json` adds a `deps`
+payload (`project`, `refs`, `resolved`, `unresolved`, `dependencies[]`).
+
 ## Output Stability Rules
 
 - No timestamps in default output.
