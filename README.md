@@ -48,12 +48,11 @@ go build -o unity-ctx ./cmd/unity-ctx
 
 No external runtime dependencies.
 
-> **Building from source (v0.6+):** unity-ctx embeds the
+> **Building from source (v0.6+):** unity-ctx depends on the
 > [unity-fileid-graph](https://github.com/Kubonsang/unity-fileid-graph) safety
-> kernel as a Go library. Until a tagged release (`v0.9.0`) is published, the
-> `go.mod` `replace` directive expects a sibling checkout of that repository;
-> adjust the path or drop the directive once the tag exists. The produced
-> binary remains a single static executable with no runtime dependencies.
+> kernel (`require ...unity-fileid-graph v0.9.0`), fetched automatically from
+> GitHub by the Go toolchain — no manual setup. The produced binary remains a
+> single static executable with no runtime dependencies.
 
 ## Supported File Types
 
