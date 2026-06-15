@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,12 +15,21 @@ import (
 	"unity-ctx/internal/bounds"
 	"unity-ctx/internal/contextpack"
 	"unity-ctx/internal/core"
+	"unity-ctx/internal/mcp"
 	"unity-ctx/internal/parser"
 )
 
 func Run(args []string, stdout, stderr io.Writer) int {
 	if isHelpArgs(args) {
 		_, _ = io.WriteString(stdout, usageText())
+		return 0
+	}
+
+	if len(args) >= 1 && args[0] == "mcp" {
+		if err := mcp.Serve(app.New(), os.Stdin, stdout); err != nil {
+			_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
+			return 2
+		}
 		return 0
 	}
 

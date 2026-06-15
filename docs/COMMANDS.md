@@ -1030,6 +1030,37 @@ DOT_OUT file=deps.dot
 targets shown as `guid:<g>`), pipeable to `dot -Tpng`. `--json` adds a `deps`
 payload (`project`, `refs`, `resolved`, `unresolved`, `dependencies[]`).
 
+### mcp
+
+```bash
+unity-ctx mcp
+```
+
+Runs an [MCP](https://modelcontextprotocol.io) server over stdio (newline-delimited
+JSON-RPC 2.0), so MCP hosts (Claude Code, etc.) can call unity-ctx's read-only
+commands as native tools instead of shelling out.
+
+Rules:
+
+- Takes no file argument; reads JSON-RPC requests from stdin, writes responses to stdout.
+- Implements `initialize`, `tools/list`, `tools/call`, `ping`.
+- Exposes **read-only** tools only — mutations stay behind the CLI's
+  dry-run-first `--write` contract: `unity_summarize`, `unity_validate`,
+  `unity_refs`, `unity_query`, `unity_get`, `unity_deps`, `unity_impact`.
+- A tool whose underlying command exits non-zero returns `isError: true` with
+  the command output as text content.
+
+Example session (stdin → stdout):
+
+```text
+→ {"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"unity-ctx","version":"0.6.0"}}}
+→ {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unity_validate","arguments":{"namespace":"prefab","file":"Enemy.prefab"}}}
+← {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"OK validate ..."}],"isError":false}}
+```
+
+Register in Claude Code with `claude mcp add unity-ctx -- unity-ctx mcp`.
+
 ## Output Stability Rules
 
 - No timestamps in default output.
