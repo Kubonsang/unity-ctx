@@ -1,11 +1,13 @@
 BINARY := unity-ctx
 CMD := ./cmd/unity-ctx
 SMOKE_SCENE := testdata/scenes/simple_scene.unity
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X github.com/Kubonsang/unity-ctx/internal/version.Version=$(VERSION)
 
 .PHONY: build test vet lint smoke clean
 
 build:
-	go build -o $(BINARY) $(CMD)
+	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(CMD)
 
 test:
 	go test ./...
