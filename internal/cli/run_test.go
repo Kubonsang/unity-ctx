@@ -3979,3 +3979,62 @@ func TestRestoreRejectsIrrelevantFlags(t *testing.T) {
 		t.Fatalf("expected usage error, got %d stdout=%q", r.exitCode, r.stdout)
 	}
 }
+
+func TestDepsResolvesAndReportsUnresolved(t *testing.T) {
+	root := t.TempDir()
+	mkfile := func(rel, content string) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	// A material asset with a known GUID + its .meta.
+	mkfile("Assets/Materials/Wood.mat", "--- !u!21 &2100000\nMaterial:\n  m_Name: Wood\n")
+	mkfile("Assets/Materials/Wood.mat.meta", "fileFormatVersion: 2\nguid: 0123456789abcdef0123456789abcdef\n")
+	// A prefab referencing the material GUID plus an unknown GUID.
+	prefab := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!1 &1000\nGameObject:\n  m_Name: Box\n  m_Component:\n  - component: {fileID: 4000}\n  - component: {fileID: 2300000}\n" +
+		"--- !u!4 &4000\nTransform:\n  m_GameObject: {fileID: 1000}\n  m_Father: {fileID: 0}\n  m_Children: []\n" +
+		"--- !u!23 &2300000\nMeshRenderer:\n  m_GameObject: {fileID: 1000}\n  m_Materials:\n  - {fileID: 2100000, guid: 0123456789abcdef0123456789abcdef, type: 2}\n  m_Mesh: {fileID: 4300000, guid: ffffffffffffffffffffffffffffffff, type: 3}\n"
+	mkfile("Assets/Prefabs/Box.prefab", prefab)
+
+	r := runCLI(t, "prefab", "deps", filepath.Join(root, "Assets/Prefabs/Box.prefab"), "--project", root)
+	if r.exitCode != 0 {
+		t.Fatalf("exit code: got %d stderr=%q", r.exitCode, r.stderr)
+	}
+	if !strings.Contains(r.stdout, "refs=2 resolved=1 unresolved=1") {
+		t.Fatalf("summary mismatch: %q", r.stdout)
+	}
+	if !strings.Contains(r.stdout, "DEP guid=0123456789abcdef0123456789abcdef path=Assets/Materials/Wood.mat") {
+		t.Fatalf("resolved dep missing: %q", r.stdout)
+	}
+	if !strings.Contains(r.stdout, "DEP guid=ffffffffffffffffffffffffffffffff path=UNKNOWN") {
+		t.Fatalf("unresolved dep missing: %q", r.stdout)
+	}
+}
+
+func TestDepsRequiresProject(t *testing.T) {
+	r := runCLI(t, "prefab", "deps", "testdata/prefabs/enemy.prefab")
+	if r.exitCode != 1 || !strings.HasPrefix(r.stdout, "ERROR deps requires --project") {
+		t.Fatalf("expected requires --project, got code=%d stdout=%q", r.exitCode, r.stdout)
+	}
+}
+
+func TestDepsWritesDOT(t *testing.T) {
+	root := t.TempDir()
+	dot := filepath.Join(root, "g.dot")
+	r := runCLI(t, "asset", "deps", "testdata/assets/enemy_config.asset", "--project", ".", "--out", dot)
+	if r.exitCode != 0 {
+		t.Fatalf("exit code: got %d stderr=%q", r.exitCode, r.stderr)
+	}
+	data, err := os.ReadFile(dot)
+	if err != nil {
+		t.Fatalf("dot not written: %v", err)
+	}
+	if !strings.HasPrefix(string(data), "digraph deps {") {
+		t.Fatalf("dot content mismatch: %q", string(data))
+	}
+}

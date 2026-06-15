@@ -14,6 +14,7 @@ import (
 	"unity-ctx/internal/check"
 	"unity-ctx/internal/contextpack"
 	"unity-ctx/internal/core"
+	"unity-ctx/internal/deps"
 	"unity-ctx/internal/document"
 	impactscan "unity-ctx/internal/impact"
 	"unity-ctx/internal/index"
@@ -939,6 +940,124 @@ func (s *Service) Validate(namespace, path string, view core.View, jsonOut bool)
 		exitCode = 1
 	}
 	return result, exitCode
+}
+
+// Deps reports the external asset dependencies of a file: the GUIDs it
+// references (via the safety kernel) resolved to asset paths within --project.
+// Text by default, --json for a structured payload, --out writes a Graphviz
+// DOT graph. Read-only.
+func (s *Service) Deps(namespace, path string, view core.View, jsonOut bool, args DepsArgs) (DepsResult, int) {
+	result := DepsResult{
+		Result: core.Result{
+			Namespace: namespace,
+			Command:   "deps",
+			File:      path,
+			View:      view,
+		},
+	}
+
+	if namespace != "scene" && namespace != "prefab" && namespace != "asset" {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR deps not implemented for namespace=%s", namespace)
+		return result, 1
+	}
+	if view != core.ViewCompact {
+		result.Status = "ERROR"
+		result.Body = "ERROR deps supports only --view compact"
+		return result, 1
+	}
+	if strings.TrimSpace(args.Project) == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR deps requires --project"
+		return result, 1
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	report, err := safety.ExtractRefs(data, namespace, path)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	guids := make([]string, 0, len(report.Refs))
+	for _, ref := range report.Refs {
+		if ref.HasGUID {
+			guids = append(guids, ref.GUID)
+		}
+	}
+
+	index, err := deps.BuildIndex(args.Project)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	resolutions := deps.Resolve(index, guids)
+
+	resolved, unresolved := 0, 0
+	for _, r := range resolutions {
+		if r.Resolved {
+			resolved++
+		} else {
+			unresolved++
+		}
+	}
+
+	if strings.TrimSpace(args.Out) != "" {
+		if err := os.WriteFile(args.Out, []byte(renderDepsDOT(path, resolutions)), 0o644); err != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR %v", err)
+			return result, 1
+		}
+	}
+
+	lines := []string{fmt.Sprintf(
+		"OK deps file=%s project=%s refs=%d resolved=%d unresolved=%d",
+		path, args.Project, len(resolutions), resolved, unresolved,
+	)}
+	for _, r := range resolutions {
+		p := r.Path
+		if !r.Resolved {
+			p = "UNKNOWN"
+		}
+		lines = append(lines, fmt.Sprintf("DEP guid=%s path=%s", r.GUID, p))
+	}
+	if strings.TrimSpace(args.Out) != "" {
+		lines = append(lines, fmt.Sprintf("DOT_OUT file=%s", args.Out))
+	}
+
+	result.Status = "OK"
+	result.Body = strings.Join(lines, "\n")
+	if jsonOut {
+		payload := &DepsPayload{Project: args.Project, Refs: len(resolutions), Resolved: resolved, Unresolved: unresolved, Dependencies: []DepEdge{}}
+		for _, r := range resolutions {
+			payload.Dependencies = append(payload.Dependencies, DepEdge{GUID: r.GUID, Path: r.Path, Resolved: r.Resolved})
+		}
+		result.Deps = payload
+	}
+	return result, 0
+}
+
+func renderDepsDOT(file string, resolutions []deps.Resolution) string {
+	var b strings.Builder
+	b.WriteString("digraph deps {\n")
+	b.WriteString("  rankdir=LR;\n")
+	fmt.Fprintf(&b, "  %q;\n", file)
+	for _, r := range resolutions {
+		target := r.Path
+		if !r.Resolved {
+			target = "guid:" + r.GUID
+		}
+		fmt.Fprintf(&b, "  %q -> %q;\n", file, target)
+	}
+	b.WriteString("}\n")
+	return b.String()
 }
 
 // Restore overwrites a file with its sibling <file>.bak, recovering the

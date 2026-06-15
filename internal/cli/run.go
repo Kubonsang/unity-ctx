@@ -108,7 +108,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --mode, --scenes, or --prefabs\n", command)
 		return 2
 	}
-	if command != "scan" && command != "impact" && command != "suggest" && command != "patch" && !(command == "set" && namespace == "prefab") && anyFlagVisited(seenFlags, "mode", "project", "scenes", "prefabs") {
+	if command != "scan" && command != "impact" && command != "suggest" && command != "patch" && command != "deps" && !(command == "set" && namespace == "prefab") && anyFlagVisited(seenFlags, "mode", "project", "scenes", "prefabs") {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --mode, --project, --scenes, or --prefabs\n", command)
 		return 2
 	}
@@ -495,6 +495,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
+	if command == "deps" {
+		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "value", "write", "manifest", "prefab", "position", "op", "prefab-guid", "task", "focus", "max-tokens", "mode", "scenes", "prefabs", "patch") {
+			_, _ = io.WriteString(stderr, "ERROR deps accepts only --project, --out, --json, and --view compact\n")
+			return 2
+		}
+	}
 	if command == "suggest" {
 		if namespace != "scene" {
 			_, _ = fmt.Fprintf(stderr, "ERROR suggest not implemented for namespace=%s\n", namespace)
@@ -669,6 +675,25 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 		_, _ = io.WriteString(stdout, restoreResult.Body+"\n")
 		return restoreExitCode
+	}
+	if command == "deps" {
+		depsResult, depsExitCode := service.Deps(namespace, file, selectedView, *jsonOutput, app.DepsArgs{
+			Project: *project,
+			Out:     *out,
+		})
+
+		if *jsonOutput {
+			encoder := json.NewEncoder(stdout)
+			encoder.SetEscapeHTML(false)
+			if err := encoder.Encode(depsResult); err != nil {
+				_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
+				return 2
+			}
+			return depsExitCode
+		}
+
+		_, _ = io.WriteString(stdout, depsResult.Body+"\n")
+		return depsExitCode
 	}
 	if command == "impact" {
 		impactResult, impactExitCode := service.Impact(namespace, file, selectedView, *jsonOutput, app.ImpactArgs{
