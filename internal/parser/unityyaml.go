@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 var headerPattern = regexp.MustCompile(`^--- !u!(\d+) &(-?\d+)(?:\s+stripped)?\s*$`)
@@ -31,6 +32,14 @@ func ParseFile(path string) ([]Block, error) {
 }
 
 func Parse(data []byte) ([]Block, error) {
+	// Unity YAML is always UTF-8. Reject malformed bytes up front so callers get
+	// a clear, deterministic error instead of having undecodable bytes silently
+	// flow into block bodies and field values. Empty/header-only input is valid
+	// (it simply yields zero blocks) and is unaffected by this check.
+	if !utf8.Valid(data) {
+		return nil, fmt.Errorf("input is not valid UTF-8")
+	}
+
 	lines := splitLines(data)
 	var blocks []Block
 

@@ -1,7 +1,11 @@
 package parser
 
 import (
+	"fmt"
 	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -477,5 +481,165 @@ Material:
 	}
 	if meta["n"] != int64(1) {
 		t.Fatalf("n mismatch: got %#v want %d", meta["n"], 1)
+	}
+}
+
+func TestParseEmptyInputReturnsNoBlocks(t *testing.T) {
+	blocks, err := Parse([]byte{})
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(blocks) != 0 {
+		t.Fatalf("block count mismatch: got %d want 0", len(blocks))
+	}
+}
+
+func TestParseNilInputReturnsNoBlocks(t *testing.T) {
+	blocks, err := Parse(nil)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(blocks) != 0 {
+		t.Fatalf("block count mismatch: got %d want 0", len(blocks))
+	}
+}
+
+func TestParseHeaderOnlyInputReturnsNoBlocks(t *testing.T) {
+	input := []byte("%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n")
+
+	blocks, err := Parse(input)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(blocks) != 0 {
+		t.Fatalf("block count mismatch: got %d want 0", len(blocks))
+	}
+}
+
+func TestParseHeaderOnlyInputWithoutTrailingNewline(t *testing.T) {
+	// Preamble line with no terminating newline and no document blocks.
+	input := []byte("%YAML 1.1")
+
+	blocks, err := Parse(input)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(blocks) != 0 {
+		t.Fatalf("block count mismatch: got %d want 0", len(blocks))
+	}
+}
+
+func TestParseRejectsInvalidUTF8AtTopLevel(t *testing.T) {
+	input := []byte{0xff, 0xfe, 0x00, 0x01}
+
+	if _, err := Parse(input); err == nil {
+		t.Fatal("expected Parse() to reject invalid UTF-8 input")
+	}
+}
+
+func TestParseRejectsInvalidUTF8InsideBlockBody(t *testing.T) {
+	// A structurally valid header/body whose field value carries an invalid
+	// UTF-8 byte sequence. This must be rejected, not silently accepted, so the
+	// undecodable bytes never reach Fields or RawBody.
+	input := append([]byte("%YAML 1.1\n--- !u!1 &1000\nGameObject:\n  m_Name: "), 0xff, 0xfe)
+	input = append(input, '\n')
+
+	if _, err := Parse(input); err == nil {
+		t.Fatal("expected Parse() to reject invalid UTF-8 inside a block body")
+	}
+}
+
+// TestParseIsDeterministic guards against any non-determinism in parser output.
+// Go map iteration is randomized, so if any value-construction path in the
+// parser depended on map order the structured result could vary between runs.
+// We parse the same fixture many times and assert the results are byte-for-byte
+// identical once normalized into a key-ordered canonical form.
+func TestParseIsDeterministic(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "assets", "material.mat")
+
+	const iterations = 20
+	var reference string
+	for i := 0; i < iterations; i++ {
+		blocks, err := ParseFile(path)
+		if err != nil {
+			t.Fatalf("ParseFile() iteration %d error = %v", i, err)
+		}
+
+		canonical := canonicalizeBlocks(blocks)
+		if i == 0 {
+			reference = canonical
+			continue
+		}
+		if canonical != reference {
+			t.Fatalf("non-deterministic parse output on iteration %d:\n--- first ---\n%s\n--- iteration %d ---\n%s", i, reference, i, canonical)
+		}
+	}
+}
+
+func TestParseIsDeterministicAcrossAllFixtures(t *testing.T) {
+	fixtures := []string{
+		filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"),
+		filepath.Join("..", "..", "testdata", "prefabs", "unknown_component.prefab"),
+	}
+
+	for _, path := range fixtures {
+		path := path
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			first, err := ParseFile(path)
+			if err != nil {
+				t.Fatalf("ParseFile() error = %v", err)
+			}
+			second, err := ParseFile(path)
+			if err != nil {
+				t.Fatalf("ParseFile() error = %v", err)
+			}
+
+			a := canonicalizeBlocks(first)
+			b := canonicalizeBlocks(second)
+			if a != b {
+				t.Fatalf("non-deterministic parse output:\n--- first ---\n%s\n--- second ---\n%s", a, b)
+			}
+
+			// reflect.DeepEqual is order-insensitive for maps and so confirms
+			// the structured content (not just the canonical string) matches.
+			if !reflect.DeepEqual(first, second) {
+				t.Fatal("repeated ParseFile() produced structurally different blocks")
+			}
+		})
+	}
+}
+
+// canonicalizeBlocks renders parsed blocks into a stable, key-ordered string so
+// that two results can be compared independent of Go map iteration order.
+func canonicalizeBlocks(blocks []Block) string {
+	var sb strings.Builder
+	for _, block := range blocks {
+		fmt.Fprintf(&sb, "block classID=%d fileID=%d type=%q start=%d end=%d\n", block.ClassID, block.FileID, block.TypeName, block.StartLine, block.EndLine)
+		fmt.Fprintf(&sb, "rawBody=%q\n", block.RawBody)
+		canonicalizeValue(&sb, block.Fields, 0)
+	}
+	return sb.String()
+}
+
+func canonicalizeValue(sb *strings.Builder, value any, depth int) {
+	indent := strings.Repeat("  ", depth)
+	switch v := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(sb, "%s%s:\n", indent, k)
+			canonicalizeValue(sb, v[k], depth+1)
+		}
+	case []any:
+		for idx, item := range v {
+			fmt.Fprintf(sb, "%s- [%d]\n", indent, idx)
+			canonicalizeValue(sb, item, depth+1)
+		}
+	default:
+		fmt.Fprintf(sb, "%s= %T:%#v\n", indent, v, v)
 	}
 }
