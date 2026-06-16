@@ -3353,3 +3353,173 @@ func TestSetAssetFinalCheckSurfacesWithoutClobber(t *testing.T) {
 		t.Fatalf("on-disk write was unexpectedly altered:\n%s", string(after))
 	}
 }
+
+// repositionSceneContent is a sound single-Transform scene used by the
+// reposition service tests.
+const repositionSceneContent = "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+	"--- !u!1 &1000\nGameObject:\n  m_Name: Table_01\n  m_IsActive: 1\n" +
+	"  m_Component:\n  - component: {fileID: 1001}\n" +
+	"--- !u!4 &1001\nTransform:\n  m_GameObject: {fileID: 1000}\n" +
+	"  m_LocalPosition: {x: 5, y: 0, z: 3}\n" +
+	"  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}\n" +
+	"  m_LocalScale: {x: 1, y: 1, z: 1}\n" +
+	"  m_Father: {fileID: 0}\n  m_Children: []\n"
+
+func TestRepositionDryRunDoesNotWriteFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scene.unity")
+	if err := os.WriteFile(path, []byte(repositionSceneContent), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	got, code := app.New().Reposition("scene", path, core.ViewCompact, false, app.RepositionArgs{
+		HasID: true, ID: 1001, Position: [3]float64{1.5, 2, -3.4},
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "DRY_RUN id=1001 field=m_LocalPosition old=5,0,3 new=1.5,2,-3.4 changed=1 pre_check=OK temp_check=OK"
+	if got.Body != want {
+		t.Fatalf("body mismatch:\n got %q\nwant %q", got.Body, want)
+	}
+
+	data, _ := os.ReadFile(path)
+	if string(data) != repositionSceneContent {
+		t.Fatal("dry-run must not modify file")
+	}
+	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("dry-run must not create backup, stat err=%v", err)
+	}
+}
+
+func TestRepositionWriteCreatesBackupAndVerifies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scene.unity")
+	if err := os.WriteFile(path, []byte(repositionSceneContent), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	got, code := app.New().Reposition("scene", path, core.ViewCompact, false, app.RepositionArgs{
+		HasID: true, ID: 1001, Position: [3]float64{1.5, 2, -3.4}, Write: true,
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "WRITE backup=" + path + ".bak id=1001 field=m_LocalPosition old=5,0,3 new=1.5,2,-3.4 changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK"
+	if got.Body != want {
+		t.Fatalf("body mismatch:\n got %q\nwant %q", got.Body, want)
+	}
+
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "  m_LocalPosition: {x: 1.5, y: 2, z: -3.4}\n") {
+		t.Fatalf("updated file missing repositioned line:\n%s", string(data))
+	}
+	// Non-target fields untouched.
+	if !strings.Contains(string(data), "  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}\n") ||
+		!strings.Contains(string(data), "  m_LocalScale: {x: 1, y: 1, z: 1}\n") {
+		t.Fatalf("non-target fields altered:\n%s", string(data))
+	}
+	backup, _ := os.ReadFile(path + ".bak")
+	if string(backup) != repositionSceneContent {
+		t.Fatalf("backup mismatch:\n%s", string(backup))
+	}
+}
+
+func TestRepositionNoOpDoesNotWriteOrCreateBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scene.unity")
+	if err := os.WriteFile(path, []byte(repositionSceneContent), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	stamp := time.Unix(1_700_000_000, 0)
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+	before, _ := os.Stat(path)
+
+	got, code := app.New().Reposition("scene", path, core.ViewCompact, false, app.RepositionArgs{
+		HasID: true, ID: 1001, Position: [3]float64{5, 0, 3}, Write: true,
+	})
+	if code != 0 {
+		t.Fatalf("expected success, got code=%d body=%q", code, got.Body)
+	}
+
+	want := "OK id=1001 field=m_LocalPosition old=5,0,3 new=5,0,3 changed=0 verified=1 pre_check=OK temp_check=OK"
+	if got.Body != want {
+		t.Fatalf("body mismatch:\n got %q\nwant %q", got.Body, want)
+	}
+
+	after, _ := os.Stat(path)
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("no-op write changed mtime: got %v want %v", after.ModTime(), before.ModTime())
+	}
+	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("no-op write must not create backup, stat err=%v", err)
+	}
+}
+
+func TestRepositionBlocksWhenPreCheckFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scene.unity")
+	// Duplicate fileID 1000 -> DUPLICATE_FILE_ID (blocking) at pre_check.
+	broken := repositionSceneContent +
+		"--- !u!1 &1000\nGameObject:\n  m_Name: Dup\n  m_Component:\n  - component: {fileID: 1001}\n"
+	if err := os.WriteFile(path, []byte(broken), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	got, code := app.New().Reposition("scene", path, core.ViewCompact, false, app.RepositionArgs{
+		HasID: true, ID: 1001, Position: [3]float64{1, 2, 3}, Write: true,
+	})
+	if code != 0 {
+		t.Fatalf("BLOCKED must exit 0, got code=%d body=%q", code, got.Body)
+	}
+	if !strings.HasPrefix(got.Body, "BLOCKED code=GRAPH_CHECK_FAILED phase=pre_check") {
+		t.Fatalf("expected pre_check BLOCKED, got %q", got.Body)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != broken {
+		t.Fatal("BLOCKED write must leave the file untouched")
+	}
+}
+
+func TestRepositionRejectsNonSceneAndMissingID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scene.unity")
+	_ = os.WriteFile(path, []byte(repositionSceneContent), 0o644)
+
+	if got, code := app.New().Reposition("asset", path, core.ViewCompact, false, app.RepositionArgs{
+		HasID: true, ID: 1001, Position: [3]float64{1, 2, 3},
+	}); code != 1 || !strings.Contains(got.Body, "not implemented for namespace=asset") {
+		t.Fatalf("non-scene namespace: code=%d body=%q", code, got.Body)
+	}
+	if got, code := app.New().Reposition("scene", path, core.ViewCompact, false, app.RepositionArgs{
+		HasID: false, Position: [3]float64{1, 2, 3},
+	}); code != 1 || !strings.Contains(got.Body, "requires non-zero --id") {
+		t.Fatalf("missing id: code=%d body=%q", code, got.Body)
+	}
+}
+
+// TestRepositionFinalCheckSurfacesWithoutClobber mirrors the set no-auto-revert
+// policy for reposition: a final_check failure reports WRITE_COMMITTED (exit 1)
+// and leaves the committed on-disk write in place.
+func TestRepositionFinalCheckSurfacesWithoutClobber(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scene.unity")
+	if err := os.WriteFile(path, []byte(repositionSceneContent), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	orig := app.SetReadFinalState(func(string) ([]byte, error) { return []byte(brokenFinalState), nil })
+	defer app.SetReadFinalState(orig)
+
+	got, code := app.New().Reposition("scene", path, core.ViewCompact, false, app.RepositionArgs{
+		HasID: true, ID: 1001, Position: [3]float64{1, 2, 3}, Write: true,
+	})
+	if code != 1 {
+		t.Fatalf("final_check failure must exit 1, got %d body=%q", code, got.Body)
+	}
+	if !strings.HasPrefix(got.Body, "ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check") {
+		t.Fatalf("expected WRITE_COMMITTED, got %q", got.Body)
+	}
+	after, _ := os.ReadFile(path)
+	if !strings.Contains(string(after), "  m_LocalPosition: {x: 1, y: 2, z: 3}\n") {
+		t.Fatalf("committed write was unexpectedly altered:\n%s", string(after))
+	}
+}

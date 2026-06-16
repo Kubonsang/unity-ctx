@@ -607,6 +607,49 @@ func formatValue(value any) string {
 	}
 }
 
+// vec3FromAny interprets a parsed inline mapping as a Vector3, accepting only
+// exactly {x, y, z} of numbers. Used by reposition's post-write verification.
+func vec3FromAny(raw any) ([3]float64, bool) {
+	m, ok := raw.(map[string]any)
+	if !ok || len(m) != 3 {
+		return [3]float64{}, false
+	}
+	var vec [3]float64
+	for i, axis := range [3]string{"x", "y", "z"} {
+		value, ok := m[axis]
+		if !ok {
+			return [3]float64{}, false
+		}
+		f, ok := numericFloat(value)
+		if !ok {
+			return [3]float64{}, false
+		}
+		vec[i] = f
+	}
+	return vec, true
+}
+
+func numericFloat(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case int64:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case float64:
+		return typed, true
+	default:
+		return 0, false
+	}
+}
+
+func formatVec3Display(v [3]float64) string {
+	return strings.Join([]string{
+		strconv.FormatFloat(v[0], 'f', -1, 64),
+		strconv.FormatFloat(v[1], 'f', -1, 64),
+		strconv.FormatFloat(v[2], 'f', -1, 64),
+	}, ",")
+}
+
 func joinBlockFileIDs(blocks []parser.Block) string {
 	ids := make([]string, 0, len(blocks))
 	for _, block := range blocks {
