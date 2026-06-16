@@ -107,7 +107,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "ERROR invalid view %q\n", *view)
 		return 2
 	}
-	if command != "set" && command != "apply" && command != "scan" && command != "suggest" && seenFlags["write"] {
+	if command != "set" && command != "reposition" && command != "apply" && command != "scan" && command != "suggest" && seenFlags["write"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --write\n", command)
 		return 2
 	}
@@ -115,7 +115,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --value\n", command)
 		return 2
 	}
-	if command != "check" && command != "patch" && command != "scan" && command != "suggest" && anyFlagVisited(seenFlags, "manifest", "prefab", "position") {
+	if command != "check" && command != "patch" && command != "scan" && command != "suggest" && command != "reposition" && anyFlagVisited(seenFlags, "manifest", "prefab", "position") {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --manifest, --prefab, or --position\n", command)
 		return 2
 	}
@@ -412,6 +412,43 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
+	if command == "reposition" {
+		if namespace != "scene" {
+			_, _ = fmt.Fprintf(stderr, "ERROR reposition not implemented for namespace=%s\n", namespace)
+			return 2
+		}
+		if selectedView != core.ViewCompact {
+			_, _ = io.WriteString(stderr, "ERROR reposition supports only --view compact\n")
+			return 2
+		}
+		if anyFlagVisited(seenFlags, "name", "type", "component", "field", "out", "task", "focus", "max-tokens", "manifest", "prefab") {
+			_, _ = io.WriteString(stderr, "ERROR reposition does not accept --name, --type, --component, --field, --out, --task, --focus, --max-tokens, --manifest, or --prefab\n")
+			return 2
+		}
+		if !seenFlags["id"] {
+			_, _ = io.WriteString(stderr, "ERROR reposition requires --id\n")
+			return 2
+		}
+		if *fileID == 0 {
+			_, _ = io.WriteString(stderr, "ERROR reposition requires non-zero --id\n")
+			return 2
+		}
+		if !seenFlags["position"] {
+			_, _ = io.WriteString(stderr, "ERROR reposition requires --position\n")
+			return 2
+		}
+
+		var err error
+		parsedPosition, err = parsePosition(*position)
+		if err != nil {
+			_, _ = io.WriteString(stderr, "ERROR reposition requires --position as x,y,z\n")
+			return 2
+		}
+		if !positionIsFinite(parsedPosition) {
+			_, _ = io.WriteString(stderr, "ERROR reposition requires finite --position values\n")
+			return 2
+		}
+	}
 	if command == "diff" {
 		if namespace != "scene" {
 			_, _ = fmt.Fprintf(stderr, "ERROR diff not implemented for namespace=%s\n", namespace)
@@ -596,6 +633,27 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	service := app.New()
 	exitCode := 1
 
+	if command == "reposition" {
+		repositionResult, repositionExitCode := service.Reposition(namespace, file, selectedView, *jsonOutput, app.RepositionArgs{
+			HasID:    seenFlags["id"],
+			ID:       *fileID,
+			Position: parsedPosition,
+			Write:    *writeFlag,
+		})
+
+		if *jsonOutput {
+			encoder := json.NewEncoder(stdout)
+			encoder.SetEscapeHTML(false)
+			if err := encoder.Encode(repositionResult); err != nil {
+				_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
+				return 2
+			}
+			return repositionExitCode
+		}
+
+		_, _ = io.WriteString(stdout, repositionResult.Body+"\n")
+		return repositionExitCode
+	}
 	if command == "patch" {
 		patchResult, patchExitCode := service.Patch(namespace, file, selectedView, *jsonOutput, app.PatchArgs{
 			Op:          *op,

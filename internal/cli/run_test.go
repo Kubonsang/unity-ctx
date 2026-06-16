@@ -4142,3 +4142,90 @@ func TestVersionFlag(t *testing.T) {
 		}
 	}
 }
+
+func TestSceneRepositionRequiresID(t *testing.T) {
+	result := runCLI(t, "scene", "reposition", "testdata/scenes/simple_scene.unity", "--position", "1,2,3")
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stderr != "ERROR reposition requires --id\n" {
+		t.Fatalf("stderr mismatch: got %q", result.stderr)
+	}
+}
+
+func TestSceneRepositionRequiresPosition(t *testing.T) {
+	result := runCLI(t, "scene", "reposition", "testdata/scenes/simple_scene.unity", "--id", "1001")
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stderr != "ERROR reposition requires --position\n" {
+		t.Fatalf("stderr mismatch: got %q", result.stderr)
+	}
+}
+
+func TestSceneRepositionRejectsNonSceneNamespace(t *testing.T) {
+	result := runCLI(t, "asset", "reposition", "testdata/scenes/simple_scene.unity", "--id", "1001", "--position", "1,2,3")
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stderr != "ERROR reposition not implemented for namespace=asset\n" {
+		t.Fatalf("stderr mismatch: got %q", result.stderr)
+	}
+}
+
+func TestSceneRepositionRejectsSelectorFlags(t *testing.T) {
+	result := runCLI(t, "scene", "reposition", "testdata/scenes/simple_scene.unity",
+		"--id", "1001", "--position", "1,2,3", "--field", "m_LocalScale")
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if !strings.Contains(result.stderr, "reposition does not accept") || !strings.Contains(result.stderr, "--field") {
+		t.Fatalf("stderr mismatch: got %q", result.stderr)
+	}
+}
+
+func TestSceneRepositionRejectsNonFinitePosition(t *testing.T) {
+	result := runCLI(t, "scene", "reposition", "testdata/scenes/simple_scene.unity", "--id", "1001", "--position", "NaN,0,0")
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stderr != "ERROR reposition requires finite --position values\n" {
+		t.Fatalf("stderr mismatch: got %q", result.stderr)
+	}
+}
+
+func TestSceneRepositionDryRunCompactOutput(t *testing.T) {
+	result := runCLI(t, "scene", "reposition", "testdata/scenes/simple_scene.unity", "--id", "1001", "--position", "1.5,2,-3.4")
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q", result.exitCode, result.stderr)
+	}
+	want := "DRY_RUN id=1001 field=m_LocalPosition old=5,0,3 new=1.5,2,-3.4 changed=1 pre_check=OK temp_check=OK\n"
+	if result.stdout != want {
+		t.Fatalf("stdout mismatch:\n got %q\nwant %q", result.stdout, want)
+	}
+}
+
+func TestSceneRepositionWriteRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "scene.unity")
+	content := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!1 &1000\nGameObject:\n  m_Name: Table_01\n  m_Component:\n  - component: {fileID: 1001}\n" +
+		"--- !u!4 &1001\nTransform:\n  m_GameObject: {fileID: 1000}\n" +
+		"  m_LocalPosition: {x: 5, y: 0, z: 3}\n  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}\n" +
+		"  m_LocalScale: {x: 1, y: 1, z: 1}\n  m_Father: {fileID: 0}\n  m_Children: []\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	result := runCLI(t, "scene", "reposition", path, "--id", "1001", "--position", "1.5,2,-3.4", "--write")
+	if result.exitCode != 0 {
+		t.Fatalf("exit code mismatch: got %d want 0 stderr=%q", result.exitCode, result.stderr)
+	}
+	if !strings.HasPrefix(result.stdout, "WRITE backup="+path+".bak ") {
+		t.Fatalf("stdout mismatch: got %q", result.stdout)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "  m_LocalPosition: {x: 1.5, y: 2, z: -3.4}\n") {
+		t.Fatalf("file not repositioned:\n%s", string(data))
+	}
+}
