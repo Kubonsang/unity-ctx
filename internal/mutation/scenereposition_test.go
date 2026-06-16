@@ -243,6 +243,67 @@ func TestPlanSceneRepositionRectTransform(t *testing.T) {
 	}
 }
 
+// TestPlanSceneRepositionRefusesNonTransformClass proves the class guard: a
+// block that is not a Transform/RectTransform is refused at the class stage —
+// before field resolution — even when it carries an m_LocalPosition {x, y, z}
+// of its own. The file must be left byte-untouched.
+func TestPlanSceneRepositionRefusesNonTransformClass(t *testing.T) {
+	tests := []struct {
+		name      string
+		classLine string
+		typeName  string
+		id        int64
+		wantClass string
+	}{
+		{"MonoBehaviour", "--- !u!114 &900\n", "MonoBehaviour", 900, "class=114"},
+		{"GameObject", "--- !u!1 &901\n", "GameObject", 901, "class=1"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			scene := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+				tc.classLine + tc.typeName + ":\n  m_Name: Decoy\n" +
+				"  m_LocalPosition: {x: 5, y: 0, z: 3}\n"
+			input := []byte(scene)
+			blocks, err := parser.Parse(input)
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+
+			plan, err := PlanSceneReposition(input, blocks, SceneRepositionRequest{
+				Path: "scene.unity", ID: tc.id, Position: [3]float64{1, 2, 3}, Rewrite: true,
+			})
+			if err == nil || !strings.Contains(err.Error(), "UNSUPPORTED_TARGET_CLASS") || !strings.Contains(err.Error(), tc.wantClass) {
+				t.Fatalf("expected UNSUPPORTED_TARGET_CLASS %s, got plan=%+v err=%v", tc.wantClass, plan, err)
+			}
+			if !strings.Contains(err.Error(), "allowed=4,224") {
+				t.Fatalf("error should list allowed classes: %v", err)
+			}
+		})
+	}
+}
+
+// TestPlanSceneRepositionTransformWithoutPosition preserves FIELD_NOT_FOUND
+// coverage now that a GameObject target is intercepted by the class guard: a
+// Transform-class block (passes the class guard) that lacks m_LocalPosition
+// still reports FIELD_NOT_FOUND.
+func TestPlanSceneRepositionTransformWithoutPosition(t *testing.T) {
+	scene := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!4 &1001 stripped\nTransform:\n  m_GameObject: {fileID: 1000}\n  m_Father: {fileID: 0}\n"
+	input := []byte(scene)
+	blocks, err := parser.Parse(input)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	_, err = PlanSceneReposition(input, blocks, SceneRepositionRequest{
+		Path: "scene.unity", ID: 1001, Position: [3]float64{1, 2, 3}, Rewrite: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "FIELD_NOT_FOUND") {
+		t.Fatalf("expected FIELD_NOT_FOUND for transform without m_LocalPosition, got %v", err)
+	}
+}
+
 // TestPlanSceneRepositionRefusesBlockStyle proves a block-style (non-flow)
 // m_LocalPosition is refused rather than corrupted. Unity never serializes a
 // Vector3 this way, but a hand-edited file might.
@@ -297,7 +358,7 @@ func TestPlanSceneRepositionErrors(t *testing.T) {
 		id      int64
 		wantSub string
 	}{
-		{"gameobject has no m_LocalPosition", "scene.unity", 1000, "FIELD_NOT_FOUND"},
+		{"gameobject is not a transform class", "scene.unity", 1000, "UNSUPPORTED_TARGET_CLASS"},
 		{"missing fileID", "scene.unity", 4242, "NOT_FOUND"},
 		{"non-scene file kind", "thing.asset", 1001, "UNSUPPORTED_FILE_KIND"},
 	}

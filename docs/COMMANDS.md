@@ -1150,8 +1150,13 @@ checks pass for any input that was already sound.
 Required flags:
 
 - `--id` — the **Transform** fileID whose `m_LocalPosition` is rewritten
-  (non-zero). It must address a block that has an `m_LocalPosition` field; a
-  GameObject fileID returns `ERROR FIELD_NOT_FOUND`.
+  (non-zero). It must address a block whose Unity class is a transform —
+  `Transform` (4) or `RectTransform` (224); any other class is refused at the
+  class stage with `ERROR UNSUPPORTED_TARGET_CLASS field=m_LocalPosition id=N
+  class=<id> allowed=4,224` (exit 1, file untouched), even if that block happens
+  to carry its own `m_LocalPosition`. A transform-class block that lacks
+  `m_LocalPosition` (e.g. a stripped prefab Transform) returns
+  `ERROR FIELD_NOT_FOUND`.
 - `--position x,y,z` — three comma-separated finite floats.
 
 Optional flags:

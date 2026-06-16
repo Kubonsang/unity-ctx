@@ -86,9 +86,45 @@ func validateSceneMutationPath(path string) error {
 	return fmt.Errorf("UNSUPPORTED_FILE_KIND kind=%s allowed=.unity", kind)
 }
 
+// Unity class IDs of the transform types that structural scene ops target.
+// Both carry a Vector3 m_LocalPosition and the parent/child links, so the
+// reparent/delete slices (S4/S5) will gate their targets with the same helper
+// rather than re-deriving the set.
+const (
+	classTransform     = 4
+	classRectTransform = 224
+)
+
+var transformClassIDs = []int{classTransform, classRectTransform}
+
+// isTransformClass reports whether classID is a transform type a structural
+// scene op may target (Transform or RectTransform).
+func isTransformClass(classID int) bool {
+	for _, c := range transformClassIDs {
+		if classID == c {
+			return true
+		}
+	}
+	return false
+}
+
+func allowedTransformClassList() string {
+	parts := make([]string, len(transformClassIDs))
+	for i, c := range transformClassIDs {
+		parts[i] = strconv.Itoa(c)
+	}
+	return strings.Join(parts, ",")
+}
+
 func resolveRepositionTarget(blocks []parser.Block, id int64) (parser.Block, error) {
 	for _, block := range blocks {
 		if block.FileID == id {
+			// Class guard runs before field resolution: a non-transform block
+			// is not a reposition target even if it happens to carry an
+			// m_LocalPosition: {x, y, z} of its own.
+			if !isTransformClass(block.ClassID) {
+				return parser.Block{}, fmt.Errorf("UNSUPPORTED_TARGET_CLASS field=%s id=%d class=%d allowed=%s", RepositionField, id, block.ClassID, allowedTransformClassList())
+			}
 			return block, nil
 		}
 	}
