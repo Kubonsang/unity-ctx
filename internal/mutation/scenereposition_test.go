@@ -152,6 +152,44 @@ func TestPlanSceneRepositionPreservesCRLF(t *testing.T) {
 	}
 }
 
+// TestPlanSceneRepositionFullPathTrailingComment is the end-to-end guard that
+// kills the unit-test illusion: rewriteVector3Flow preserves a trailing comment
+// in isolation, but the command's validate-before-rewrite gate (vector3FromField
+// via the structured parser) must accept the same comment too. It runs the FULL
+// PlanSceneReposition path — not the isolated rewriter — over a commented line
+// combining a negative value and exponent notation, and asserts byte-preserving
+// round-trip with the comment intact and sibling fields untouched.
+func TestPlanSceneRepositionFullPathTrailingComment(t *testing.T) {
+	scene := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!1 &1000\nGameObject:\n  m_Name: T\n  m_Component:\n  - component: {fileID: 1001}\n" +
+		"--- !u!4 &1001\nTransform:\n  m_GameObject: {fileID: 1000}\n" +
+		"  m_LocalPosition: {x: 1, y: 2, z: 3}   # anchor\n" +
+		"  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}\n" +
+		"  m_Father: {fileID: 0}\n  m_Children: []\n"
+	input := []byte(scene)
+	blocks, err := parser.Parse(input)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	plan, err := PlanSceneReposition(input, blocks, SceneRepositionRequest{
+		Path: "scene.unity", ID: 1001, Position: [3]float64{-3.5, 2, 1e6}, Rewrite: true,
+	})
+	if err != nil {
+		t.Fatalf("PlanSceneReposition() error = %v (the validate gate must accept a commented mapping)", err)
+	}
+	if !plan.Changed || plan.OldValue != "1,2,3" || plan.NewValue != "-3.5,2,1000000" {
+		t.Fatalf("plan mismatch: changed=%v old=%q new=%q", plan.Changed, plan.OldValue, plan.NewValue)
+	}
+
+	want := strings.ReplaceAll(scene,
+		"  m_LocalPosition: {x: 1, y: 2, z: 3}   # anchor\n",
+		"  m_LocalPosition: {x: -3.5, y: 2, z: 1000000}   # anchor\n")
+	if string(plan.UpdatedData) != want {
+		t.Fatalf("comment/sibling not byte-preserved:\n got %q\nwant %q", string(plan.UpdatedData), want)
+	}
+}
+
 // TestPlanSceneRepositionTabSeparator covers a tab between the colon and the
 // flow mapping (surfaced by adversarial probing). It must round-trip, not
 // refuse: the tab is preserved and only the axis values change.

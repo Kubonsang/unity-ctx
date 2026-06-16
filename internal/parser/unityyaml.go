@@ -140,12 +140,18 @@ func parseValue(value string) any {
 		return ""
 	}
 
-	if value == "[]" {
+	// A trailing YAML comment after a top-level inline flow collection must not
+	// defeat collection detection (e.g. `{x: 1, y: 2, z: 3}  # note`). Strip the
+	// comment only for collection detection; scalar parsing below keeps the
+	// original value so scalars that merely contain '#' are not altered.
+	flow := strings.TrimSpace(stripTrailingComment(value))
+
+	if flow == "[]" {
 		return []any{}
 	}
 
-	if strings.HasPrefix(value, "{") && strings.HasSuffix(value, "}") {
-		if parsed, ok := parseInlineMap(value); ok {
+	if strings.HasPrefix(flow, "{") && strings.HasSuffix(flow, "}") {
+		if parsed, ok := parseInlineMap(flow); ok {
 			return parsed
 		}
 	}
@@ -335,6 +341,69 @@ func parseList(lines []string, start, indent int) ([]any, int) {
 	}
 
 	return result, i
+}
+
+// stripTrailingComment returns value with a top-level YAML comment removed. A
+// '#' begins a comment only when it is outside any quote, outside any nested
+// {}/[] flow collection, and preceded by whitespace (or at the start) — matching
+// YAML's rule. A '#' inside quotes or braces (or with no preceding space, e.g.
+// "a#b") is data, not a comment, and is preserved.
+func stripTrailingComment(value string) string {
+	inSingleQuote := false
+	inDoubleQuote := false
+	escaped := false
+	depth := 0
+	bracketDepth := 0
+	prevSpace := true // start-of-value counts as preceded by whitespace
+
+	for i, r := range value {
+		if escaped {
+			escaped = false
+			prevSpace = false
+			continue
+		}
+
+		switch r {
+		case '\\':
+			if inDoubleQuote {
+				escaped = true
+				prevSpace = false
+				continue
+			}
+		case '\'':
+			if !inDoubleQuote {
+				inSingleQuote = !inSingleQuote
+			}
+		case '"':
+			if !inSingleQuote {
+				inDoubleQuote = !inDoubleQuote
+			}
+		case '{':
+			if !inSingleQuote && !inDoubleQuote {
+				depth++
+			}
+		case '}':
+			if !inSingleQuote && !inDoubleQuote && depth > 0 {
+				depth--
+			}
+		case '[':
+			if !inSingleQuote && !inDoubleQuote {
+				bracketDepth++
+			}
+		case ']':
+			if !inSingleQuote && !inDoubleQuote && bracketDepth > 0 {
+				bracketDepth--
+			}
+		case '#':
+			if !inSingleQuote && !inDoubleQuote && depth == 0 && bracketDepth == 0 && prevSpace {
+				return value[:i]
+			}
+		}
+
+		prevSpace = r == ' ' || r == '\t'
+	}
+
+	return value
 }
 
 func parseInlineMap(value string) (map[string]any, bool) {
