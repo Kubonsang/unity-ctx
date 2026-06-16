@@ -302,6 +302,12 @@ func (s *Service) Set(namespace, path string, view core.View, jsonOut bool, args
 	return s.setPrefab(path, jsonOut, args, result)
 }
 
+// readFinalState reads the on-disk bytes for the post-write final_check. It is
+// a seam so tests can exercise the otherwise-unreachable final_check-failure
+// branch (temp_check already validated the exact bytes written, so in
+// single-writer use the re-read always matches and passes).
+var readFinalState = os.ReadFile
+
 func (s *Service) setAsset(path string, args SetArgs, result SetResult) (SetResult, int) {
 	loaded, err := s.load(path)
 	if err != nil {
@@ -417,7 +423,7 @@ func (s *Service) setAsset(path string, args SetArgs, result SetResult) (SetResu
 		return result, 1
 	}
 
-	finalData, finalErr := os.ReadFile(path)
+	finalData, finalErr := readFinalState(path)
 	if finalErr != nil {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf(
@@ -593,7 +599,7 @@ func (s *Service) setPrefab(path string, jsonOut bool, args SetArgs, result SetR
 		return result, 1
 	}
 
-	finalData, finalErr := os.ReadFile(path)
+	finalData, finalErr := readFinalState(path)
 	if finalErr != nil {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf(
@@ -1851,7 +1857,7 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 			return result, 1
 		}
 
-		finalData, err := os.ReadFile(path)
+		finalData, err := readFinalState(path)
 		if err != nil {
 			result.Status = "ERROR"
 			result.Body = fmt.Sprintf(
