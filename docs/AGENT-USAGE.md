@@ -71,6 +71,12 @@ final_check  re-read file after commit      → ERROR ⇒ ERROR WRITE_COMMITTED 
 
 `WARN` in any phase does not block; it is surfaced via `CHECK` + `WARN` lines.
 
+`final_check` is defense-in-depth and does **not** auto-revert: since `temp_check`
+already validated the exact bytes written, a `final_check` failure essentially
+only happens under concurrent external modification, where restoring `.bak` would
+destroy that edit. The tool surfaces `WRITE_COMMITTED` and leaves recovery to an
+explicit `restore`.
+
 ## Standard workflows
 
 ### Inspect

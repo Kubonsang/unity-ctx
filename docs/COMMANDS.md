@@ -150,6 +150,12 @@ Rules:
   code=GRAPH_CHECK_FAILED` (exit 0) without touching the file; after the write it
   returns `ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check` with
   the backup path (exit 1). `WARN` does not block.
+- `final_check` is defense-in-depth: because `temp_check` already validated the
+  exact bytes written, the only realistic way it fails is a **concurrent
+  external modification** of the file between the write and the re-read. unity-ctx
+  therefore does **not** auto-revert on `final_check` failure — silently
+  restoring `.bak` would discard that external edit. It surfaces
+  `WRITE_COMMITTED` and leaves recovery to an explicit `unity-ctx <ns> restore`.
 
 Dry-run output:
 

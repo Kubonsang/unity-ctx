@@ -3303,3 +3303,53 @@ func writePrefabSetTarget(t *testing.T, prefabPath, guid string) {
 		t.Fatalf("WriteFile(%s.meta) error = %v", prefabPath, err)
 	}
 }
+
+// brokenFinalState is a graph-broken asset (duplicate fileID) injected via the
+// readFinalState seam to reach the final_check failure branch deterministically.
+const brokenFinalState = "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+	"--- !u!114 &11400000\nMonoBehaviour:\n  m_Name: A\n" +
+	"  m_Script: {fileID: 11500000, guid: f0e1d2c3b4a5968778695a4b3c2d1e0f, type: 3}\n  maxHealth: 1\n" +
+	"--- !u!114 &11400000\nMonoBehaviour:\n  m_Name: B\n" +
+	"  m_Script: {fileID: 11500000, guid: f0e1d2c3b4a5968778695a4b3c2d1e0f, type: 3}\n  maxHealth: 2\n"
+
+// TestSetAssetFinalCheckSurfacesWithoutClobber verifies the deliberate
+// no-auto-revert policy: when final_check sees a broken state, the command
+// reports WRITE_COMMITTED (exit 1) and does NOT touch the on-disk file. The
+// only realistic trigger is a concurrent external writer, and auto-reverting
+// would discard their edit — so unity-ctx surfaces and leaves recovery to an
+// explicit `restore`.
+func TestSetAssetFinalCheckSurfacesWithoutClobber(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg.asset")
+	sound := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!114 &11400000\nMonoBehaviour:\n  m_Name: Cfg\n" +
+		"  m_Script: {fileID: 11500000, guid: f0e1d2c3b4a5968778695a4b3c2d1e0f, type: 3}\n  maxHealth: 200\n"
+	if err := os.WriteFile(path, []byte(sound), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// pre_check/temp_check on the real (sound) candidate pass, so the write
+	// commits; final_check then sees an injected broken state.
+	orig := app.SetReadFinalState(func(string) ([]byte, error) { return []byte(brokenFinalState), nil })
+	defer app.SetReadFinalState(orig)
+
+	got, code := app.New().Set("asset", path, core.ViewCompact, false, app.SetArgs{
+		Field: "maxHealth", Value: "300", Write: true,
+	})
+	if code != 1 {
+		t.Fatalf("final_check failure must exit 1, got %d body=%q", code, got.Body)
+	}
+	if !strings.HasPrefix(got.Body, "ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check") {
+		t.Fatalf("expected WRITE_COMMITTED, got %q", got.Body)
+	}
+
+	// The on-disk file is the real committed write (300), untouched — NOT
+	// clobbered by a revert to .bak.
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if !strings.Contains(string(after), "maxHealth: 300") {
+		t.Fatalf("on-disk write was unexpectedly altered:\n%s", string(after))
+	}
+}
