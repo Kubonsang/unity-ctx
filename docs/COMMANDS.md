@@ -72,7 +72,7 @@ the result is a safety-policy refusal or a missing precondition, not a failure.
 
 ## Write Command Policy
 
-Every write command (`asset set`, `prefab set`, `scene apply`) follows:
+Every write command (`asset set`, `prefab set`, `scene reposition`, `scene apply`) follows:
 
 - dry-run first; `--write` required
 - target by fileID, not name
@@ -1129,6 +1129,85 @@ Example session (stdin → stdout):
 ```
 
 Register in Claude Code with `claude mcp add unity-ctx -- unity-ctx mcp`.
+
+## v0.8 Structural Scene Mutation Slice
+
+### scene reposition
+
+```bash
+unity-ctx scene reposition Stage01.unity --id 1001 --position 1.5,2,-3.4
+unity-ctx scene reposition Stage01.unity --id 1001 --position 1.5,2,-3.4 --write
+unity-ctx scene reposition Stage01.unity --id 1001 --position 1.5,2,-3.4 --json
+```
+
+Sets a Transform's `m_LocalPosition` to a new `x,y,z`. This is the first
+*structural* scene mutation: unlike `scene apply` (append-only prefab placement),
+it edits an existing block in place. It is **topology-invariant** — only the
+three numeric axis tokens of the one inline `m_LocalPosition: {x, y, z}` mapping
+change, so the fileID graph is untouched and the safety kernel's pre/temp/final
+checks pass for any input that was already sound.
+
+Required flags:
+
+- `--id` — the **Transform** fileID whose `m_LocalPosition` is rewritten
+  (non-zero). It must address a block that has an `m_LocalPosition` field; a
+  GameObject fileID returns `ERROR FIELD_NOT_FOUND`.
+- `--position x,y,z` — three comma-separated finite floats.
+
+Optional flags:
+
+- `--write`
+- `--json`
+
+Rules:
+
+- `reposition` is implemented only for the `scene` namespace and only on
+  `.unity` files; other namespaces return `ERROR reposition not implemented for
+  namespace=<ns>` (exit 2).
+- The rewrite preserves every byte of the target line except the three axis
+  values: brace placement, comma/space separators, key order, and per-entry
+  whitespace all survive. Non-target fields and all other blocks are byte-identical.
+- It refuses any value that is not exactly `{x, y, z}` of numbers
+  (`FIELD_NOT_VECTOR3`), so a misaddressed field (e.g. a Quaternion `{x,y,z,w}`)
+  fails loudly rather than being mangled.
+- Same three-phase graph-check + `.bak` + no-auto-revert `final_check` policy as
+  `asset set` (see [Write Command Policy](#write-command-policy)).
+- `changed=0` requests (position already equal) return success without mutating
+  the filesystem or creating a `.bak`.
+- **Limitation (by design, this slice):** it edits the addressed block's raw
+  `m_LocalPosition`. For an object that is a **prefab instance**, the effective
+  position override lives in that instance's `PrefabInstance.m_Modifications`,
+  not the Transform block — so repositioning the raw Transform may have no
+  visual effect. Stripped prefab Transforms have no `m_LocalPosition` and return
+  `FIELD_NOT_FOUND`. Prefab-instance and cross-file position semantics are out of
+  scope here. Works as expected on plain (non-instance) scene objects and on
+  `RectTransform` (its `m_LocalPosition` is also a Vector3).
+
+Dry-run output:
+
+```text
+DRY_RUN id=1001 field=m_LocalPosition old=5,0,3 new=1.5,2,-3.4 changed=1 pre_check=OK temp_check=OK
+```
+
+Write output:
+
+```text
+WRITE backup=Stage01.unity.bak id=1001 field=m_LocalPosition old=5,0,3 new=1.5,2,-3.4 changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK
+```
+
+No-op write output:
+
+```text
+OK id=1001 field=m_LocalPosition old=5,0,3 new=5,0,3 changed=0 verified=1 pre_check=OK temp_check=OK
+```
+
+Blocked output (exit 0, file untouched):
+
+```text
+BLOCKED code=GRAPH_CHECK_FAILED phase=pre_check file=Stage01.unity id=1001 field=m_LocalPosition
+CHECK phase=pre_check status=ERROR errors=1 warnings=0
+ERROR code=DUPLICATE_FILE_ID file_id=1000 duplicates=2
+```
 
 ## Output Stability Rules
 
