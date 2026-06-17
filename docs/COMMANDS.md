@@ -1214,6 +1214,48 @@ CHECK phase=pre_check status=ERROR errors=1 warnings=0
 ERROR code=DUPLICATE_FILE_ID file_id=1000 duplicates=2
 ```
 
+### scene reparent (v2 ops[] patch)
+
+```bash
+unity-ctx scene patch Stage01.unity --op reparent --id 4001 --new-parent 4002 --json > reparent.patch.json
+unity-ctx scene diff  Stage01.unity --patch reparent.patch.json
+unity-ctx scene apply Stage01.unity --patch reparent.patch.json --write --ack-impact
+```
+
+Moves a Transform within one scene: sets the target's `m_Father` and updates the
+old and new parents' `m_Children` atomically (one file, one `.bak`). `--new-parent
+0` moves the target to the scene root.
+
+- **v2 patch schema.** `scene patch --op reparent` emits a `schema_version: 2`
+  patch with an `ops[]` array (`op: reparent`), coexisting with v1 (`place_prefab`,
+  `patch_plan`); `scene diff`/`scene apply` accept both and dispatch on
+  `schema_version`. One reparent op per patch (no op mixing) in this slice.
+- **`m_Children` is written in Unity's real F3 form** (dash at the key's indent,
+  `- {fileID: N}`); removing the last child collapses to `m_Children: []`. Other
+  bytes are preserved.
+- **Allowed endpoint class = `Transform` (4) only** — narrower than `reposition`
+  (which also allows `RectTransform` 224). reposition is topology-invariant
+  (coordinates only) so it needs no hierarchy modeling; reparent changes the
+  hierarchy and relies on the kernel's symmetry/cycle modeling, which covers class
+  4 only. A `RectTransform` (224), a stripped (nested prefab-instance) endpoint, or
+  any non-Transform endpoint is refused:
+  `BLOCKED reason=UNSUPPORTED_ENDPOINT_CLASS endpoint=<role> id=<N> class=<C> is_stripped=<bool> allowed=4`
+  (exit 0, file untouched). Editing such an endpoint's hierarchy raw would be an
+  unverifiable, silently-invalid write.
+- **Dry-run `plan` phase** (earliest phase): if the reparent would create a cycle
+  (new parent is the target or a descendant), it is refused before any write —
+  `BLOCKED phase=plan code=WOULD_CREATE_CYCLE chain=a->b->a`. `temp_check` (the
+  graph-check) is the backstop behind it.
+- **`--ack-impact` required** for `apply --write` (reparent changes topology).
+  Same dry-run-first / `.bak` / `pre`/`temp`/`final` / no-auto-revert contract as
+  `set`/`apply`. Verify asserts: target's `m_Father` == new parent; new parent
+  lists the target; old parent no longer lists it.
+- A stale patch (its `old_parent` no longer matches the scene) is rejected
+  (`ERROR PATCH_STALE`).
+
+Cross-file integrity (a reparent that dangles a reference from another scene/
+prefab) is out of scope for this slice.
+
 ## Output Stability Rules
 
 - No timestamps in default output.

@@ -79,6 +79,11 @@ type PatchArgs struct {
 	Project     string
 	HasPosition bool
 	Position    [3]float64
+	// reparent (op=reparent, v2 ops[])
+	HasID        bool
+	ID           int64
+	HasNewParent bool
+	NewParent    int64
 }
 
 type DiffArgs struct {
@@ -86,8 +91,9 @@ type DiffArgs struct {
 }
 
 type ApplyArgs struct {
-	Patch string
-	Write bool
+	Patch     string
+	Write     bool
+	AckImpact bool
 }
 
 type ScanArgs struct {
@@ -176,6 +182,7 @@ type PatchResult struct {
 	SchemaVersion int `json:"schema_version,omitempty"`
 	core.Result
 	PatchPlan *scenepatch.PlacePrefabPlan `json:"patch_plan,omitempty"`
+	Ops       []scenepatch.Op             `json:"ops,omitempty"`
 	Safety    *SafetyPayload              `json:"safety,omitempty"`
 }
 

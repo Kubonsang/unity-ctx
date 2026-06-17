@@ -812,7 +812,7 @@ func TestScenePatchRejectsUnsupportedOp(t *testing.T) {
 		t.Fatalf("expected empty stdout, got %q", result.stdout)
 	}
 
-	want := "ERROR patch supports only --op place_prefab\n"
+	want := "ERROR patch supports only --op place_prefab or --op reparent\n"
 	if result.stderr != want {
 		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
 	}
@@ -940,7 +940,7 @@ func TestScenePatchRejectsSelectorFlags(t *testing.T) {
 		t.Fatalf("expected empty stdout, got %q", result.stdout)
 	}
 
-	want := "ERROR patch does not accept --id, --name, --type, --component, --field, --out, --task, --focus, or --max-tokens\n"
+	want := "ERROR patch does not accept --id, --new-parent, --name, --type, --component, --field, --out, --task, --focus, or --max-tokens\n"
 	if result.stderr != want {
 		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
 	}
@@ -4266,5 +4266,79 @@ func TestSceneRepositionFullPathTrailingComment(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}\n") {
 		t.Fatalf("sibling field altered:\n%s", string(data))
+	}
+}
+
+func reparentSceneForCLI(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "reparent.unity")
+	content := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!1 &1000\nGameObject:\n  m_Component:\n  - component: {fileID: 4000}\n  m_Name: ParentA\n" +
+		"--- !u!4 &4000\nTransform:\n  m_GameObject: {fileID: 1000}\n  m_LocalPosition: {x: 0, y: 0, z: 0}\n" +
+		"  m_Children:\n  - {fileID: 4001}\n  m_Father: {fileID: 0}\n" +
+		"--- !u!1 &1001\nGameObject:\n  m_Component:\n  - component: {fileID: 4001}\n  m_Name: Child\n" +
+		"--- !u!4 &4001\nTransform:\n  m_GameObject: {fileID: 1001}\n  m_LocalPosition: {x: 0, y: 0, z: 0}\n" +
+		"  m_Children: []\n  m_Father: {fileID: 4000}\n" +
+		"--- !u!1 &1002\nGameObject:\n  m_Component:\n  - component: {fileID: 4002}\n  m_Name: ParentB\n" +
+		"--- !u!4 &4002\nTransform:\n  m_GameObject: {fileID: 1002}\n  m_LocalPosition: {x: 0, y: 0, z: 0}\n" +
+		"  m_Children: []\n  m_Father: {fileID: 0}\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write scene: %v", err)
+	}
+	return path
+}
+
+func TestScenePatchReparentRequiresID(t *testing.T) {
+	scene := reparentSceneForCLI(t)
+	r := runCLI(t, "scene", "patch", scene, "--op", "reparent", "--new-parent", "4002")
+	if r.exitCode != 2 || r.stderr != "ERROR patch reparent requires --id\n" {
+		t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+	}
+}
+
+func TestScenePatchReparentRequiresNewParent(t *testing.T) {
+	scene := reparentSceneForCLI(t)
+	r := runCLI(t, "scene", "patch", scene, "--op", "reparent", "--id", "4001")
+	if r.exitCode != 2 || r.stderr != "ERROR patch reparent requires --new-parent\n" {
+		t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+	}
+}
+
+func TestScenePatchReparentRejectsPlaceFlags(t *testing.T) {
+	scene := reparentSceneForCLI(t)
+	r := runCLI(t, "scene", "patch", scene, "--op", "reparent", "--id", "4001", "--new-parent", "4002", "--manifest", "m.json")
+	if r.exitCode != 2 || !strings.Contains(r.stderr, "patch reparent does not accept") || !strings.Contains(r.stderr, "--manifest") {
+		t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+	}
+}
+
+func TestSceneReparentEndToEnd(t *testing.T) {
+	scene := reparentSceneForCLI(t)
+
+	// generate v2 patch
+	gen := runCLI(t, "scene", "patch", scene, "--op", "reparent", "--id", "4001", "--new-parent", "4002", "--json")
+	if gen.exitCode != 0 {
+		t.Fatalf("patch gen exit=%d stderr=%q", gen.exitCode, gen.stderr)
+	}
+	if !strings.Contains(gen.stdout, `"schema_version":2`) || !strings.Contains(gen.stdout, `"op":"reparent"`) {
+		t.Fatalf("patch JSON missing v2 ops: %s", gen.stdout)
+	}
+	patchPath := filepath.Join(filepath.Dir(scene), "rep.patch.json")
+	if err := os.WriteFile(patchPath, []byte(gen.stdout), 0o644); err != nil {
+		t.Fatalf("write patch: %v", err)
+	}
+
+	// apply --write --ack-impact
+	ap := runCLI(t, "scene", "apply", scene, "--patch", patchPath, "--write", "--ack-impact")
+	if ap.exitCode != 0 {
+		t.Fatalf("apply exit=%d stderr=%q stdout=%q", ap.exitCode, ap.stderr, ap.stdout)
+	}
+	if !strings.HasPrefix(ap.stdout, "WRITE backup="+scene+".bak op=reparent target=4001 new_parent=4002 old_parent=4000 changed=1 verified=1") {
+		t.Fatalf("unexpected apply output: %q", ap.stdout)
+	}
+	data, _ := os.ReadFile(scene)
+	if !strings.Contains(string(data), "  m_Father: {fileID: 4002}\n") {
+		t.Fatalf("scene not reparented:\n%s", string(data))
 	}
 }

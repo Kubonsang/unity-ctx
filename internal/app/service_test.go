@@ -3,6 +3,7 @@ package app_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -2153,7 +2154,7 @@ func TestPatchRejectsUnsupportedOp(t *testing.T) {
 		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
 	}
 
-	want := "ERROR patch supports only --op place_prefab"
+	want := "ERROR patch supports only --op place_prefab or --op reparent"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
@@ -3521,5 +3522,214 @@ func TestRepositionFinalCheckSurfacesWithoutClobber(t *testing.T) {
 	after, _ := os.ReadFile(path)
 	if !strings.Contains(string(after), "  m_LocalPosition: {x: 1, y: 2, z: 3}\n") {
 		t.Fatalf("committed write was unexpectedly altered:\n%s", string(after))
+	}
+}
+
+const reparentSceneContent = "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+	"--- !u!1 &1000\nGameObject:\n  m_Component:\n  - component: {fileID: 4000}\n  m_Name: ParentA\n" +
+	"--- !u!4 &4000\nTransform:\n  m_GameObject: {fileID: 1000}\n  m_LocalPosition: {x: 0, y: 0, z: 0}\n" +
+	"  m_Children:\n  - {fileID: 4001}\n  m_Father: {fileID: 0}\n" +
+	"--- !u!1 &1001\nGameObject:\n  m_Component:\n  - component: {fileID: 4001}\n  m_Name: Child\n" +
+	"--- !u!4 &4001\nTransform:\n  m_GameObject: {fileID: 1001}\n  m_LocalPosition: {x: 0, y: 0, z: 0}\n" +
+	"  m_Children: []\n  m_Father: {fileID: 4000}\n" +
+	"--- !u!1 &1002\nGameObject:\n  m_Component:\n  - component: {fileID: 4002}\n  m_Name: ParentB\n" +
+	"--- !u!4 &4002\nTransform:\n  m_GameObject: {fileID: 1002}\n  m_LocalPosition: {x: 0, y: 0, z: 0}\n" +
+	"  m_Children: []\n  m_Father: {fileID: 0}\n"
+
+func writeReparentScene(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "reparent.unity")
+	if err := os.WriteFile(path, []byte(reparentSceneContent), 0o644); err != nil {
+		t.Fatalf("WriteFile scene: %v", err)
+	}
+	return path
+}
+
+func writeReparentPatch(t *testing.T, scenePath string, target, newParent, oldParent int64) string {
+	t.Helper()
+	body := fmt.Sprintf(`{"schema_version":2,"status":"OK","namespace":"scene","command":"patch","file":%q,"view":"compact","body":"reparent","ops":[{"op":"reparent","target":%d,"new_parent":%d,"old_parent":%d}]}`,
+		scenePath, target, newParent, oldParent)
+	path := filepath.Join(filepath.Dir(scenePath), "reparent.patch.json")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile patch: %v", err)
+	}
+	return path
+}
+
+func TestApplyReparentDryRunDoesNotWrite(t *testing.T) {
+	scenePath := writeReparentScene(t)
+	patchPath := writeReparentPatch(t, scenePath, 4001, 4002, 4000)
+
+	got, code := app.New().Apply("scene", scenePath, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath})
+	if code != 0 {
+		t.Fatalf("dry-run exit=%d body=%q", code, got.Body)
+	}
+	want := "DRY_RUN op=reparent target=4001 new_parent=4002 old_parent=4000 changed=1 ack_required=1 pre_check=OK temp_check=OK"
+	if got.Body != want {
+		t.Fatalf("body:\n got %q\nwant %q", got.Body, want)
+	}
+	data, _ := os.ReadFile(scenePath)
+	if string(data) != reparentSceneContent {
+		t.Fatal("dry-run modified the scene")
+	}
+	if _, err := os.Stat(scenePath + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created a backup")
+	}
+}
+
+func TestApplyReparentWriteVerifiesAndBacksUp(t *testing.T) {
+	scenePath := writeReparentScene(t)
+	patchPath := writeReparentPatch(t, scenePath, 4001, 4002, 4000)
+
+	got, code := app.New().Apply("scene", scenePath, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Write: true, AckImpact: true})
+	if code != 0 {
+		t.Fatalf("write exit=%d body=%q", code, got.Body)
+	}
+	want := "WRITE backup=" + scenePath + ".bak op=reparent target=4001 new_parent=4002 old_parent=4000 changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK"
+	if got.Body != want {
+		t.Fatalf("body:\n got %q\nwant %q", got.Body, want)
+	}
+	data, _ := os.ReadFile(scenePath)
+	if !strings.Contains(string(data), "  m_Children:\n  - {fileID: 4001}\n  m_Father: {fileID: 0}\n") {
+		t.Fatalf("new parent did not gain F3 child:\n%s", string(data))
+	}
+	if !strings.Contains(string(data), "  m_Children: []\n  m_Father: {fileID: 4002}\n") {
+		t.Fatalf("child not reparented / old parent not collapsed:\n%s", string(data))
+	}
+	backup, _ := os.ReadFile(scenePath + ".bak")
+	if string(backup) != reparentSceneContent {
+		t.Fatal("backup mismatch")
+	}
+}
+
+func TestApplyReparentRequiresAckImpact(t *testing.T) {
+	scenePath := writeReparentScene(t)
+	patchPath := writeReparentPatch(t, scenePath, 4001, 4002, 4000)
+
+	got, code := app.New().Apply("scene", scenePath, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Write: true})
+	if code != 1 || !strings.Contains(got.Body, "requires --ack-impact") {
+		t.Fatalf("expected ack-impact requirement, code=%d body=%q", code, got.Body)
+	}
+	if _, err := os.Stat(scenePath + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("ack-impact failure created a backup")
+	}
+}
+
+func TestApplyReparentPolicy1BlocksNonTransform(t *testing.T) {
+	scenePath := writeReparentScene(t)
+	patchPath := writeReparentPatch(t, scenePath, 4001, 1002, 4000) // new parent is GameObject 1002
+
+	got, code := app.New().Apply("scene", scenePath, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Write: true, AckImpact: true})
+	if code != 0 {
+		t.Fatalf("BLOCKED must exit 0, code=%d body=%q", code, got.Body)
+	}
+	if !strings.HasPrefix(got.Body, "BLOCKED reason=UNSUPPORTED_ENDPOINT_CLASS endpoint=new_parent id=1002 class=1") {
+		t.Fatalf("unexpected policy-1 body: %q", got.Body)
+	}
+	data, _ := os.ReadFile(scenePath)
+	if string(data) != reparentSceneContent {
+		t.Fatal("policy-1 block modified the scene")
+	}
+}
+
+func TestApplyReparentPolicy2BlocksCycle(t *testing.T) {
+	scenePath := writeReparentScene(t)
+	patchPath := writeReparentPatch(t, scenePath, 4000, 4001, 0) // move A under its descendant
+
+	got, code := app.New().Apply("scene", scenePath, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Write: true, AckImpact: true})
+	if code != 0 {
+		t.Fatalf("BLOCKED must exit 0, code=%d body=%q", code, got.Body)
+	}
+	if !strings.HasPrefix(got.Body, "BLOCKED phase=plan code=WOULD_CREATE_CYCLE chain=4000->4001->4000") {
+		t.Fatalf("unexpected policy-2 body: %q", got.Body)
+	}
+	data, _ := os.ReadFile(scenePath)
+	if string(data) != reparentSceneContent {
+		t.Fatal("policy-2 block modified the scene")
+	}
+}
+
+// TestApplyReparentFinalCheckNoRevert: a final_check failure surfaces
+// WRITE_COMMITTED (exit 1) and leaves the committed reparent on disk (no revert),
+// matching the set/apply policy.
+func TestApplyReparentFinalCheckNoRevert(t *testing.T) {
+	scenePath := writeReparentScene(t)
+	patchPath := writeReparentPatch(t, scenePath, 4001, 4002, 4000)
+
+	// Inject a final state that passes the reparent verify (child father=4002,
+	// new parent lists it, old parent doesn't) but fails graph-check (duplicate
+	// fileID 1000), forcing the final_check branch rather than verify-fail.
+	committed := strings.Replace(reparentSceneContent,
+		"  m_Children: []\n  m_Father: {fileID: 4000}\n",
+		"  m_Children: []\n  m_Father: {fileID: 4002}\n", 1)
+	committed = strings.Replace(committed,
+		"--- !u!4 &4002\nTransform:\n  m_GameObject: {fileID: 1002}\n  m_LocalPosition: {x: 0, y: 0, z: 0}\n  m_Children: []\n",
+		"--- !u!4 &4002\nTransform:\n  m_GameObject: {fileID: 1002}\n  m_LocalPosition: {x: 0, y: 0, z: 0}\n  m_Children:\n  - {fileID: 4001}\n", 1)
+	committed = strings.Replace(committed,
+		"  m_Children:\n  - {fileID: 4001}\n  m_Father: {fileID: 0}\n--- !u!1 &1001",
+		"  m_Children: []\n  m_Father: {fileID: 0}\n--- !u!1 &1001", 1)
+	broken := committed + "--- !u!1 &1000\nGameObject:\n  m_Name: Dup\n"
+	orig := app.SetReadFinalState(func(string) ([]byte, error) { return []byte(broken), nil })
+	defer app.SetReadFinalState(orig)
+
+	got, code := app.New().Apply("scene", scenePath, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Write: true, AckImpact: true})
+	if code != 1 {
+		t.Fatalf("final_check failure must exit 1, code=%d body=%q", code, got.Body)
+	}
+	if !strings.HasPrefix(got.Body, "ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check") {
+		t.Fatalf("expected final_check WRITE_COMMITTED, got %q", got.Body)
+	}
+	// On-disk file is the real committed reparent (not reverted, not the injected bytes).
+	after, _ := os.ReadFile(scenePath)
+	if !strings.Contains(string(after), "  m_Father: {fileID: 4002}\n") || strings.Contains(string(after), "m_Name: Dup") {
+		t.Fatalf("committed reparent was clobbered:\n%s", string(after))
+	}
+}
+
+// TestReparentSafetyNetCatchesAsymmetry is net-negative reproof #1: if the
+// three-block update ever left one block out (here: child's father set to 4002
+// but 4002's m_Children NOT updated), the graph-check temp_check (same CheckBytes
+// the kernel runs) flags the asymmetry as ERROR — the second line of defense
+// behind the plan phase.
+func TestReparentSafetyNetCatchesAsymmetry(t *testing.T) {
+	asymmetric := strings.Replace(reparentSceneContent,
+		"  m_Children: []\n  m_Father: {fileID: 4000}\n",
+		"  m_Children: []\n  m_Father: {fileID: 4002}\n", 1) // child now claims 4002, but neither parent's list updated
+	path := filepath.Join(t.TempDir(), "asym.unity")
+	if err := os.WriteFile(path, []byte(asymmetric), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, code := app.New().Validate("scene", path, core.ViewCompact, false)
+	if code != 1 || got.Status != "ERROR" {
+		t.Fatalf("expected ERROR for asymmetric scene, code=%d status=%q", code, got.Status)
+	}
+	if !strings.Contains(got.Body, "TRANSFORM_PARENT_CHILD_MISMATCH") {
+		t.Fatalf("expected mismatch finding, got %q", got.Body)
+	}
+}
+
+// TestReparentRejectsNonUnityFile guards the v2 path's .unity gate (parity with
+// the v1 apply path): scene reparent must not mutate a .prefab/other file.
+func TestReparentRejectsNonUnityFile(t *testing.T) {
+	dir := t.TempDir()
+	prefab := filepath.Join(dir, "thing.prefab")
+	if err := os.WriteFile(prefab, []byte(reparentSceneContent), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// patch generation rejected
+	if got, code := app.New().Patch("scene", prefab, core.ViewCompact, false, app.PatchArgs{
+		Op: "reparent", HasID: true, ID: 4001, HasNewParent: true, NewParent: 4002,
+	}); code != 1 || !strings.Contains(got.Body, "UNSUPPORTED_FILE_KIND") {
+		t.Fatalf("patch gen on .prefab: code=%d body=%q", code, got.Body)
+	}
+	// apply rejected (craft a v2 patch pointing at the .prefab)
+	patchPath := writeReparentPatch(t, prefab, 4001, 4002, 4000)
+	got, code := app.New().Apply("scene", prefab, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Write: true, AckImpact: true})
+	if code != 1 || !strings.Contains(got.Body, "UNSUPPORTED_FILE_KIND") {
+		t.Fatalf("apply on .prefab: code=%d body=%q", code, got.Body)
+	}
+	if _, err := os.Stat(prefab + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("rejected apply created a backup")
 	}
 }

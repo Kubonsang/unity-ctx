@@ -17,7 +17,19 @@ const FileSchemaVersion = 1
 type File struct {
 	SchemaVersion int `json:"schema_version"`
 	core.Result
-	PatchPlan PlacePrefabPlan `json:"patch_plan"`
+	PatchPlan PlacePrefabPlan `json:"patch_plan"` // v1 (place_prefab)
+	Ops       []Op            `json:"ops,omitempty"`
+}
+
+type rawFileV2 struct {
+	SchemaVersion int       `json:"schema_version"`
+	Status        string    `json:"status"`
+	Namespace     string    `json:"namespace"`
+	Command       string    `json:"command"`
+	File          string    `json:"file"`
+	View          core.View `json:"view"`
+	Body          string    `json:"body"`
+	Ops           []Op      `json:"ops"`
 }
 
 type rawFile struct {
@@ -59,6 +71,19 @@ func LoadFile(path string) (File, error) {
 }
 
 func decodeFile(data []byte) (File, error) {
+	// Peek the schema version leniently so v1 and v2 each get a strict,
+	// version-specific decode (DisallowUnknownFields would otherwise reject the
+	// other version's fields).
+	var probe struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return File{}, fmt.Errorf("invalid patch file: %w", err)
+	}
+	if probe.SchemaVersion == FileSchemaVersionV2 {
+		return decodeFileV2(data)
+	}
+
 	var raw rawFile
 	if err := decodeStrictJSON(data, &raw); err != nil {
 		return File{}, fmt.Errorf("invalid patch file: %w", err)
@@ -99,6 +124,60 @@ func decodeFile(data []byte) (File, error) {
 		},
 		PatchPlan: plan,
 	}, nil
+}
+
+func decodeFileV2(data []byte) (File, error) {
+	var raw rawFileV2
+	if err := decodeStrictJSON(data, &raw); err != nil {
+		return File{}, fmt.Errorf("invalid patch file: %w", err)
+	}
+	if raw.Namespace != "scene" {
+		return File{}, fmt.Errorf("invalid patch file: namespace must be %q", "scene")
+	}
+	if raw.Command != "patch" {
+		return File{}, fmt.Errorf("invalid patch file: command must be %q", "patch")
+	}
+	if raw.View != core.ViewCompact {
+		return File{}, fmt.Errorf("invalid patch file: view must be %q", core.ViewCompact)
+	}
+	if err := validateOps(raw.Ops); err != nil {
+		return File{}, err
+	}
+
+	return File{
+		SchemaVersion: raw.SchemaVersion,
+		Result: core.Result{
+			Status:    raw.Status,
+			Namespace: raw.Namespace,
+			Command:   raw.Command,
+			File:      raw.File,
+			View:      raw.View,
+			Body:      raw.Body,
+		},
+		Ops: append([]Op(nil), raw.Ops...),
+	}, nil
+}
+
+// validateOps enforces the S4a contract: exactly one reparent op (no op mixing),
+// with a positive target and distinct, non-self endpoints.
+func validateOps(ops []Op) error {
+	if len(ops) != 1 {
+		return fmt.Errorf("invalid patch file: ops must contain exactly 1 operation (S4a supports one reparent per patch)")
+	}
+	op := ops[0]
+	if op.Op != OpReparent {
+		return fmt.Errorf("invalid patch file: ops[0].op must be %q", OpReparent)
+	}
+	if op.Target <= 0 {
+		return fmt.Errorf("invalid patch file: ops[0].target must be > 0")
+	}
+	if op.NewParent < 0 || op.OldParent < 0 {
+		return fmt.Errorf("invalid patch file: ops[0] parent file IDs must be >= 0")
+	}
+	if op.NewParent == op.Target {
+		return fmt.Errorf("invalid patch file: ops[0].new_parent must differ from target")
+	}
+	return nil
 }
 
 func decodePlacePrefabPlan(data []byte) (PlacePrefabPlan, error) {

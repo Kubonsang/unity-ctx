@@ -1796,9 +1796,12 @@ func (s *Service) Patch(namespace, path string, view core.View, jsonOut bool, ar
 		result.Body = "ERROR patch requires --op"
 		return result, 1
 	}
+	if args.Op == scenepatch.OpReparent {
+		return s.patchReparent(path, args, result)
+	}
 	if args.Op != "place_prefab" {
 		result.Status = "ERROR"
-		result.Body = "ERROR patch supports only --op place_prefab"
+		result.Body = "ERROR patch supports only --op place_prefab or --op reparent"
 		return result, 1
 	}
 	if strings.TrimSpace(args.Manifest) == "" {
@@ -1867,6 +1870,75 @@ func (s *Service) Patch(namespace, path string, view core.View, jsonOut bool, ar
 	return result, 0
 }
 
+// validateSceneFileKind matches the v1 apply path's .unity gate so the v2
+// reparent path cannot mutate a .prefab/.asset/other file through the scene
+// namespace.
+func validateSceneFileKind(path string) error {
+	kind := strings.ToLower(filepath.Ext(strings.TrimSpace(path)))
+	if kind == ".unity" {
+		return nil
+	}
+	if kind == "" {
+		kind = "unknown"
+	}
+	return fmt.Errorf("UNSUPPORTED_FILE_KIND kind=%s allowed=.unity", kind)
+}
+
+// patchReparent generates a v2 ops[] patch for a single reparent. The old parent
+// is captured from the scene at generation time; all policy enforcement happens
+// at apply time.
+func (s *Service) patchReparent(path string, args PatchArgs, result PatchResult) (PatchResult, int) {
+	if err := validateSceneFileKind(path); err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	if !args.HasID || args.ID <= 0 {
+		result.Status = "ERROR"
+		result.Body = "ERROR patch reparent requires non-zero --id"
+		return result, 1
+	}
+	if !args.HasNewParent || args.NewParent < 0 {
+		result.Status = "ERROR"
+		result.Body = "ERROR patch reparent requires --new-parent (>= 0)"
+		return result, 1
+	}
+	if args.NewParent == args.ID {
+		result.Status = "ERROR"
+		result.Body = "ERROR patch reparent --new-parent must differ from --id"
+		return result, 1
+	}
+
+	loaded, err := s.load(path)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	target, ok := loaded.doc.FindByFileID(args.ID)
+	if !ok {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR NOT_FOUND fileID=%d", args.ID)
+		return result, 1
+	}
+	var oldParent int64
+	if raw, ok := document.ResolveField(target.Fields, "m_Father.fileID"); ok {
+		oldParent, _ = asInt64(raw)
+	}
+
+	op := scenepatch.Op{
+		Op:        scenepatch.OpReparent,
+		Target:    args.ID,
+		NewParent: args.NewParent,
+		OldParent: oldParent,
+	}
+	result.SchemaVersion = scenepatch.FileSchemaVersionV2
+	result.Status = "OK"
+	result.Ops = []scenepatch.Op{op}
+	result.Body = fmt.Sprintf("OK op=reparent target=%d new_parent=%d old_parent=%d", op.Target, op.NewParent, op.OldParent)
+	return result, 0
+}
+
 func (s *Service) Diff(namespace, path string, view core.View, jsonOut bool, args DiffArgs) (PatchResult, int) {
 	_ = jsonOut
 
@@ -1906,6 +1978,15 @@ func (s *Service) Diff(namespace, path string, view core.View, jsonOut bool, arg
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR patch scene mismatch file=%s patch_file=%s", path, envelope.File)
 		return result, 1
+	}
+
+	if envelope.SchemaVersion == scenepatch.FileSchemaVersionV2 {
+		op := envelope.Ops[0]
+		result.SchemaVersion = scenepatch.FileSchemaVersionV2
+		result.Status = "OK"
+		result.Ops = append([]scenepatch.Op(nil), envelope.Ops...)
+		result.Body = fmt.Sprintf("OK patch=%s op=%s target=%d new_parent=%d old_parent=%d", args.Patch, op.Op, op.Target, op.NewParent, op.OldParent)
+		return result, 0
 	}
 
 	diffResult, err := mutation.DescribeScenePatch(mutation.SceneApplyRequest{
@@ -1965,6 +2046,10 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR patch scene mismatch file=%s patch_file=%s", path, envelope.File)
 		return result, 1
+	}
+
+	if envelope.SchemaVersion == scenepatch.FileSchemaVersionV2 {
+		return s.applyReparent(path, args, envelope, result)
 	}
 
 	loaded, err := s.load(path)
@@ -2104,6 +2189,132 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 	result.Safety = newSafetyPayload(checks)
 	planCopy := envelope.PatchPlan
 	result.PatchPlan = &planCopy
+	return result, 0
+}
+
+// applyReparent executes a v2 ops[] reparent: dry-run-first → --write → .bak →
+// pre/temp/final graph-check, plus a dry-run-time plan phase (Policy 1 endpoint
+// guard + Policy 2 cycle/symmetry pre-check). final_check does not auto-revert.
+func (s *Service) applyReparent(path string, args ApplyArgs, envelope scenepatch.File, result PatchResult) (PatchResult, int) {
+	result.SchemaVersion = scenepatch.FileSchemaVersionV2
+	if err := validateSceneFileKind(path); err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	if len(envelope.Ops) == 0 {
+		result.Status = "ERROR"
+		result.Body = "ERROR patch has no ops"
+		return result, 1
+	}
+	op := envelope.Ops[0]
+	idKV := fmt.Sprintf(" patch=%s file=%s", args.Patch, path)
+
+	loaded, err := s.load(path)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	preCheck := phaseCheck{phase: safety.PhasePre, report: safety.CheckBytes(loaded.data)}
+	if preCheck.report.Blocking() {
+		result.Status = "BLOCKED"
+		result.Body = blockedBody(idKV, preCheck)
+		result.Safety = newSafetyPayload([]phaseCheck{preCheck})
+		return result, 0
+	}
+
+	plan, err := mutation.PlanSceneReparent(loaded.data, loaded.blocks, op)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	// Policy 1: endpoint class / stripped guard.
+	if plan.EndpointBlocked {
+		result.Status = "BLOCKED"
+		result.Body = fmt.Sprintf("BLOCKED %s%s", plan.EndpointBody, idKV)
+		return result, 0
+	}
+	// Policy 2: dry-run plan-phase pre-check.
+	if plan.PlanBlocked {
+		result.Status = "BLOCKED"
+		result.Body = fmt.Sprintf("BLOCKED phase=%s code=%s %s%s", safety.PhasePlan, plan.PlanCode, plan.PlanDetail, idKV)
+		return result, 0
+	}
+
+	tempCheck := phaseCheck{phase: safety.PhaseTemp, report: safety.CheckBytes(plan.UpdatedData)}
+	if tempCheck.report.Blocking() {
+		result.Status = "BLOCKED"
+		result.Body = blockedBody(idKV, tempCheck)
+		result.Safety = newSafetyPayload([]phaseCheck{preCheck, tempCheck})
+		return result, 0
+	}
+	checks := []phaseCheck{preCheck, tempCheck}
+
+	summary := fmt.Sprintf("op=reparent target=%d new_parent=%d old_parent=%d changed=%d",
+		plan.Target, plan.NewParent, plan.OldParent, boolToInt(plan.Changed))
+
+	if !args.Write {
+		result.Status = "OK"
+		result.Body = fmt.Sprintf("DRY_RUN %s ack_required=1%s%s", summary, checkSuffix(checks), checkDetailLines(checks))
+		result.Safety = newSafetyPayload(checks)
+		return result, 0
+	}
+
+	if !args.AckImpact {
+		result.Status = "ERROR"
+		result.Body = "ERROR apply requires --ack-impact for reparent"
+		return result, 1
+	}
+	if !plan.Changed {
+		result.Status = "OK"
+		result.Body = fmt.Sprintf("OK %s verified=1%s%s", summary, checkSuffix(checks), checkDetailLines(checks))
+		result.Safety = newSafetyPayload(checks)
+		return result, 0
+	}
+
+	backupPath, writeErr := mutation.WriteWithBackup(path, plan.UpdatedData)
+	if writeErr != nil && !writeCommitted(writeErr) {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", writeErr)
+		return result, 1
+	}
+
+	finalData, finalErr := readFinalState(path)
+	if finalErr != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR WRITE_COMMITTED backup=%s %s verified=0 err=final re-read failed: %v", backupPath, summary, finalErr)
+		return result, 1
+	}
+	verified, verifyReason := mutation.VerifySceneReparent(finalData, plan.Target, plan.OldParent, plan.NewParent)
+	if !verified {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR WRITE_COMMITTED backup=%s %s verified=0 err=VERIFY_FAILED reason=%s", backupPath, summary, verifyReason)
+		return result, 1
+	}
+	if writeErr != nil { // committed-write (dir sync) error, but bytes are on disk
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR WRITE_COMMITTED backup=%s %s verified=1 err=%v", backupPath, summary, writeErr)
+		return result, 1
+	}
+
+	finalCheck := phaseCheck{phase: safety.PhaseFinal, report: safety.CheckBytes(finalData)}
+	if finalCheck.report.Blocking() {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf(
+			"ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=%s %s verified=1%s",
+			backupPath, summary, checkDetailLines([]phaseCheck{finalCheck}),
+		)
+		result.Safety = newSafetyPayload(append(checks, finalCheck))
+		return result, 1
+	}
+	checks = append(checks, finalCheck)
+
+	result.Status = "OK"
+	result.Body = fmt.Sprintf("WRITE backup=%s %s verified=1%s%s", backupPath, summary, checkSuffix(checks), checkDetailLines(checks))
+	result.Safety = newSafetyPayload(checks)
 	return result, 0
 }
 

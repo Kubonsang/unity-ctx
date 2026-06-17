@@ -17,6 +17,10 @@ import (
 type Phase string
 
 const (
+	// PhasePlan is the earliest write-path phase: a dry-run-time, op-aware
+	// pre-check (e.g. reparent cycle/symmetry) that runs before the graph-check
+	// phases below. It is a generalized hook other structural ops can reuse.
+	PhasePlan  Phase = "plan"
 	PhasePre   Phase = "pre_check"
 	PhaseTemp  Phase = "temp_check"
 	PhaseFinal Phase = "final_check"

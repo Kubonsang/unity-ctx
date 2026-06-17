@@ -132,6 +132,12 @@ func validateScenePath(path string) error {
 }
 
 func validateApplyEnvelope(envelope patch.File) error {
+	// v2 (ops[]) patches are applied by a separate path (PlanSceneReparent); this
+	// validator governs only the v1 place_prefab append envelope. Accept v2 here
+	// so the gate never rejects a valid v2 patch if a shared path reaches it.
+	if envelope.SchemaVersion == patch.FileSchemaVersionV2 {
+		return nil
+	}
 	if envelope.SchemaVersion != patch.FileSchemaVersion {
 		return fmt.Errorf("PATCH_VERSION_MISMATCH version=%d", envelope.SchemaVersion)
 	}
