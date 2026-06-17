@@ -3708,3 +3708,28 @@ func TestReparentSafetyNetCatchesAsymmetry(t *testing.T) {
 		t.Fatalf("expected mismatch finding, got %q", got.Body)
 	}
 }
+
+// TestReparentRejectsNonUnityFile guards the v2 path's .unity gate (parity with
+// the v1 apply path): scene reparent must not mutate a .prefab/other file.
+func TestReparentRejectsNonUnityFile(t *testing.T) {
+	dir := t.TempDir()
+	prefab := filepath.Join(dir, "thing.prefab")
+	if err := os.WriteFile(prefab, []byte(reparentSceneContent), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// patch generation rejected
+	if got, code := app.New().Patch("scene", prefab, core.ViewCompact, false, app.PatchArgs{
+		Op: "reparent", HasID: true, ID: 4001, HasNewParent: true, NewParent: 4002,
+	}); code != 1 || !strings.Contains(got.Body, "UNSUPPORTED_FILE_KIND") {
+		t.Fatalf("patch gen on .prefab: code=%d body=%q", code, got.Body)
+	}
+	// apply rejected (craft a v2 patch pointing at the .prefab)
+	patchPath := writeReparentPatch(t, prefab, 4001, 4002, 4000)
+	got, code := app.New().Apply("scene", prefab, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Write: true, AckImpact: true})
+	if code != 1 || !strings.Contains(got.Body, "UNSUPPORTED_FILE_KIND") {
+		t.Fatalf("apply on .prefab: code=%d body=%q", code, got.Body)
+	}
+	if _, err := os.Stat(prefab + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("rejected apply created a backup")
+	}
+}

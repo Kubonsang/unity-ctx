@@ -1870,10 +1870,29 @@ func (s *Service) Patch(namespace, path string, view core.View, jsonOut bool, ar
 	return result, 0
 }
 
+// validateSceneFileKind matches the v1 apply path's .unity gate so the v2
+// reparent path cannot mutate a .prefab/.asset/other file through the scene
+// namespace.
+func validateSceneFileKind(path string) error {
+	kind := strings.ToLower(filepath.Ext(strings.TrimSpace(path)))
+	if kind == ".unity" {
+		return nil
+	}
+	if kind == "" {
+		kind = "unknown"
+	}
+	return fmt.Errorf("UNSUPPORTED_FILE_KIND kind=%s allowed=.unity", kind)
+}
+
 // patchReparent generates a v2 ops[] patch for a single reparent. The old parent
 // is captured from the scene at generation time; all policy enforcement happens
 // at apply time.
 func (s *Service) patchReparent(path string, args PatchArgs, result PatchResult) (PatchResult, int) {
+	if err := validateSceneFileKind(path); err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
 	if !args.HasID || args.ID <= 0 {
 		result.Status = "ERROR"
 		result.Body = "ERROR patch reparent requires non-zero --id"
@@ -2178,6 +2197,16 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 // guard + Policy 2 cycle/symmetry pre-check). final_check does not auto-revert.
 func (s *Service) applyReparent(path string, args ApplyArgs, envelope scenepatch.File, result PatchResult) (PatchResult, int) {
 	result.SchemaVersion = scenepatch.FileSchemaVersionV2
+	if err := validateSceneFileKind(path); err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	if len(envelope.Ops) == 0 {
+		result.Status = "ERROR"
+		result.Body = "ERROR patch has no ops"
+		return result, 1
+	}
 	op := envelope.Ops[0]
 	idKV := fmt.Sprintf(" patch=%s file=%s", args.Patch, path)
 
