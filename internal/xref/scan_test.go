@@ -99,14 +99,16 @@ func TestScanInboundSetInput(t *testing.T) {
 	}
 }
 
-func TestScanInboundClassifiesIndeterminate(t *testing.T) {
+// TestScanInboundDetectsBlockFormRef is the fix for the silent block-style miss:
+// a multi-line block PPtr to the target is detected as a real inbound ref (the
+// unity-ctx parser yields a nested map for it), NOT silently dropped.
+func TestScanInboundDetectsBlockFormRef(t *testing.T) {
 	root := t.TempDir()
 	writeAsset(t, root, "A.unity", guidA, targetScene())
-	// D has an unparseable PPtr (oversized fileID) -> ExtractRefs warning.
-	bad := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+	blockRef := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
 		"--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n" +
-		"  m_Script: {fileID: 999999999999999999999999999999, guid: " + guidD + ", type: 3}\n"
-	writeAsset(t, root, "D.unity", guidD, bad)
+		"  m_Link:\n    fileID: 4001\n    guid: " + guidA + "\n    type: 2\n"
+	writeAsset(t, root, "B.unity", guidB, blockRef)
 
 	res, err := ScanInbound(Request{
 		ProjectPath: root,
@@ -116,8 +118,73 @@ func TestScanInboundClassifiesIndeterminate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("error = %v", err)
 	}
-	if len(res.Indeterminate) != 1 || res.Indeterminate[0] != "Assets/D.unity" {
-		t.Fatalf("expected D.unity indeterminate, got %v", res.Indeterminate)
+	if len(res.Inbound) != 1 || res.Inbound[0].Path != "Assets/B.unity" {
+		t.Fatalf("block-form ref not detected as inbound: %+v (indeterminate=%v)", res.Inbound, res.Indeterminate)
+	}
+}
+
+// TestScanInboundCoversNonStandardExtensions is the fix for the extension
+// allow-list miss: a .mat (Unity text-YAML, not .unity/.prefab/.asset) that
+// references the target is detected via the %YAML header sniff.
+func TestScanInboundCoversNonStandardExtensions(t *testing.T) {
+	root := t.TempDir()
+	writeAsset(t, root, "A.unity", guidA, targetScene())
+	mat := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!21 &2100000\nMaterial:\n  m_Name: Mat\n  m_Link: {fileID: 4001, guid: " + guidA + ", type: 2}\n"
+	writeAsset(t, root, "M.mat", guidC, mat)
+
+	res, err := ScanInbound(Request{
+		ProjectPath: root,
+		TargetPath:  filepath.Join(root, "Assets", "A.unity"),
+		FileIDs:     []int64{4001},
+	})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if len(res.Inbound) != 1 || res.Inbound[0].Path != "Assets/M.mat" {
+		t.Fatalf(".mat ref not detected as inbound: %+v", res.Inbound)
+	}
+}
+
+func TestScanInboundClassifiesIndeterminate(t *testing.T) {
+	root := t.TempDir()
+	writeAsset(t, root, "A.unity", guidA, targetScene())
+	// A multiline-flow PPtr: the target GUID is present in the bytes but the brace
+	// spans two lines, so the parser does not recover it as a structured PPtr ->
+	// the raw-mention completeness backstop flags it indeterminate (never silent).
+	multiline := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n" +
+		"  m_Ref: {fileID: 4001,\n    guid: " + guidA + ", type: 2}\n"
+	writeAsset(t, root, "D.unity", guidD, multiline)
+	// A genuinely unparseable file (malformed block header) -> parse-error indeterminate.
+	broken := "%YAML 1.1\n--- !u!1 1000\nGameObject:\n  m_Name: X\n"
+	writeAsset(t, root, "E.unity", "e5f60718293a4b5c6d7e8f90a1b2c3d4", broken)
+
+	res, err := ScanInbound(Request{
+		ProjectPath: root,
+		TargetPath:  filepath.Join(root, "Assets", "A.unity"),
+		FileIDs:     []int64{4001},
+	})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	hasD, hasE := false, false
+	for _, p := range res.Indeterminate {
+		if p == "Assets/D.unity" {
+			hasD = true
+		}
+		if p == "Assets/E.unity" {
+			hasE = true
+		}
+	}
+	if !hasD {
+		t.Fatalf("multiline-flow guid mention not flagged indeterminate: %v", res.Indeterminate)
+	}
+	if !hasE {
+		t.Fatalf("unparseable file not flagged indeterminate: %v", res.Indeterminate)
+	}
+	if len(res.Inbound) != 0 {
+		t.Fatalf("expected no structured inbound, got %+v", res.Inbound)
 	}
 }
 

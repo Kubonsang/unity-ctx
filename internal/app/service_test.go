@@ -3801,7 +3801,10 @@ func TestApplyReparentNoProjectStatesSkip(t *testing.T) {
 }
 
 func TestApplyReparentReportsIndeterminateWithoutBlocking(t *testing.T) {
-	bad := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n  m_Script: {fileID: 999999999999999999999999999999, guid: 0123456789abcdef0123456789abcdef, type: 3}\n"
+	const ga = "a1b2c3d4e5f60718293a4b5c6d7e8f90" // the scene (target) guid
+	// A multiline-flow PPtr to the TARGET guid: present in bytes but not recovered
+	// as a structured PPtr -> conservative indeterminate (never a silent miss).
+	bad := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n  m_Ref: {fileID: 4001,\n    guid: " + ga + ", type: 2}\n"
 	root, scene := setupReparentProject(t, map[string]string{"weird.unity": bad})
 	patchPath := writeReparentPatch(t, scene, 4001, 4002, 4000)
 
