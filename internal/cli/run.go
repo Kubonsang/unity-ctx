@@ -89,6 +89,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	prefabGUID := flagSet.String("prefab-guid", "", "")
 	position := flagSet.String("position", "", "")
 	op := flagSet.String("op", "", "")
+	newParent := flagSet.Int64("new-parent", 0, "")
 	patchPath := flagSet.String("patch", "", "")
 
 	if err := flagSet.Parse(args[3:]); err != nil {
@@ -139,8 +140,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --patch\n", command)
 		return 2
 	}
-	if command != "set" && command != "suggest" && seenFlags["ack-impact"] {
+	if command != "set" && command != "suggest" && command != "apply" && seenFlags["ack-impact"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --ack-impact\n", command)
+		return 2
+	}
+	if command != "patch" && seenFlags["new-parent"] {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --new-parent\n", command)
 		return 2
 	}
 	if command != "suggest" && anyFlagVisited(seenFlags, "near", "count", "align", "pick") {
@@ -380,35 +385,54 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			_, _ = io.WriteString(stderr, "ERROR patch requires --op\n")
 			return 2
 		}
-		if *op != "place_prefab" {
-			_, _ = io.WriteString(stderr, "ERROR patch supports only --op place_prefab\n")
-			return 2
-		}
-		if strings.TrimSpace(*manifest) == "" {
-			_, _ = io.WriteString(stderr, "ERROR patch requires --manifest\n")
-			return 2
-		}
-		if strings.TrimSpace(*prefab) == "" {
-			_, _ = io.WriteString(stderr, "ERROR patch requires --prefab\n")
-			return 2
-		}
-		if !seenFlags["position"] {
-			_, _ = io.WriteString(stderr, "ERROR patch requires --position\n")
-			return 2
-		}
-		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "out", "task", "focus", "max-tokens") {
-			_, _ = io.WriteString(stderr, "ERROR patch does not accept --id, --name, --type, --component, --field, --out, --task, --focus, or --max-tokens\n")
-			return 2
-		}
+		switch *op {
+		case "place_prefab":
+			if strings.TrimSpace(*manifest) == "" {
+				_, _ = io.WriteString(stderr, "ERROR patch requires --manifest\n")
+				return 2
+			}
+			if strings.TrimSpace(*prefab) == "" {
+				_, _ = io.WriteString(stderr, "ERROR patch requires --prefab\n")
+				return 2
+			}
+			if !seenFlags["position"] {
+				_, _ = io.WriteString(stderr, "ERROR patch requires --position\n")
+				return 2
+			}
+			if anyFlagVisited(seenFlags, "id", "new-parent", "name", "type", "component", "field", "out", "task", "focus", "max-tokens") {
+				_, _ = io.WriteString(stderr, "ERROR patch does not accept --id, --new-parent, --name, --type, --component, --field, --out, --task, --focus, or --max-tokens\n")
+				return 2
+			}
 
-		var err error
-		parsedPosition, err = parsePosition(*position)
-		if err != nil {
-			_, _ = io.WriteString(stderr, "ERROR patch requires --position as x,y,z\n")
-			return 2
-		}
-		if !positionIsFinite(parsedPosition) {
-			_, _ = io.WriteString(stderr, "ERROR patch requires finite --position values\n")
+			var err error
+			parsedPosition, err = parsePosition(*position)
+			if err != nil {
+				_, _ = io.WriteString(stderr, "ERROR patch requires --position as x,y,z\n")
+				return 2
+			}
+			if !positionIsFinite(parsedPosition) {
+				_, _ = io.WriteString(stderr, "ERROR patch requires finite --position values\n")
+				return 2
+			}
+		case "reparent":
+			if anyFlagVisited(seenFlags, "manifest", "prefab", "position", "prefab-guid", "project", "name", "type", "component", "field", "value", "write", "out", "task", "focus", "max-tokens") {
+				_, _ = io.WriteString(stderr, "ERROR patch reparent does not accept --manifest, --prefab, --position, --prefab-guid, --project, --name, --type, --component, --field, --value, --write, --out, --task, --focus, or --max-tokens\n")
+				return 2
+			}
+			if !seenFlags["id"] {
+				_, _ = io.WriteString(stderr, "ERROR patch reparent requires --id\n")
+				return 2
+			}
+			if *fileID == 0 {
+				_, _ = io.WriteString(stderr, "ERROR patch reparent requires non-zero --id\n")
+				return 2
+			}
+			if !seenFlags["new-parent"] {
+				_, _ = io.WriteString(stderr, "ERROR patch reparent requires --new-parent\n")
+				return 2
+			}
+		default:
+			_, _ = io.WriteString(stderr, "ERROR patch supports only --op place_prefab or --op reparent\n")
 			return 2
 		}
 	}
@@ -656,13 +680,17 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	if command == "patch" {
 		patchResult, patchExitCode := service.Patch(namespace, file, selectedView, *jsonOutput, app.PatchArgs{
-			Op:          *op,
-			Manifest:    *manifest,
-			Prefab:      *prefab,
-			PrefabGUID:  *prefabGUID,
-			Project:     *project,
-			HasPosition: seenFlags["position"],
-			Position:    parsedPosition,
+			Op:           *op,
+			Manifest:     *manifest,
+			Prefab:       *prefab,
+			PrefabGUID:   *prefabGUID,
+			Project:      *project,
+			HasPosition:  seenFlags["position"],
+			Position:     parsedPosition,
+			HasID:        seenFlags["id"],
+			ID:           *fileID,
+			HasNewParent: seenFlags["new-parent"],
+			NewParent:    *newParent,
 		})
 
 		if *jsonOutput {
@@ -698,8 +726,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	if command == "apply" {
 		applyResult, applyExitCode := service.Apply(namespace, file, selectedView, *jsonOutput, app.ApplyArgs{
-			Patch: *patchPath,
-			Write: *writeFlag,
+			Patch:     *patchPath,
+			Write:     *writeFlag,
+			AckImpact: *ackImpact,
 		})
 
 		if *jsonOutput {

@@ -241,8 +241,10 @@ func TestLoadFileRejectsMalformedPositionArray(t *testing.T) {
 func TestLoadFileRejectsSchemaVersionMismatch(t *testing.T) {
 	t.Parallel()
 
+	// schema_version 2 is now accepted (ops[]); 3 remains unsupported. A v1-shaped
+	// (patch_plan) body with an unsupported version still fails the v1 gate.
 	path := writePatchFile(t, `{
-  "schema_version": 2,
+  "schema_version": 3,
   "status": "OK",
   "namespace": "scene",
   "command": "patch",
@@ -271,6 +273,54 @@ func TestLoadFileRejectsSchemaVersionMismatch(t *testing.T) {
 	want := "invalid patch file: schema_version must be 1"
 	if err.Error() != want {
 		t.Fatalf("error mismatch: got %q want %q", err.Error(), want)
+	}
+}
+
+func TestLoadFileAcceptsV2ReparentOps(t *testing.T) {
+	t.Parallel()
+
+	path := writePatchFile(t, `{
+  "schema_version": 2,
+  "status": "OK",
+  "namespace": "scene",
+  "command": "patch",
+  "file": "testdata/scenes/simple_scene.unity",
+  "view": "compact",
+  "body": "OK op=reparent target=4001 new_parent=4002 old_parent=4000",
+  "ops": [
+    {"op": "reparent", "target": 4001, "new_parent": 4002, "old_parent": 4000}
+  ]
+}`)
+
+	file, err := patch.LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile() v2 error = %v, want nil", err)
+	}
+	if file.SchemaVersion != patch.FileSchemaVersionV2 {
+		t.Fatalf("schema_version = %d, want %d", file.SchemaVersion, patch.FileSchemaVersionV2)
+	}
+	if len(file.Ops) != 1 || file.Ops[0].Op != patch.OpReparent ||
+		file.Ops[0].Target != 4001 || file.Ops[0].NewParent != 4002 || file.Ops[0].OldParent != 4000 {
+		t.Fatalf("unexpected ops: %+v", file.Ops)
+	}
+}
+
+func TestLoadFileRejectsV2BadOps(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"patch_plan in v2": `{"schema_version":2,"status":"OK","namespace":"scene","command":"patch","file":"s.unity","view":"compact","body":"x","ops":[{"op":"reparent","target":1,"new_parent":2,"old_parent":0}],"patch_plan":{}}`,
+		"empty ops":        `{"schema_version":2,"status":"OK","namespace":"scene","command":"patch","file":"s.unity","view":"compact","body":"x","ops":[]}`,
+		"two ops":          `{"schema_version":2,"status":"OK","namespace":"scene","command":"patch","file":"s.unity","view":"compact","body":"x","ops":[{"op":"reparent","target":1,"new_parent":2,"old_parent":0},{"op":"reparent","target":3,"new_parent":4,"old_parent":0}]}`,
+		"unknown op":       `{"schema_version":2,"status":"OK","namespace":"scene","command":"patch","file":"s.unity","view":"compact","body":"x","ops":[{"op":"delete","target":1,"new_parent":0,"old_parent":0}]}`,
+		"self parent":      `{"schema_version":2,"status":"OK","namespace":"scene","command":"patch","file":"s.unity","view":"compact","body":"x","ops":[{"op":"reparent","target":5,"new_parent":5,"old_parent":0}]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := patch.LoadFile(writePatchFile(t, body)); err == nil {
+				t.Fatalf("expected v2 validation error for %q", name)
+			}
+		})
 	}
 }
 

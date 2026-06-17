@@ -10,16 +10,17 @@ import (
 	"unicode/utf8"
 )
 
-var headerPattern = regexp.MustCompile(`^--- !u!(\d+) &(-?\d+)(?:\s+stripped)?\s*$`)
+var headerPattern = regexp.MustCompile(`^--- !u!(\d+) &(-?\d+)(\s+stripped)?\s*$`)
 
 type Block struct {
-	ClassID   int
-	FileID    int64
-	TypeName  string
-	Fields    map[string]any
-	RawBody   string
-	StartLine int
-	EndLine   int
+	ClassID    int
+	FileID     int64
+	TypeName   string
+	Fields     map[string]any
+	RawBody    string
+	StartLine  int
+	EndLine    int
+	IsStripped bool
 }
 
 func ParseFile(path string) ([]Block, error) {
@@ -84,12 +85,13 @@ func Parse(data []byte) ([]Block, error) {
 			}
 		}
 		block := Block{
-			ClassID:   classID,
-			FileID:    fileID,
-			Fields:    make(map[string]any),
-			RawBody:   strings.Join(bodyLines, "\n"),
-			StartLine: i + 1,
-			EndLine:   endLine,
+			ClassID:    classID,
+			FileID:     fileID,
+			Fields:     make(map[string]any),
+			RawBody:    strings.Join(bodyLines, "\n"),
+			StartLine:  i + 1,
+			EndLine:    endLine,
+			IsStripped: strings.TrimSpace(match[3]) == "stripped",
 		}
 		parseBody(bodyLines, &block)
 		blocks = append(blocks, block)
