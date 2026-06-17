@@ -106,6 +106,15 @@ func PlanSceneReparent(input []byte, blocks []parser.Block, op patch.Op) (SceneR
 		}
 	}
 
+	// No-op: target is already under new_parent. Short-circuit BEFORE the
+	// remove/add (which would otherwise reorder siblings on the same parent and
+	// then fail verify), so a same-parent reparent is an idempotent no change.
+	if op.NewParent == actualOldParent {
+		plan.Changed = false
+		plan.UpdatedData = cloneBytes(input)
+		return plan, nil
+	}
+
 	// ---- Policy 2: plan-phase pre-check on the virtual post-reparent graph ----
 	if op.NewParent != 0 {
 		if chain, cyclic := reparentWouldCycle(byID, op.Target, op.NewParent); cyclic {
@@ -413,30 +422,22 @@ func applyAddChild(data []byte, parentID, childID int64) ([]byte, error) {
 	if dashIndent == -1 {
 		dashIndent = sc.keyIndent // F3: dash aligns with the key
 	}
-	ending := lines[sc.keyLine].ending
-	if ending == "" {
-		ending = "\n"
-	}
-	dashLine := preservedLine{
-		content: strings.Repeat(" ", dashIndent) + "- {fileID: " + strconv.FormatInt(childID, 10) + "}",
-		ending:  ending,
-	}
+	dashContent := strings.Repeat(" ", dashIndent) + "- {fileID: " + strconv.FormatInt(childID, 10) + "}"
 
 	if sc.isInlineEmpty {
 		// "m_Children: []" -> "m_Children:" + a child dash line.
 		key := lines[sc.keyLine].content
 		colon := strings.Index(key, ":")
 		lines[sc.keyLine].content = key[:colon+1]
-		// the old key line had no trailing newline issue; ensure it keeps its ending
-		lines = insertLine(lines, sc.keyLine+1, dashLine)
+		lines = insertChildLine(lines, sc.keyLine, dashContent)
 		return joinLines(lines), nil
 	}
 
-	insertPos := sc.keyLine + 1
+	afterIdx := sc.keyLine
 	if len(sc.childLineIdx) > 0 {
-		insertPos = sc.childLineIdx[len(sc.childLineIdx)-1] + 1
+		afterIdx = sc.childLineIdx[len(sc.childLineIdx)-1]
 	}
-	lines = insertLine(lines, insertPos, dashLine)
+	lines = insertChildLine(lines, afterIdx, dashContent)
 	return joinLines(lines), nil
 }
 
@@ -476,6 +477,31 @@ func applyRemoveChild(data []byte, parentID, childID int64) ([]byte, error) {
 	}
 	lines = removeLineAt(lines, removeAt)
 	return joinLines(lines), nil
+}
+
+// insertChildLine inserts content as a new line immediately after afterIdx,
+// fixing up endings so the new line never collapses onto its predecessor — in
+// particular when the predecessor was the file's last line with NO trailing
+// newline (ending == ""). In that case the predecessor gets the file's newline
+// and the inserted (now-last) line inherits the empty ending, preserving the
+// file's "no trailing newline" property.
+func insertChildLine(lines []preservedLine, afterIdx int, content string) []preservedLine {
+	childEnding := lines[afterIdx].ending
+	if lines[afterIdx].ending == "" {
+		lines[afterIdx].ending = fileNewline(lines)
+		childEnding = ""
+	}
+	return insertLine(lines, afterIdx+1, preservedLine{content: content, ending: childEnding})
+}
+
+// fileNewline returns the file's line terminator (CRLF/LF), defaulting to "\n".
+func fileNewline(lines []preservedLine) string {
+	for _, ln := range lines {
+		if ln.ending != "" {
+			return ln.ending
+		}
+	}
+	return "\n"
 }
 
 func insertLine(lines []preservedLine, at int, line preservedLine) []preservedLine {

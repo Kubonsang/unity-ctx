@@ -166,6 +166,65 @@ func TestPlanSceneReparentRemoveCollapsesLastChildToInlineEmpty(t *testing.T) {
 	}
 }
 
+// TestPlanSceneReparentNoTrailingNewlineNewParentLast is the regression guard for
+// the applyAddChild trailing-newline corruption: when the new parent's
+// m_Children line is the file's LAST line with no trailing newline, the inserted
+// child dash must land on its own line (not collapse onto the key/last child) and
+// the result must re-parse and verify. Covers both the inline-"[]" and the
+// append-to-existing-list branches.
+func TestPlanSceneReparentNoTrailingNewlineNewParentLast(t *testing.T) {
+	base := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!1 &1000\nGameObject:\n  m_Component:\n  - component: {fileID: 4000}\n  m_Name: A\n" +
+		"--- !u!4 &4000\nTransform:\n  m_GameObject: {fileID: 1000}\n  m_Children:\n  - {fileID: 4001}\n  m_Father: {fileID: 0}\n" +
+		"--- !u!1 &1001\nGameObject:\n  m_Component:\n  - component: {fileID: 4001}\n  m_Name: C\n" +
+		"--- !u!4 &4001\nTransform:\n  m_GameObject: {fileID: 1001}\n  m_Children: []\n  m_Father: {fileID: 4000}\n" +
+		"--- !u!1 &1002\nGameObject:\n  m_Component:\n  - component: {fileID: 4002}\n  m_Name: B\n"
+
+	cases := map[string]string{
+		// new parent B's last line is "m_Children: []" with NO trailing newline
+		"inline empty last": base + "--- !u!4 &4002\nTransform:\n  m_GameObject: {fileID: 1002}\n  m_Father: {fileID: 0}\n  m_Children: []",
+		// new parent B's last line is an existing child dash, NO trailing newline
+		"existing child last": base + "--- !u!4 &4002\nTransform:\n  m_GameObject: {fileID: 1002}\n  m_Father: {fileID: 0}\n  m_Children:\n  - {fileID: 4001}",
+	}
+	for name, scene := range cases {
+		t.Run(name, func(t *testing.T) {
+			plan, err := planReparent(t, scene, patch.Op{Op: patch.OpReparent, Target: 4001, NewParent: 4002, OldParent: 4000})
+			if err != nil {
+				t.Fatalf("error = %v", err)
+			}
+			if !plan.Changed {
+				t.Fatal("expected a change")
+			}
+			// Must re-parse cleanly (no collapsed lines) and verify.
+			if _, perr := parser.Parse(plan.UpdatedData); perr != nil {
+				t.Fatalf("output does not re-parse: %v\n%s", perr, string(plan.UpdatedData))
+			}
+			if ok, reason := VerifySceneReparent(plan.UpdatedData, 4001, 4000, 4002); !ok {
+				t.Fatalf("verify failed: %s\n%s", reason, string(plan.UpdatedData))
+			}
+			// The dash must be on its own line (a key+dash collapse would show "m_Children:  - ").
+			if strings.Contains(string(plan.UpdatedData), "m_Children:  - {fileID: 4001}") {
+				t.Fatalf("child dash collapsed onto the key line:\n%s", string(plan.UpdatedData))
+			}
+		})
+	}
+}
+
+func TestPlanSceneReparentSelfParentIsNoOp(t *testing.T) {
+	// 4001's father is already 4000; reparenting it to 4000 again must be a no-op
+	// (no sibling reorder, no change), not a corrupting remove+re-add.
+	plan, err := planReparent(t, reparentScene, patch.Op{Op: patch.OpReparent, Target: 4001, NewParent: 4000, OldParent: 4000})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if plan.Changed {
+		t.Fatalf("self-reparent must be a no-op, got Changed=true")
+	}
+	if string(plan.UpdatedData) != reparentScene {
+		t.Fatalf("self-reparent altered bytes:\n%s", string(plan.UpdatedData))
+	}
+}
+
 func TestVerifySceneReparentDetectsFailures(t *testing.T) {
 	// Unmodified scene: child's father is 4000, not 4002.
 	if ok, _ := VerifySceneReparent([]byte(reparentScene), 4001, 4000, 4002); ok {
