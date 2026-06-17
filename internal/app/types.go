@@ -43,6 +43,13 @@ type SetArgs struct {
 	Write     bool
 }
 
+type RepositionArgs struct {
+	HasID    bool
+	ID       int64
+	Position [3]float64
+	Write    bool
+}
+
 type IndexArgs struct {
 	Out string
 }

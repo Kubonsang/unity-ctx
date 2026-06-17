@@ -28,6 +28,7 @@ cause, do not bypass it by touching the YAML.
 | Resolve a prefab GUID | `meta guid <prefab> --project .` | no |
 | Blast radius of a prefab | `prefab impact <prefab> --project .` | no |
 | Change an asset/prefab field | `<asset\|prefab> set ...` | no |
+| Move a scene object | `scene reposition <file> --id N --position x,y,z` | no |
 | Place a prefab in a scene | `scene scan` → `suggest` → `diff` → `apply` | scan only |
 
 `<ns>` is `scene`, `prefab`, or `asset`. Only `scene scan` needs a running Unity
@@ -96,6 +97,17 @@ unity-ctx prefab impact Enemy.prefab --project .
 unity-ctx prefab set Enemy.prefab --project . --id 11400000 --field moveSpeed --value 4.0
 unity-ctx prefab set Enemy.prefab --project . --id 11400000 --field moveSpeed --value 4.0 --write --ack-impact
 ```
+
+### Move a scene object
+```bash
+unity-ctx scene query Stage01.unity --name Table_01        # → FOUND id=1000 (GameObject)
+unity-ctx scene inspect Stage01.unity --id 1000 --component Transform   # → Transform fileID
+unity-ctx scene reposition Stage01.unity --id 1001 --position 1.5,2,-3.4         # DRY_RUN
+unity-ctx scene reposition Stage01.unity --id 1001 --position 1.5,2,-3.4 --write # WRITE
+```
+`--id` is the **Transform** fileID (the block that owns `m_LocalPosition`), not the
+GameObject. Resolve it via `inspect ... --component Transform`. Topology is
+unchanged, so the same dry-run → `--write` → `.bak` safety contract applies.
 
 ### Place a prefab
 ```bash

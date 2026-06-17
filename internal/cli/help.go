@@ -35,6 +35,7 @@ var commandSpecs = map[string]commandSpec{
 	"index":        {"write a block-index snapshot", "--out FILE [--json]"},
 	"impact":       {"scenes/prefabs that reference a prefab (prefab namespace)", "--project DIR [--scenes a,b] [--json]"},
 	"set":          {"set a field; dry-run first, --write to commit", "--field F --value V [--id N] [--write]  (prefab: --project DIR --id N --ack-impact) [--json]"},
+	"reposition":   {"set a Transform's m_LocalPosition; dry-run first, --write to commit (scene)", "--id N --position x,y,z [--write] [--json]"},
 	"scan":         {"generate a bounds manifest via the Unity Editor (scene)", "--mode editor --project DIR --out FILE [--prefabs a,b] [--json]"},
 	"check":        {"placement overlap check against a manifest (scene)", "--manifest FILE --prefab P --position x,y,z [--json]"},
 	"patch":        {"build a place_prefab patch plan (scene)", "--op place_prefab --manifest FILE --prefab P --position x,y,z [--prefab-guid G] [--project DIR] [--json]"},
@@ -79,7 +80,7 @@ func generalUsage() string {
 	for name, spec := range commandSpecs {
 		entry := name
 		_ = spec
-		if name == "set" || name == "scan" || name == "check" || name == "patch" ||
+		if name == "set" || name == "reposition" || name == "scan" || name == "check" || name == "patch" ||
 			name == "diff" || name == "apply" || name == "suggest" || name == "restore" || name == "index" {
 			write = append(write, entry)
 		} else {

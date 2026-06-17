@@ -668,6 +668,187 @@ func (s *Service) verifySetValue(path string, args SetArgs) setVerification {
 	}
 }
 
+// Reposition sets a scene Transform's m_LocalPosition to args.Position. It is a
+// structural-edit-free, topology-invariant mutation: only three numeric axis
+// tokens of one inline mapping change. It reuses the dry-run-first, --write,
+// .bak, and three-phase (pre/temp/final) graph-check contract that set/apply
+// already establish, including the deliberate no-auto-revert final_check policy.
+func (s *Service) Reposition(namespace, path string, view core.View, jsonOut bool, args RepositionArgs) (SetResult, int) {
+	_ = jsonOut
+	result := SetResult{
+		Result: core.Result{
+			Namespace: namespace,
+			Command:   "reposition",
+			File:      path,
+			View:      view,
+		},
+	}
+
+	if namespace != "scene" {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR reposition not implemented for namespace=%s", namespace)
+		return result, 1
+	}
+	if !args.HasID || args.ID == 0 {
+		result.Status = "ERROR"
+		result.Body = "ERROR reposition requires non-zero --id"
+		return result, 1
+	}
+
+	loaded, err := s.load(path)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	idField := fmt.Sprintf(" file=%s id=%d field=%s", path, args.ID, mutation.RepositionField)
+
+	preCheck := phaseCheck{phase: safety.PhasePre, report: safety.CheckBytes(loaded.data)}
+	if preCheck.report.Blocking() {
+		result.Status = "BLOCKED"
+		result.Body = blockedBody(idField, preCheck)
+		result.Safety = newSafetyPayload([]phaseCheck{preCheck})
+		return result, 0
+	}
+
+	plan, err := mutation.PlanSceneReposition(loaded.data, loaded.blocks, mutation.SceneRepositionRequest{
+		Path:     path,
+		ID:       args.ID,
+		Position: args.Position,
+		Rewrite:  true,
+	})
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	tempCheck := phaseCheck{phase: safety.PhaseTemp, report: safety.CheckBytes(plan.UpdatedData)}
+	if tempCheck.report.Blocking() {
+		result.Status = "BLOCKED"
+		result.Body = blockedBody(idField, tempCheck)
+		result.Safety = newSafetyPayload([]phaseCheck{preCheck, tempCheck})
+		return result, 0
+	}
+	checks := []phaseCheck{preCheck, tempCheck}
+
+	if !args.Write {
+		result.Status = "OK"
+		result.Body = fmt.Sprintf(
+			"DRY_RUN id=%d field=%s old=%s new=%s changed=%d%s%s",
+			args.ID, plan.Field, plan.OldValue, plan.NewValue, boolToInt(plan.Changed),
+			checkSuffix(checks), checkDetailLines(checks),
+		)
+		result.Safety = newSafetyPayload(checks)
+		return result, 0
+	}
+
+	if !plan.Changed {
+		verification := s.verifyReposition(path, args.ID, args.Position)
+		result.Status = "OK"
+		result.Body = fmt.Sprintf(
+			"OK id=%d field=%s old=%s new=%s changed=%d verified=%d%s%s",
+			args.ID, plan.Field, plan.OldValue, plan.NewValue, boolToInt(plan.Changed),
+			boolToInt(verification.Matched), checkSuffix(checks), checkDetailLines(checks),
+		)
+		result.Safety = newSafetyPayload(checks)
+		return result, 0
+	}
+
+	backupPath, writeErr := mutation.WriteWithBackup(path, plan.UpdatedData)
+	verification := repositionVerification{}
+	if writeErr == nil || writeCommitted(writeErr) {
+		verification = s.verifyReposition(path, args.ID, args.Position)
+	}
+
+	if writeErr != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf(
+			"ERROR WRITE_COMMITTED backup=%s id=%d field=%s old=%s new=%s changed=%d verified=%d err=%v",
+			backupPath, args.ID, plan.Field, plan.OldValue, plan.NewValue, boolToInt(plan.Changed),
+			boolToInt(verification.Matched), writeErr,
+		)
+		if !writeCommitted(writeErr) {
+			result.Body = fmt.Sprintf("ERROR %v", writeErr)
+		}
+		return result, 1
+	}
+
+	if !verification.Matched {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf(
+			"ERROR WRITE_COMMITTED backup=%s id=%d field=%s old=%s new=%s changed=%d verified=%d err=VERIFY_FAILED expected=%s actual=%s",
+			backupPath, args.ID, plan.Field, plan.OldValue, plan.NewValue, boolToInt(plan.Changed),
+			0, plan.NewValue, verification.Actual,
+		)
+		return result, 1
+	}
+
+	finalData, finalErr := readFinalState(path)
+	if finalErr != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf(
+			"ERROR WRITE_COMMITTED backup=%s id=%d field=%s old=%s new=%s changed=%d verified=%d err=final re-read failed: %v",
+			backupPath, args.ID, plan.Field, plan.OldValue, plan.NewValue, boolToInt(plan.Changed),
+			boolToInt(verification.Matched), finalErr,
+		)
+		return result, 1
+	}
+	finalCheck := phaseCheck{phase: safety.PhaseFinal, report: safety.CheckBytes(finalData)}
+	if finalCheck.report.Blocking() {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf(
+			"ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=%s id=%d field=%s old=%s new=%s changed=%d verified=%d%s",
+			backupPath, args.ID, plan.Field, plan.OldValue, plan.NewValue, boolToInt(plan.Changed),
+			boolToInt(verification.Matched), checkDetailLines([]phaseCheck{finalCheck}),
+		)
+		result.Safety = newSafetyPayload(append(checks, finalCheck))
+		return result, 1
+	}
+	checks = append(checks, finalCheck)
+
+	result.Status = "OK"
+	result.Body = fmt.Sprintf(
+		"WRITE backup=%s id=%d field=%s old=%s new=%s changed=%d verified=%d%s%s",
+		backupPath, args.ID, plan.Field, plan.OldValue, plan.NewValue, boolToInt(plan.Changed),
+		boolToInt(verification.Matched), checkSuffix(checks), checkDetailLines(checks),
+	)
+	result.Safety = newSafetyPayload(checks)
+	return result, 0
+}
+
+type repositionVerification struct {
+	Matched bool
+	Actual  string
+}
+
+// verifyReposition re-reads the file and confirms the target Transform's
+// m_LocalPosition now equals want, mirroring verifySetValue for the Vector3
+// case.
+func (s *Service) verifyReposition(path string, id int64, want [3]float64) repositionVerification {
+	loaded, err := s.load(path)
+	if err != nil {
+		return repositionVerification{Actual: "UNREADABLE"}
+	}
+	block, ok := loaded.doc.FindByFileID(id)
+	if !ok {
+		return repositionVerification{Actual: "NOT_RESOLVED"}
+	}
+	raw, ok := document.ResolveField(block.Fields, mutation.RepositionField)
+	if !ok {
+		return repositionVerification{Actual: "FIELD_NOT_FOUND"}
+	}
+	got, ok := vec3FromAny(raw)
+	if !ok {
+		return repositionVerification{Actual: "FIELD_NOT_VECTOR3"}
+	}
+	return repositionVerification{
+		Matched: got == want,
+		Actual:  formatVec3Display(got),
+	}
+}
+
 func (s *Service) Index(namespace, path string, view core.View, jsonOut bool, args IndexArgs) (core.Result, int) {
 	_ = jsonOut
 
