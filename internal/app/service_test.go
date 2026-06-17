@@ -3564,7 +3564,7 @@ func TestApplyReparentDryRunDoesNotWrite(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("dry-run exit=%d body=%q", code, got.Body)
 	}
-	want := "DRY_RUN op=reparent target=4001 new_parent=4002 old_parent=4000 changed=1 ack_required=1 pre_check=OK temp_check=OK"
+	want := "DRY_RUN op=reparent target=4001 new_parent=4002 old_parent=4000 changed=1 ack_required=1 cross_file_check=skipped reason=no_project pre_check=OK temp_check=OK"
 	if got.Body != want {
 		t.Fatalf("body:\n got %q\nwant %q", got.Body, want)
 	}
@@ -3585,7 +3585,7 @@ func TestApplyReparentWriteVerifiesAndBacksUp(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("write exit=%d body=%q", code, got.Body)
 	}
-	want := "WRITE backup=" + scenePath + ".bak op=reparent target=4001 new_parent=4002 old_parent=4000 changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK"
+	want := "WRITE backup=" + scenePath + ".bak op=reparent target=4001 new_parent=4002 old_parent=4000 changed=1 verified=1 cross_file_check=skipped reason=no_project pre_check=OK temp_check=OK final_check=OK"
 	if got.Body != want {
 		t.Fatalf("body:\n got %q\nwant %q", got.Body, want)
 	}
@@ -3731,5 +3731,85 @@ func TestReparentRejectsNonUnityFile(t *testing.T) {
 	}
 	if _, err := os.Stat(prefab + ".bak"); !os.IsNotExist(err) {
 		t.Fatalf("rejected apply created a backup")
+	}
+}
+
+// setupReparentProject writes a minimal Unity project: Assets/scene.unity (the
+// reparent target, guid GA) plus optional extra assets. Returns the project root
+// and the scene path.
+func setupReparentProject(t *testing.T, extra map[string]string) (string, string) {
+	t.Helper()
+	const ga = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	root := t.TempDir()
+	assets := filepath.Join(root, "Assets")
+	if err := os.MkdirAll(assets, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	scene := filepath.Join(assets, "scene.unity")
+	if err := os.WriteFile(scene, []byte(reparentSceneContent), 0o644); err != nil {
+		t.Fatalf("write scene: %v", err)
+	}
+	if err := os.WriteFile(scene+".meta", []byte("guid: "+ga+"\n"), 0o644); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+	for name, body := range extra {
+		p := filepath.Join(assets, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		if err := os.WriteFile(p+".meta", []byte("guid: feedface00000000000000000000"+name[:2]+"\n"), 0o644); err != nil {
+			t.Fatalf("write meta: %v", err)
+		}
+	}
+	return root, scene
+}
+
+func TestApplyReparentReportsCrossFileInboundWithoutBlocking(t *testing.T) {
+	const ga = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	refBody := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n  m_Ref: {fileID: 4001, guid: " + ga + ", type: 2}\n"
+	root, scene := setupReparentProject(t, map[string]string{"ref.unity": refBody})
+	patchPath := writeReparentPatch(t, scene, 4001, 4002, 4000)
+
+	got, code := app.New().Apply("scene", scene, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Project: root, Write: true, AckImpact: true})
+	if code != 0 {
+		t.Fatalf("inbound refs must NOT block reparent: code=%d body=%q", code, got.Body)
+	}
+	if !strings.Contains(got.Body, "cross_file_check=ok inbound_refs=1 indeterminate=0") {
+		t.Fatalf("missing cross-file summary: %q", got.Body)
+	}
+	if !strings.Contains(got.Body, "WARN REPARENT_HAS_INBOUND_REFS count=1 files=Assets/ref.unity") {
+		t.Fatalf("missing inbound detail: %q", got.Body)
+	}
+	// The referencing file is untouched (reparent moves, doesn't dangle).
+	ref, _ := os.ReadFile(filepath.Join(root, "Assets", "ref.unity"))
+	if string(ref) != refBody {
+		t.Fatal("referencing file was modified")
+	}
+}
+
+func TestApplyReparentNoProjectStatesSkip(t *testing.T) {
+	_, scene := setupReparentProject(t, nil)
+	patchPath := writeReparentPatch(t, scene, 4001, 4002, 4000)
+
+	got, code := app.New().Apply("scene", scene, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath})
+	if code != 0 {
+		t.Fatalf("dry-run exit=%d body=%q", code, got.Body)
+	}
+	if !strings.Contains(got.Body, "cross_file_check=skipped reason=no_project") {
+		t.Fatalf("missing explicit skip: %q", got.Body)
+	}
+}
+
+func TestApplyReparentReportsIndeterminateWithoutBlocking(t *testing.T) {
+	bad := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n  m_Script: {fileID: 999999999999999999999999999999, guid: 0123456789abcdef0123456789abcdef, type: 3}\n"
+	root, scene := setupReparentProject(t, map[string]string{"weird.unity": bad})
+	patchPath := writeReparentPatch(t, scene, 4001, 4002, 4000)
+
+	got, code := app.New().Apply("scene", scene, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Project: root})
+	if code != 0 {
+		t.Fatalf("indeterminate must NOT block reparent: code=%d body=%q", code, got.Body)
+	}
+	if !strings.Contains(got.Body, "indeterminate=1") || !strings.Contains(got.Body, "WARN REPARENT_INDETERMINATE_REFS count=1 files=Assets/weird.unity") {
+		t.Fatalf("missing indeterminate report: %q", got.Body)
 	}
 }

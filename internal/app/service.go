@@ -25,6 +25,7 @@ import (
 	"github.com/Kubonsang/unity-ctx/internal/safety"
 	"github.com/Kubonsang/unity-ctx/internal/scan"
 	suggestplan "github.com/Kubonsang/unity-ctx/internal/suggest"
+	"github.com/Kubonsang/unity-ctx/internal/xref"
 )
 
 type Service struct {
@@ -2256,9 +2257,14 @@ func (s *Service) applyReparent(path string, args ApplyArgs, envelope scenepatch
 	summary := fmt.Sprintf("op=reparent target=%d new_parent=%d old_parent=%d changed=%d",
 		plan.Target, plan.NewParent, plan.OldParent, boolToInt(plan.Changed))
 
+	// Cross-file reverse-reference report (visibility only; reparent never blocks
+	// on it — the object moves, its fileID stays valid, so external PPtrs are not
+	// dangled). The detail lines are appended AFTER any check detail lines.
+	xrefSummary, xrefDetail := reparentCrossFileReport(args.Project, path, plan.Target)
+
 	if !args.Write {
 		result.Status = "OK"
-		result.Body = fmt.Sprintf("DRY_RUN %s ack_required=1%s%s", summary, checkSuffix(checks), checkDetailLines(checks))
+		result.Body = fmt.Sprintf("DRY_RUN %s ack_required=1%s%s%s%s", summary, xrefSummary, checkSuffix(checks), checkDetailLines(checks), xrefDetail)
 		result.Safety = newSafetyPayload(checks)
 		return result, 0
 	}
@@ -2270,7 +2276,7 @@ func (s *Service) applyReparent(path string, args ApplyArgs, envelope scenepatch
 	}
 	if !plan.Changed {
 		result.Status = "OK"
-		result.Body = fmt.Sprintf("OK %s verified=1%s%s", summary, checkSuffix(checks), checkDetailLines(checks))
+		result.Body = fmt.Sprintf("OK %s verified=1%s%s%s%s", summary, xrefSummary, checkSuffix(checks), checkDetailLines(checks), xrefDetail)
 		result.Safety = newSafetyPayload(checks)
 		return result, 0
 	}
@@ -2313,9 +2319,57 @@ func (s *Service) applyReparent(path string, args ApplyArgs, envelope scenepatch
 	checks = append(checks, finalCheck)
 
 	result.Status = "OK"
-	result.Body = fmt.Sprintf("WRITE backup=%s %s verified=1%s%s", backupPath, summary, checkSuffix(checks), checkDetailLines(checks))
+	result.Body = fmt.Sprintf("WRITE backup=%s %s verified=1%s%s%s%s", backupPath, summary, xrefSummary, checkSuffix(checks), checkDetailLines(checks), xrefDetail)
 	result.Safety = newSafetyPayload(checks)
 	return result, 0
+}
+
+// reparentCrossFileReport runs the per-mutation reverse-reference scan for a
+// reparent target and renders a visibility report. Cross-file inbound references
+// do NOT block reparent: the object is moved, not deleted, so its fileID stays
+// valid and external PPtrs are not dangled. (delete (S5) will treat the same
+// signals as block reasons.) Without --project the check is skipped, stated
+// explicitly so a passing reparent is never read as "cross-file verified".
+func reparentCrossFileReport(project, scenePath string, targetID int64) (summary string, detail string) {
+	if strings.TrimSpace(project) == "" {
+		return " cross_file_check=skipped reason=no_project", ""
+	}
+	res, err := xref.ScanInbound(xref.Request{
+		ProjectPath: project,
+		TargetPath:  scenePath,
+		FileIDs:     []int64{targetID},
+	})
+	if err != nil {
+		return fmt.Sprintf(" cross_file_check=skipped reason=%s", crossFileSkipReason(err)), ""
+	}
+
+	summary = fmt.Sprintf(" cross_file_check=ok inbound_refs=%d indeterminate=%d", len(res.Inbound), len(res.Indeterminate))
+	var lines strings.Builder
+	if len(res.Inbound) > 0 {
+		paths := make([]string, 0, len(res.Inbound))
+		for _, hit := range res.Inbound {
+			paths = append(paths, hit.Path)
+		}
+		fmt.Fprintf(&lines, "\nWARN REPARENT_HAS_INBOUND_REFS count=%d files=%s", len(res.Inbound), strings.Join(paths, ","))
+	}
+	if len(res.Indeterminate) > 0 {
+		fmt.Fprintf(&lines, "\nWARN REPARENT_INDETERMINATE_REFS count=%d files=%s", len(res.Indeterminate), strings.Join(res.Indeterminate, ","))
+	}
+	return summary, lines.String()
+}
+
+// crossFileSkipReason maps a scan error to a single-token reason for the
+// cross_file_check=skipped key=value field.
+func crossFileSkipReason(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "meta"):
+		return "no_meta"
+	case strings.Contains(msg, "Assets root"):
+		return "no_assets_root"
+	default:
+		return "scan_error"
+	}
 }
 
 func (s *Service) load(path string) (*loadedDoc, error) {

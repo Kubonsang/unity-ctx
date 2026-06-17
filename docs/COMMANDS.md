@@ -1253,8 +1253,30 @@ old and new parents' `m_Children` atomically (one file, one `.bak`). `--new-pare
 - A stale patch (its `old_parent` no longer matches the scene) is rejected
   (`ERROR PATCH_STALE`).
 
-Cross-file integrity (a reparent that dangles a reference from another scene/
-prefab) is out of scope for this slice.
+**Cross-file reference report (visibility, not a block).** Pass `--project DIR`
+to `scene apply` and it runs a per-mutation reverse-reference scan (no cache) of
+the project for inbound PPtrs to the moved object, surfacing them on the result:
+
+```text
+... cross_file_check=ok inbound_refs=N indeterminate=M
+WARN REPARENT_HAS_INBOUND_REFS count=N files=Assets/Other.unity,...
+WARN REPARENT_INDETERMINATE_REFS count=M files=...
+```
+
+- These are **informational, never blocking**: reparent *moves* the object, so its
+  fileID stays valid and external PPtrs are not dangled. The WARN exists so an
+  agent knows the move may have semantic impact (e.g. world-space/parent-scale
+  assumptions in the referencing object) — which is not a graph-integrity fact.
+- `indeterminate` = files whose references could not be fully parsed
+  (`ExtractRefs` warnings); reported conservatively but still **not** a block for
+  reparent.
+- This deliberately differs from a future `delete`, which *removes* the fileID and
+  so will **BLOCK** on the same inbound/indeterminate signals (then the references
+  genuinely dangle).
+- Without `--project` the scan is skipped and said so explicitly:
+  `cross_file_check=skipped reason=no_project` (so a passing reparent is never
+  misread as "cross-file verified"). A missing `.meta` reports
+  `reason=no_meta`.
 
 ## Output Stability Rules
 

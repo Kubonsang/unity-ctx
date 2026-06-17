@@ -94,6 +94,7 @@ type ApplyArgs struct {
 	Patch     string
 	Write     bool
 	AckImpact bool
+	Project   string // optional; enables the v2 reparent cross-file reference report
 }
 
 type ScanArgs struct {
