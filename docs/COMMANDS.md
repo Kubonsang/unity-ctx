@@ -1255,7 +1255,10 @@ old and new parents' `m_Children` atomically (one file, one `.bak`). `--new-pare
 
 **Cross-file reference report (visibility, not a block).** Pass `--project DIR`
 to `scene apply` and it runs a per-mutation reverse-reference scan (no cache) of
-the project for inbound PPtrs to the moved object, surfacing them on the result:
+the project for inbound PPtrs to the moved object, surfacing them on the result.
+The scan covers the **whole moved object** — its Transform, its GameObject, and
+every component — because external referrers usually point at the GameObject or a
+component, not the Transform fileID:
 
 ```text
 ... cross_file_check=ok inbound_refs=N indeterminate=M
@@ -1267,16 +1270,24 @@ WARN REPARENT_INDETERMINATE_REFS count=M files=...
   fileID stays valid and external PPtrs are not dangled. The WARN exists so an
   agent knows the move may have semantic impact (e.g. world-space/parent-scale
   assumptions in the referencing object) — which is not a graph-integrity fact.
-- `indeterminate` = files whose references could not be fully parsed
-  (`ExtractRefs` warnings); reported conservatively but still **not** a block for
-  reparent.
+- `indeterminate` = files whose references could not be fully accounted for:
+  a parse failure, a target-GUID mention not recovered as a structured PPtr, an
+  unreadable directory/file, or an anomalously **binary** object asset
+  (`.prefab`/`.unity`/`.mat`/… that is not text under Force Text). Reported
+  conservatively (never a silent "no refs") but still **not** a block for reparent.
+  Baked binary `.asset` data (LightingData, NavMesh) is out of scan scope, not
+  flagged.
 - This deliberately differs from a future `delete`, which *removes* the fileID and
   so will **BLOCK** on the same inbound/indeterminate signals (then the references
   genuinely dangle).
-- Without `--project` the scan is skipped and said so explicitly:
-  `cross_file_check=skipped reason=no_project` (so a passing reparent is never
-  misread as "cross-file verified"). A missing `.meta` reports
-  `reason=no_meta`.
+- The scan is skipped (and says so explicitly, so a passing reparent is never
+  misread as "cross-file verified") with a stated reason:
+  `cross_file_check=skipped reason=<no_project|no_change|no_meta|no_assets_root|scan_error>`.
+  `no_change` = a no-op reparent (target already under the requested parent), so
+  nothing moved and the project is not walked.
+- `--project` applies only to reparent (v2 `ops[]`) patches. Passing it to a v1
+  `place_prefab` apply is an explicit error (`ERROR --project applies only to
+  reparent (v2 ops) patches`), never silently ignored.
 
 ## Output Stability Rules
 

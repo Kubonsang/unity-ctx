@@ -334,3 +334,81 @@ func TestScanInboundDetectsBOMPrefixedReferrer(t *testing.T) {
 		t.Fatalf("BOM-prefixed referrer not detected: inbound=%+v indeterminate=%v", res.Inbound, res.Indeterminate)
 	}
 }
+
+// TestScanInboundDoesNotFlagGUIDOnlyInMapKey is the fix for the backstop counting
+// only string VALUES: a target GUID used as a YAML map key (a serialized
+// dictionary) is fully parsed and must NOT be flagged indeterminate.
+func TestScanInboundDoesNotFlagGUIDOnlyInMapKey(t *testing.T) {
+	root := t.TempDir()
+	writeAsset(t, root, "A.unity", guidA, targetScene())
+	body := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n" +
+		"  m_Dict:\n    " + guidA + ": 5\n" // target guid as a map KEY, not a PPtr
+	writeAsset(t, root, "B.unity", guidB, body)
+
+	res, err := ScanInbound(Request{ProjectPath: root, TargetPath: filepath.Join(root, "Assets", "A.unity"), FileIDs: []int64{4001}})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if len(res.Inbound) != 0 {
+		t.Fatalf("guid-as-key misreported as inbound: %+v", res.Inbound)
+	}
+	if len(res.Indeterminate) != 0 {
+		t.Fatalf("fully-parsed guid map key falsely flagged indeterminate: %v", res.Indeterminate)
+	}
+}
+
+// TestScanInboundExcludesTargetViaDifferentlyNamedSymlink is the fix for the
+// basename-gated self-exclusion hole: a leaf symlink to the target under a
+// DIFFERENT name must still be recognized as the target and not scanned as its
+// own referrer.
+func TestScanInboundExcludesTargetViaDifferentlyNamedSymlink(t *testing.T) {
+	root := t.TempDir()
+	selfRef := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n" +
+		"  m_Self: {fileID: 4001, guid: " + guidA + ", type: 2}\n"
+	writeAsset(t, root, "A.unity", guidA, selfRef)
+	alias := filepath.Join(root, "Assets", "Alias.unity")
+	if err := os.Symlink(filepath.Join(root, "Assets", "A.unity"), alias); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	res, err := ScanInbound(Request{ProjectPath: root, TargetPath: filepath.Join(root, "Assets", "A.unity"), FileIDs: []int64{4001}})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if len(res.Inbound) != 0 {
+		t.Fatalf("differently-named symlink alias to target scanned as a referrer: %+v", res.Inbound)
+	}
+}
+
+// TestScanInboundFlagsBinaryUnityAsset is the fix for the silent skip of
+// binary-serialized Unity assets: a .prefab that is NOT text-YAML is flagged
+// indeterminate (cannot be scanned), while a non-asset binary (.png) is skipped.
+func TestScanInboundFlagsBinaryUnityAsset(t *testing.T) {
+	root := t.TempDir()
+	writeAsset(t, root, "A.unity", guidA, targetScene())
+	bin := string([]byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05}) // not %YAML
+	writeAsset(t, root, "Binary.prefab", guidC, bin)          // known Unity asset ext
+	writeAsset(t, root, "Texture.png", guidD, bin)            // non-asset binary
+
+	res, err := ScanInbound(Request{ProjectPath: root, TargetPath: filepath.Join(root, "Assets", "A.unity"), FileIDs: []int64{4001}})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	hasBinary, hasPNG := false, false
+	for _, p := range res.Indeterminate {
+		if p == "Assets/Binary.prefab" {
+			hasBinary = true
+		}
+		if p == "Assets/Texture.png" {
+			hasPNG = true
+		}
+	}
+	if !hasBinary {
+		t.Fatalf("binary .prefab not flagged indeterminate: %v", res.Indeterminate)
+	}
+	if hasPNG {
+		t.Fatalf("non-asset binary .png should be skipped, not flagged: %v", res.Indeterminate)
+	}
+}

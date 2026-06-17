@@ -295,8 +295,11 @@ func blockGameObjectID(b parser.Block) int64 {
 }
 
 // blockComponentIDs reads a GameObject's m_Component list, returning each
-// component's fileID. Entries are `- component: {fileID: N}` (the Transform is
-// itself one of them); a defensive `- {fileID: N}` shape is also accepted.
+// component's fileID (the Transform is itself one of them). It accepts every
+// serialized entry shape: the modern `- component: {fileID: N}`, the legacy
+// numeric-classID key `- 4: {fileID: N}` / `- 114: {fileID: N}`, and a bare
+// `- {fileID: N}` — the fileID is taken from the entry's nested PPtr under
+// whatever key it carries.
 func blockComponentIDs(b parser.Block) []int64 {
 	raw, ok := b.Fields["m_Component"].([]any)
 	if !ok {
@@ -308,14 +311,20 @@ func blockComponentIDs(b parser.Block) []int64 {
 		if !ok {
 			continue
 		}
-		if comp, ok := m["component"].(map[string]any); ok {
-			if id, ok := asInt64(comp["fileID"]); ok {
-				out = append(out, id)
-				continue
-			}
-		}
-		if id, ok := asInt64(m["fileID"]); ok {
+		if id, ok := asInt64(m["fileID"]); ok { // bare `- {fileID: N}`
 			out = append(out, id)
+			continue
+		}
+		// `- <key>: {fileID: N}` where key is "component" (modern) or a numeric
+		// classID (legacy). A component entry is a single-key map, so the first
+		// nested PPtr value is the component reference.
+		for _, v := range m {
+			if inner, ok := v.(map[string]any); ok {
+				if id, ok := asInt64(inner["fileID"]); ok {
+					out = append(out, id)
+					break
+				}
+			}
 		}
 	}
 	return out

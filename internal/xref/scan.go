@@ -86,7 +86,9 @@ func ScanInbound(req Request) (Result, error) {
 	for _, id := range req.FileIDs {
 		fileIDSet[id] = struct{}{}
 	}
-	targetBase := filepath.Base(targetAbs)
+	// Physical-path identity of the target and the scan root, resolved once.
+	targetReal := impact.ResolvePath(targetAbs)
+	assetsRootReal := impact.ResolvePath(assetsRoot)
 
 	result := Result{TargetGUID: guid}
 	indeterminate := map[string]struct{}{}
@@ -104,12 +106,20 @@ func ScanInbound(req Request) (Result, error) {
 		if d.IsDir() {
 			return nil
 		}
-		// Self-exclusion: skip the file being edited (its in-file links are the
-		// graph-check's job). Compare by physical-path identity (resolves symlinks
-		// and cwd-relative spellings) so the target is never scanned as its own
-		// referrer; gate on basename first so the symlink resolution stays off the
-		// hot path for the files that cannot be the target.
-		if filepath.Base(path) == targetBase && impact.SamePath(path, targetAbs) {
+		// Self-exclusion by physical-path identity (the file's in-file links are
+		// the graph-check's job, not a cross-file reference). WalkDir does not
+		// descend through symlinked directories, so a regular walked file has no
+		// symlink in its path below assetsRoot: its real path is assetsRootReal+rel,
+		// a pure string computation with no per-file syscall. This also collapses a
+		// symlinked project root / cwd-relative target spelling (the differing
+		// prefix folds into assetsRootReal). The ONLY per-file resolve is for a leaf
+		// symlink — a differently-named alias to the target — gated on the entry
+		// actually being a symlink, so the hot path stays syscall-free.
+		if rel, relErr := filepath.Rel(assetsRoot, path); relErr == nil &&
+			filepath.Clean(filepath.Join(assetsRootReal, rel)) == targetReal {
+			return nil
+		}
+		if d.Type()&fs.ModeSymlink != 0 && impact.ResolvePath(path) == targetReal {
 			return nil
 		}
 
@@ -119,12 +129,23 @@ func ScanInbound(req Request) (Result, error) {
 		// while binaries are cheaply skipped via the header peek.
 		data, isYAML, readErr := readUnityYAML(path)
 		if readErr != nil {
-			if isYAML {
+			// Confirmed-YAML-but-unreadable, or a known Unity asset we could not
+			// open/read: cannot account for its refs -> indeterminate, never silent.
+			if isYAML || isUnityYAMLAssetExt(path) {
 				indeterminate[assetPathRel(assetsRoot, path)] = struct{}{}
 			}
 			return nil
 		}
 		if !isYAML {
+			// A file with a Unity YAML-asset extension that is NOT text-YAML is
+			// binary-serialized (the project is not set to Force Text), or its header
+			// could not be read. Either way it cannot be scanned, so flag it
+			// indeterminate rather than silently treat it as "no refs". Non-asset
+			// binaries (textures, audio, meshes) hold no PPtrs and are skipped. In a
+			// normal Force-Text project no asset hits this branch.
+			if isUnityYAMLAssetExt(path) {
+				indeterminate[assetPathRel(assetsRoot, path)] = struct{}{}
+			}
 			return nil
 		}
 		assetPath := assetPathRel(assetsRoot, path)
@@ -195,7 +216,7 @@ func readUnityYAML(path string) (data []byte, isYAML bool, err error) {
 	defer f.Close()
 
 	var head [24]byte
-	n, _ := io.ReadFull(f, head[:])
+	n, _ := io.ReadFull(f, head[:]) // EOF/short reads are fine; a real I/O error just fails the sniff
 	sniff := bytes.TrimLeft(bytes.TrimPrefix(head[:n], utf8BOM), " \t\r\n")
 	if !bytes.HasPrefix(sniff, []byte("%YAML")) {
 		return nil, false, nil
@@ -212,18 +233,20 @@ func readUnityYAML(path string) (data []byte, isYAML bool, err error) {
 }
 
 // countGUIDMentions returns how many times guid occurs as a substring of any
-// string value in a parsed field tree (recursing maps and lists). It is the
-// completeness-backstop denominator: every target-GUID mention the parser
-// recovered as a value — whether a PPtr guid, a bare guid field, or text — is
-// "accounted for", so only mentions that survive in the raw bytes but not here
-// (an unparsed/malformed reference form) drive a file to indeterminate.
+// string the parser recovered in a field tree — both map KEYS (a serialized
+// dictionary can key on a guid) and string VALUES, recursing maps and lists. It
+// is the completeness-backstop denominator: every target-GUID mention the parser
+// accounted for — a PPtr guid, a bare guid field, a guid map key, or prose — is
+// counted, so only mentions that survive in the raw bytes but not here (an
+// unparsed/malformed reference form) drive a file to indeterminate.
 func countGUIDMentions(value any, guid string) int {
 	switch v := value.(type) {
 	case string:
 		return strings.Count(v, guid)
 	case map[string]any:
 		n := 0
-		for _, child := range v {
+		for k, child := range v {
+			n += strings.Count(k, guid)
 			n += countGUIDMentions(child, guid)
 		}
 		return n
@@ -246,6 +269,12 @@ func collectPPtrs(value any, onRef func(fileID int64, guid string, hasGUID bool)
 	case map[string]any:
 		if fidRaw, ok := v["fileID"]; ok {
 			if fileID, ok := asInt64(fidRaw); ok {
+				// The guid is read as a string. A real Unity GUID is 32 hex chars,
+				// effectively always containing a-f, so the parser keeps it a string.
+				// The vanishingly rare all-decimal GUID parses to a number and is
+				// missed here — but the raw-mention backstop then flags the file
+				// indeterminate (raw>parsed), so it degrades to "unknown", never to a
+				// silent "no refs"; the conservative contract still holds.
 				g, hasG := v["guid"].(string)
 				onRef(fileID, g, hasG && g != "")
 			}
@@ -271,6 +300,31 @@ func asInt64(value any) (int64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// unityYAMLAssetExts are object-asset extensions Unity ALWAYS serializes as text
+// YAML under Force Text. A file with one of these extensions that is NOT text-YAML
+// is anomalously binary (Mixed / Force Binary serialization); the scanner flags it
+// indeterminate (it cannot be scanned) rather than silently reporting "no refs".
+// Inclusion in the scan itself is by %YAML content sniff, not by this list — this
+// list only governs the conservative binary-asset signal.
+//
+// .asset is intentionally EXCLUDED: it is dual-use — text ScriptableObjects (which
+// the content sniff scans normally) AND baked binary data (LightingData, NavMesh)
+// that Unity stores as binary even under Force Text. Flagging every baked .asset
+// indeterminate is pure noise (verified on a real project: it flagged 10 baked
+// .asset files), so binary .asset is treated as out-of-scan-scope, not as unknown.
+var unityYAMLAssetExts = map[string]struct{}{
+	".unity": {}, ".prefab": {}, ".mat": {}, ".controller": {},
+	".overridecontroller": {}, ".anim": {}, ".playable": {}, ".mask": {},
+	".preset": {}, ".spriteatlas": {}, ".physicmaterial": {}, ".physicsmaterial2d": {},
+	".terrainlayer": {}, ".mixer": {}, ".guiskin": {}, ".fontsettings": {},
+	".flare": {}, ".brush": {}, ".signal": {}, ".shadervariants": {},
+}
+
+func isUnityYAMLAssetExt(path string) bool {
+	_, ok := unityYAMLAssetExts[strings.ToLower(filepath.Ext(path))]
+	return ok
 }
 
 func assetPathRel(assetsRoot, path string) string {

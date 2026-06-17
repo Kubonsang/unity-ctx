@@ -67,27 +67,26 @@ func LoadPrefabGUID(targetPath string) (string, error) {
 	return "", fmt.Errorf("prefab guid not found file=%s", filepath.Clean(metaPath))
 }
 
-// SamePath reports whether two paths resolve to the same physical file. It makes
-// both absolute and resolves symlinks before comparing, so two different
-// spellings of one file (a symlinked directory, or a cwd-relative arg that
-// normalizes differently from an absolute one — e.g. macOS /tmp vs /private/tmp)
-// are recognized as identical. A lexical Clean compare alone misses these.
+// ResolvePath returns p made absolute and symlink-resolved (falling back to a
+// cleaned absolute, then a cleaned raw path, if resolution fails), so it can be
+// used for physical-path identity checks. Two different spellings of one file (a
+// symlinked directory, or a cwd-relative arg that normalizes differently from an
+// absolute one — e.g. macOS /tmp vs /private/tmp) resolve to the same string.
+func ResolvePath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(abs)
+}
+
+// SamePath reports whether two paths resolve to the same physical file. A lexical
+// Clean compare alone misses symlinked/cwd-relative spellings; ResolvePath does not.
 func SamePath(left, right string) bool {
-	leftAbs, err := filepath.Abs(left)
-	if err != nil {
-		return false
-	}
-	rightAbs, err := filepath.Abs(right)
-	if err != nil {
-		return false
-	}
-	if resolved, err := filepath.EvalSymlinks(leftAbs); err == nil {
-		leftAbs = resolved
-	}
-	if resolved, err := filepath.EvalSymlinks(rightAbs); err == nil {
-		rightAbs = resolved
-	}
-	return filepath.Clean(leftAbs) == filepath.Clean(rightAbs)
+	return ResolvePath(left) == ResolvePath(right)
 }
 
 func ScanPrefabImpact(req Request) (Result, error) {

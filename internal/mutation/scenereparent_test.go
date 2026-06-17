@@ -272,3 +272,25 @@ func TestReparentTargetFileIDsKeepsGameObjectPointerWhenBlockAbsent(t *testing.T
 		t.Fatalf("ReparentTargetFileIDs = %v, want [4001 9999]", got)
 	}
 }
+
+func TestReparentTargetFileIDsHandlesLegacyComponentShape(t *testing.T) {
+	// Legacy Unity serialization: numeric classID as the m_Component entry key.
+	scene := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!1 &1001\nGameObject:\n  m_Component:\n  - 4: {fileID: 4001}\n  - 114: {fileID: 114001}\n  m_Name: Child\n" +
+		"--- !u!4 &4001\nTransform:\n  m_GameObject: {fileID: 1001}\n  m_Children: []\n  m_Father: {fileID: 0}\n" +
+		"--- !u!114 &114001\nMonoBehaviour:\n  m_GameObject: {fileID: 1001}\n"
+	blocks, err := parser.Parse([]byte(scene))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	got := ReparentTargetFileIDs(blocks, 4001)
+	want := []int64{1001, 4001, 114001} // GameObject + Transform + MonoBehaviour
+	if len(got) != len(want) {
+		t.Fatalf("ReparentTargetFileIDs = %v, want %v (legacy component shape must be parsed)", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ReparentTargetFileIDs = %v, want %v", got, want)
+		}
+	}
+}

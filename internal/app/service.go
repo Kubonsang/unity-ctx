@@ -2053,6 +2053,16 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 		return s.applyReparent(path, args, envelope, result)
 	}
 
+	// --project drives the reparent (v2) cross-file report only. A v1 place_prefab
+	// apply performs no cross-file scan, so reject the flag rather than silently
+	// accept and ignore it — a passing apply must never be misread as "cross-file
+	// verified" when no scan ran.
+	if strings.TrimSpace(args.Project) != "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR --project applies only to reparent (v2 ops) patches"
+		return result, 1
+	}
+
 	loaded, err := s.load(path)
 	if err != nil {
 		result.Status = "ERROR"
@@ -2262,9 +2272,16 @@ func (s *Service) applyReparent(path string, args ApplyArgs, envelope scenepatch
 	// dangled). The detail lines are appended AFTER any check detail lines. The
 	// scan covers the whole moved object — its Transform, GameObject, and every
 	// component — because external referrers usually point at the GameObject or a
-	// component, not the Transform fileID.
-	objectIDs := mutation.ReparentTargetFileIDs(loaded.blocks, plan.Target)
-	xrefSummary, xrefDetail := reparentCrossFileReport(args.Project, path, objectIDs)
+	// component, not the Transform fileID. A no-op reparent (target already under
+	// new_parent) moves nothing, so there is no cross-file impact to report and no
+	// reason to walk the whole project — skip the scan and say so.
+	var xrefSummary, xrefDetail string
+	if plan.Changed {
+		objectIDs := mutation.ReparentTargetFileIDs(loaded.blocks, plan.Target)
+		xrefSummary, xrefDetail = reparentCrossFileReport(args.Project, path, objectIDs)
+	} else {
+		xrefSummary = " cross_file_check=skipped reason=no_change"
+	}
 
 	if !args.Write {
 		result.Status = "OK"

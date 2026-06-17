@@ -3860,3 +3860,41 @@ func TestApplyReparentSkipReasonNotConfusedByMetaInPath(t *testing.T) {
 		t.Fatalf("expected reason=no_assets_root (not confused by 'meta' in path): %q", got.Body)
 	}
 }
+
+// TestApplyV1RejectsProjectFlag is the fix for --project being silently ignored
+// by the v1 place_prefab path: passing it to a non-reparent apply is now an
+// explicit error, so a passing apply is never misread as "cross-file verified".
+func TestApplyV1RejectsProjectFlag(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	patchPath := filepath.Join("..", "..", "testdata", "patches", "chair_place_ok.patch.json")
+
+	got, code := app.New().Apply("scene", scenePath, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Project: "."})
+	if code != 1 {
+		t.Fatalf("v1 apply with --project must error: code=%d body=%q", code, got.Body)
+	}
+	if !strings.Contains(got.Body, "--project applies only to reparent") {
+		t.Fatalf("wrong error body: %q", got.Body)
+	}
+}
+
+// TestApplyReparentNoOpSkipsCrossFileScan is the fix for running the whole-project
+// scan (and emitting a semantically-false WARN) on a no-op reparent: when nothing
+// moves, the scan is skipped with reason=no_change and no WARN is emitted.
+func TestApplyReparentNoOpSkipsCrossFileScan(t *testing.T) {
+	const ga = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	// ref.unity references the Transform (4001) — it WOULD be inbound if scanned.
+	refBody := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n  m_Ref: {fileID: 4001, guid: " + ga + ", type: 2}\n"
+	root, scene := setupReparentProject(t, map[string]string{"ref.unity": refBody})
+	patchPath := writeReparentPatch(t, scene, 4001, 4000, 4000) // new_parent == current parent => no-op
+
+	got, code := app.New().Apply("scene", scene, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Project: root})
+	if code != 0 {
+		t.Fatalf("no-op reparent exit=%d body=%q", code, got.Body)
+	}
+	if !strings.Contains(got.Body, "changed=0") || !strings.Contains(got.Body, "cross_file_check=skipped reason=no_change") {
+		t.Fatalf("no-op should skip the scan with reason=no_change: %q", got.Body)
+	}
+	if strings.Contains(got.Body, "WARN REPARENT_") {
+		t.Fatalf("no-op must not emit a cross-file WARN: %q", got.Body)
+	}
+}
