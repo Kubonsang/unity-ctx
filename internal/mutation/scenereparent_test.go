@@ -231,3 +231,44 @@ func TestVerifySceneReparentDetectsFailures(t *testing.T) {
 		t.Fatal("verify should fail when father not updated")
 	}
 }
+
+// reparentSceneRichObject: Child(1001) carries TWO components — its Transform
+// (4001) and a MonoBehaviour (114001) — so the cross-file scan set must cover
+// the GameObject and EVERY component, not just the Transform being reparented.
+const reparentSceneRichObject = "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+	"--- !u!1 &1001\nGameObject:\n  m_Component:\n  - component: {fileID: 4001}\n  - component: {fileID: 114001}\n  m_Name: Child\n" +
+	"--- !u!4 &4001\nTransform:\n  m_GameObject: {fileID: 1001}\n  m_Children: []\n  m_Father: {fileID: 0}\n" +
+	"--- !u!114 &114001\nMonoBehaviour:\n  m_GameObject: {fileID: 1001}\n  m_Enabled: 1\n"
+
+func TestReparentTargetFileIDsCoversGameObjectAndComponents(t *testing.T) {
+	blocks, err := parser.Parse([]byte(reparentSceneRichObject))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	got := ReparentTargetFileIDs(blocks, 4001) // reparent the Transform
+	want := []int64{1001, 4001, 114001}        // GameObject + Transform + MonoBehaviour, sorted
+	if len(got) != len(want) {
+		t.Fatalf("ReparentTargetFileIDs = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ReparentTargetFileIDs = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestReparentTargetFileIDsKeepsGameObjectPointerWhenBlockAbsent(t *testing.T) {
+	// Transform whose m_GameObject points at an absent block: the set degrades to
+	// just the Transform fileID rather than dropping it.
+	scene := "%YAML 1.1\n--- !u!4 &4001\nTransform:\n  m_GameObject: {fileID: 9999}\n  m_Father: {fileID: 0}\n"
+	blocks, err := parser.Parse([]byte(scene))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	got := ReparentTargetFileIDs(blocks, 4001)
+	if len(got) != 2 || got[0] != 4001 || got[1] != 9999 {
+		// 9999 (the dangling GameObject pointer) is still included as part of the
+		// object's identity; the Transform is always present.
+		t.Fatalf("ReparentTargetFileIDs = %v, want [4001 9999]", got)
+	}
+}

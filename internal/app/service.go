@@ -2259,8 +2259,12 @@ func (s *Service) applyReparent(path string, args ApplyArgs, envelope scenepatch
 
 	// Cross-file reverse-reference report (visibility only; reparent never blocks
 	// on it — the object moves, its fileID stays valid, so external PPtrs are not
-	// dangled). The detail lines are appended AFTER any check detail lines.
-	xrefSummary, xrefDetail := reparentCrossFileReport(args.Project, path, plan.Target)
+	// dangled). The detail lines are appended AFTER any check detail lines. The
+	// scan covers the whole moved object — its Transform, GameObject, and every
+	// component — because external referrers usually point at the GameObject or a
+	// component, not the Transform fileID.
+	objectIDs := mutation.ReparentTargetFileIDs(loaded.blocks, plan.Target)
+	xrefSummary, xrefDetail := reparentCrossFileReport(args.Project, path, objectIDs)
 
 	if !args.Write {
 		result.Status = "OK"
@@ -2330,14 +2334,14 @@ func (s *Service) applyReparent(path string, args ApplyArgs, envelope scenepatch
 // valid and external PPtrs are not dangled. (delete (S5) will treat the same
 // signals as block reasons.) Without --project the check is skipped, stated
 // explicitly so a passing reparent is never read as "cross-file verified".
-func reparentCrossFileReport(project, scenePath string, targetID int64) (summary string, detail string) {
+func reparentCrossFileReport(project, scenePath string, fileIDs []int64) (summary string, detail string) {
 	if strings.TrimSpace(project) == "" {
 		return " cross_file_check=skipped reason=no_project", ""
 	}
 	res, err := xref.ScanInbound(xref.Request{
 		ProjectPath: project,
 		TargetPath:  scenePath,
-		FileIDs:     []int64{targetID},
+		FileIDs:     fileIDs,
 	})
 	if err != nil {
 		return fmt.Sprintf(" cross_file_check=skipped reason=%s", crossFileSkipReason(err)), ""
@@ -2361,12 +2365,16 @@ func reparentCrossFileReport(project, scenePath string, targetID int64) (summary
 // crossFileSkipReason maps a scan error to a single-token reason for the
 // cross_file_check=skipped key=value field.
 func crossFileSkipReason(err error) string {
+	// Match on the stable prefixes of the errors ScanInbound/LoadPrefabGUID
+	// produce, NOT on a substring that could also occur in an embedded file path
+	// (a project path containing "meta" must not turn a missing-Assets-root error
+	// into reason=no_meta).
 	msg := err.Error()
 	switch {
-	case strings.Contains(msg, "meta"):
-		return "no_meta"
-	case strings.Contains(msg, "Assets root"):
+	case strings.HasPrefix(msg, "project Assets root not found"):
 		return "no_assets_root"
+	case strings.HasPrefix(msg, "prefab meta not found"), strings.HasPrefix(msg, "prefab guid not found"):
+		return "no_meta"
 	default:
 		return "scan_error"
 	}
@@ -2693,21 +2701,7 @@ func formatLookupError(err error) string {
 }
 
 func samePath(left, right string) bool {
-	leftAbs, err := filepath.Abs(left)
-	if err != nil {
-		return false
-	}
-	rightAbs, err := filepath.Abs(right)
-	if err != nil {
-		return false
-	}
-	if resolved, err := filepath.EvalSymlinks(leftAbs); err == nil {
-		leftAbs = resolved
-	}
-	if resolved, err := filepath.EvalSymlinks(rightAbs); err == nil {
-		rightAbs = resolved
-	}
-	return filepath.Clean(leftAbs) == filepath.Clean(rightAbs)
+	return impactscan.SamePath(left, right)
 }
 
 func sameSceneReference(left, right string) bool {

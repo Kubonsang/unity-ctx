@@ -3816,3 +3816,47 @@ func TestApplyReparentReportsIndeterminateWithoutBlocking(t *testing.T) {
 		t.Fatalf("missing indeterminate report: %q", got.Body)
 	}
 }
+
+// TestApplyReparentDetectsGameObjectInboundRef proves the cross-file scan covers
+// the whole moved object: an external referrer that points at the GameObject
+// (fileID 1001), NOT the Transform (4001) being reparented, is now detected.
+// Scanning the Transform fileID alone (the prior behavior) missed this — the
+// most common external-reference class.
+func TestApplyReparentDetectsGameObjectInboundRef(t *testing.T) {
+	const ga = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	refBody := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n  m_Ref: {fileID: 1001, guid: " + ga + ", type: 2}\n"
+	root, scene := setupReparentProject(t, map[string]string{"ref.unity": refBody})
+	patchPath := writeReparentPatch(t, scene, 4001, 4002, 4000)
+
+	got, code := app.New().Apply("scene", scene, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Project: root, Write: true, AckImpact: true})
+	if code != 0 {
+		t.Fatalf("inbound refs must NOT block reparent: code=%d body=%q", code, got.Body)
+	}
+	if !strings.Contains(got.Body, "cross_file_check=ok inbound_refs=1 indeterminate=0") {
+		t.Fatalf("GameObject inbound ref not detected (scan must cover the GameObject, not just the Transform): %q", got.Body)
+	}
+	if !strings.Contains(got.Body, "WARN REPARENT_HAS_INBOUND_REFS count=1 files=Assets/ref.unity") {
+		t.Fatalf("missing inbound detail: %q", got.Body)
+	}
+}
+
+// TestApplyReparentSkipReasonNotConfusedByMetaInPath proves the skip-reason
+// classifier matches the error's stable prefix, not arbitrary path content: a
+// project path containing lowercase "meta" with no Assets/ dir reports
+// no_assets_root, not no_meta.
+func TestApplyReparentSkipReasonNotConfusedByMetaInPath(t *testing.T) {
+	scene := writeReparentScene(t)
+	patchPath := writeReparentPatch(t, scene, 4001, 4002, 4000)
+	proj := filepath.Join(t.TempDir(), "gamemeta") // contains "meta", has NO Assets/
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	got, code := app.New().Apply("scene", scene, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Project: proj})
+	if code != 0 {
+		t.Fatalf("dry-run exit=%d body=%q", code, got.Body)
+	}
+	if !strings.Contains(got.Body, "cross_file_check=skipped reason=no_assets_root") {
+		t.Fatalf("expected reason=no_assets_root (not confused by 'meta' in path): %q", got.Body)
+	}
+}

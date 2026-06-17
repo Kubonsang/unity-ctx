@@ -67,6 +67,29 @@ func LoadPrefabGUID(targetPath string) (string, error) {
 	return "", fmt.Errorf("prefab guid not found file=%s", filepath.Clean(metaPath))
 }
 
+// SamePath reports whether two paths resolve to the same physical file. It makes
+// both absolute and resolves symlinks before comparing, so two different
+// spellings of one file (a symlinked directory, or a cwd-relative arg that
+// normalizes differently from an absolute one — e.g. macOS /tmp vs /private/tmp)
+// are recognized as identical. A lexical Clean compare alone misses these.
+func SamePath(left, right string) bool {
+	leftAbs, err := filepath.Abs(left)
+	if err != nil {
+		return false
+	}
+	rightAbs, err := filepath.Abs(right)
+	if err != nil {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(leftAbs); err == nil {
+		leftAbs = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(rightAbs); err == nil {
+		rightAbs = resolved
+	}
+	return filepath.Clean(leftAbs) == filepath.Clean(rightAbs)
+}
+
 func ScanPrefabImpact(req Request) (Result, error) {
 	projectRoot, err := filepath.Abs(req.ProjectPath)
 	if err != nil {

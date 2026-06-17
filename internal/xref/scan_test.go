@@ -205,3 +205,132 @@ func TestScanInboundNoMatch(t *testing.T) {
 		t.Fatalf("expected no hits, got inbound=%v indeterminate=%v", res.Inbound, res.Indeterminate)
 	}
 }
+
+// TestScanInboundDoesNotAbortOnUnreadableDir is the fix for the WalkDir abort
+// (return werr): a single unreadable directory must NOT drop all detection — the
+// rest of the scan continues and the unreadable path is flagged indeterminate.
+func TestScanInboundDoesNotAbortOnUnreadableDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root; permission bits do not block root")
+	}
+	root := t.TempDir()
+	writeAsset(t, root, "A.unity", guidA, targetScene())
+	writeAsset(t, root, "B.unity", guidB, refFile(4001, guidA, guidB)) // genuine inbound ref
+	locked := filepath.Join(root, "Assets", "locked")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "hidden.unity"), []byte(refFile(4001, guidA, guidC)), 0o644); err != nil {
+		t.Fatalf("write hidden: %v", err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) }) // restore so TempDir cleanup can remove it
+
+	res, err := ScanInbound(Request{
+		ProjectPath: root,
+		TargetPath:  filepath.Join(root, "Assets", "A.unity"),
+		FileIDs:     []int64{4001},
+	})
+	if err != nil {
+		t.Fatalf("scan must not abort on an unreadable dir: %v", err)
+	}
+	if len(res.Inbound) != 1 || res.Inbound[0].Path != "Assets/B.unity" {
+		t.Fatalf("readable inbound ref was dropped: inbound=%+v", res.Inbound)
+	}
+	found := false
+	for _, p := range res.Indeterminate {
+		if p == "Assets/locked" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("unreadable dir not flagged indeterminate: %v", res.Indeterminate)
+	}
+}
+
+// TestScanInboundExcludesTargetViaSymlinkedPath is the fix for lexical-only
+// self-exclusion: when the project is reached through a symlink (so the walked
+// path and the target arg are spelled differently), the target must still be
+// recognized as itself and not scanned as its own referrer.
+func TestScanInboundExcludesTargetViaSymlinkedPath(t *testing.T) {
+	root := t.TempDir()
+	// A.unity references its OWN guid (e.g. a prefab-variant self-PPtr); were the
+	// target not excluded it would be reported as inbound to itself.
+	selfRef := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n" +
+		"  m_Self: {fileID: 4001, guid: " + guidA + ", type: 2}\n"
+	writeAsset(t, root, "A.unity", guidA, selfRef)
+
+	link := filepath.Join(t.TempDir(), "proj")
+	if err := os.Symlink(root, link); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	res, err := ScanInbound(Request{
+		ProjectPath: link,                                     // symlinked spelling
+		TargetPath:  filepath.Join(root, "Assets", "A.unity"), // real spelling
+		FileIDs:     []int64{4001},
+	})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if len(res.Inbound) != 0 {
+		t.Fatalf("target scanned as its own referrer through a symlink: %+v", res.Inbound)
+	}
+	if len(res.Indeterminate) != 0 {
+		t.Fatalf("unexpected indeterminate: %v", res.Indeterminate)
+	}
+}
+
+// TestScanInboundDoesNotFlagNonPPtrGUIDMention is the fix for the over-eager
+// completeness backstop: a target-GUID mention the parser fully recovered but
+// that is NOT a fileID-bearing PPtr (an Addressables m_AssetGUID string, or a
+// bare guid field) must NOT be reported as indeterminate, and is not inbound.
+func TestScanInboundDoesNotFlagNonPPtrGUIDMention(t *testing.T) {
+	root := t.TempDir()
+	writeAsset(t, root, "A.unity", guidA, targetScene())
+	body := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n" +
+		"  m_AssetGUID: " + guidA + "\n" + // Addressables-style plain guid string
+		"  m_BareRef:\n    guid: " + guidA + "\n    something: 5\n" // guid map, no fileID
+	writeAsset(t, root, "B.unity", guidB, body)
+
+	res, err := ScanInbound(Request{
+		ProjectPath: root,
+		TargetPath:  filepath.Join(root, "Assets", "A.unity"),
+		FileIDs:     []int64{4001},
+	})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if len(res.Inbound) != 0 {
+		t.Fatalf("non-PPtr guid mention misreported as inbound: %+v", res.Inbound)
+	}
+	if len(res.Indeterminate) != 0 {
+		t.Fatalf("fully-parsed non-PPtr guid mention falsely flagged indeterminate: %v", res.Indeterminate)
+	}
+}
+
+// TestScanInboundDetectsBOMPrefixedReferrer is the fix for the byte-0 %YAML
+// gate: a referrer written with a leading UTF-8 BOM must still be detected as
+// inbound, not silently skipped as "not YAML".
+func TestScanInboundDetectsBOMPrefixedReferrer(t *testing.T) {
+	root := t.TempDir()
+	writeAsset(t, root, "A.unity", guidA, targetScene())
+	bom := string([]byte{0xEF, 0xBB, 0xBF})
+	writeAsset(t, root, "B.unity", guidB, bom+refFile(4001, guidA, guidB))
+
+	res, err := ScanInbound(Request{
+		ProjectPath: root,
+		TargetPath:  filepath.Join(root, "Assets", "A.unity"),
+		FileIDs:     []int64{4001},
+	})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if len(res.Inbound) != 1 || res.Inbound[0].Path != "Assets/B.unity" {
+		t.Fatalf("BOM-prefixed referrer not detected: inbound=%+v indeterminate=%v", res.Inbound, res.Indeterminate)
+	}
+}

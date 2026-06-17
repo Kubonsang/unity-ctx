@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/Kubonsang/unity-ctx/internal/impact"
 	"github.com/Kubonsang/unity-ctx/internal/parser"
@@ -85,20 +86,31 @@ func ScanInbound(req Request) (Result, error) {
 	for _, id := range req.FileIDs {
 		fileIDSet[id] = struct{}{}
 	}
+	targetBase := filepath.Base(targetAbs)
 
 	result := Result{TargetGUID: guid}
 	indeterminate := map[string]struct{}{}
 
 	walkErr := filepath.WalkDir(assetsRoot, func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
-			return werr
+			// A per-entry error (unreadable directory, broken symlink, transient
+			// I/O) must NEVER abort the whole walk — aborting would silently drop
+			// ALL inbound detection and report a clean "no refs", the exact failure
+			// this package promises to avoid. Flag the path indeterminate and keep
+			// scanning everything else.
+			indeterminate[assetPathRel(assetsRoot, path)] = struct{}{}
+			return nil
 		}
 		if d.IsDir() {
 			return nil
 		}
-		abs, absErr := filepath.Abs(path)
-		if absErr == nil && filepath.Clean(abs) == targetAbs {
-			return nil // self: in-file links are the graph-check's responsibility
+		// Self-exclusion: skip the file being edited (its in-file links are the
+		// graph-check's job). Compare by physical-path identity (resolves symlinks
+		// and cwd-relative spellings) so the target is never scanned as its own
+		// referrer; gate on basename first so the symlink resolution stays off the
+		// hot path for the files that cannot be the target.
+		if filepath.Base(path) == targetBase && impact.SamePath(path, targetAbs) {
+			return nil
 		}
 
 		// Identify Unity text-YAML assets by content (every text-serialized Unity
@@ -124,13 +136,13 @@ func ScanInbound(req Request) (Result, error) {
 		}
 
 		hitIDs := map[int64]struct{}{}
-		structuredTargetRefs := 0
+		parsedGUIDMentions := 0
 		for i := range blocks {
+			parsedGUIDMentions += countGUIDMentions(blocks[i].Fields, guid)
 			collectPPtrs(blocks[i].Fields, func(fileID int64, refGUID string, hasGUID bool) {
 				if !hasGUID || refGUID != guid {
 					return
 				}
-				structuredTargetRefs++
 				if _, ok := fileIDSet[fileID]; ok {
 					hitIDs[fileID] = struct{}{}
 				}
@@ -144,9 +156,12 @@ func ScanInbound(req Request) (Result, error) {
 			})
 		}
 		// Completeness backstop: if the target GUID appears in the raw bytes more
-		// times than we recovered as structured PPtrs, some reference form was not
-		// parsed -> conservatively indeterminate (never a silent "no refs").
-		if bytes.Count(data, guidBytes) > structuredTargetRefs {
+		// times than the parser recovered it as a value (in ANY field — a PPtr
+		// guid, an Addressables m_AssetGUID, even prose), some reference form was
+		// not parsed -> conservatively indeterminate (never a silent "no refs").
+		// Counting every recovered mention, not just fileID-bearing PPtrs, avoids
+		// false-flagging files whose target-GUID uses are all understood.
+		if bytes.Count(data, guidBytes) > parsedGUIDMentions {
 			indeterminate[assetPath] = struct{}{}
 		}
 		return nil
@@ -163,9 +178,15 @@ func ScanInbound(req Request) (Result, error) {
 	return result, nil
 }
 
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
 // readUnityYAML returns the file's bytes only if it is a Unity text-YAML asset
 // (header begins with "%YAML"); otherwise isYAML is false and data is nil. It
-// peeks the header before reading the whole file so binaries are not loaded.
+// peeks the header before reading the whole file so binaries are not loaded. A
+// leading UTF-8 BOM (some non-Unity editors prepend one) and leading whitespace
+// are tolerated for detection, and the BOM is stripped from the returned bytes
+// so the parser and the raw-mention backstop see clean YAML — otherwise a
+// BOM-prefixed referrer would be silently skipped as "not YAML".
 func readUnityYAML(path string) (data []byte, isYAML bool, err error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -173,9 +194,10 @@ func readUnityYAML(path string) (data []byte, isYAML bool, err error) {
 	}
 	defer f.Close()
 
-	var head [16]byte
+	var head [24]byte
 	n, _ := io.ReadFull(f, head[:])
-	if !bytes.HasPrefix(head[:n], []byte("%YAML")) {
+	sniff := bytes.TrimLeft(bytes.TrimPrefix(head[:n], utf8BOM), " \t\r\n")
+	if !bytes.HasPrefix(sniff, []byte("%YAML")) {
 		return nil, false, nil
 	}
 	rest, readErr := io.ReadAll(f)
@@ -185,7 +207,35 @@ func readUnityYAML(path string) (data []byte, isYAML bool, err error) {
 	full := make([]byte, 0, n+len(rest))
 	full = append(full, head[:n]...)
 	full = append(full, rest...)
+	full = bytes.TrimPrefix(full, utf8BOM)
 	return full, true, nil
+}
+
+// countGUIDMentions returns how many times guid occurs as a substring of any
+// string value in a parsed field tree (recursing maps and lists). It is the
+// completeness-backstop denominator: every target-GUID mention the parser
+// recovered as a value — whether a PPtr guid, a bare guid field, or text — is
+// "accounted for", so only mentions that survive in the raw bytes but not here
+// (an unparsed/malformed reference form) drive a file to indeterminate.
+func countGUIDMentions(value any, guid string) int {
+	switch v := value.(type) {
+	case string:
+		return strings.Count(v, guid)
+	case map[string]any:
+		n := 0
+		for _, child := range v {
+			n += countGUIDMentions(child, guid)
+		}
+		return n
+	case []any:
+		n := 0
+		for _, child := range v {
+			n += countGUIDMentions(child, guid)
+		}
+		return n
+	default:
+		return 0
+	}
 }
 
 // collectPPtrs walks a parsed field tree and reports every PPtr-shaped mapping
