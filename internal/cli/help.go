@@ -40,7 +40,7 @@ var commandSpecs = map[string]commandSpec{
 	"check":        {"placement overlap check against a manifest (scene)", "--manifest FILE --prefab P --position x,y,z [--json]"},
 	"patch":        {"build a patch plan (scene): place_prefab (v1) or reparent (v2 ops[])", "--op place_prefab --manifest FILE --prefab P --position x,y,z [--prefab-guid G] [--project DIR] | --op reparent --id N --new-parent M  [--json]"},
 	"diff":         {"summarize a persisted patch plan (scene; v1 or v2)", "--patch FILE [--json]"},
-	"apply":        {"apply a patch plan; dry-run first, --write to commit (scene)", "--patch FILE [--write] (reparent: --ack-impact) [--json]"},
+	"apply":        {"apply a patch plan; dry-run first, --write to commit (scene)", "--patch FILE [--write] (reparent: --ack-impact [--project DIR for cross-file report]) [--json]"},
 	"suggest":      {"rank prefab placement candidates near an anchor (scene)", "--manifest FILE --prefab P --near A [--count N] [--align floor|grid] [--out FILE] [--pick N] [--prefab-guid G] [--project DIR] [--json]"},
 }
 

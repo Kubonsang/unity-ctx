@@ -132,8 +132,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --mode, --scenes, or --prefabs\n", command)
 		return 2
 	}
-	if command != "scan" && command != "impact" && command != "suggest" && command != "patch" && command != "deps" && !(command == "set" && namespace == "prefab") && anyFlagVisited(seenFlags, "mode", "project", "scenes", "prefabs") {
+	if command != "scan" && command != "impact" && command != "suggest" && command != "patch" && command != "deps" && command != "apply" && !(command == "set" && namespace == "prefab") && anyFlagVisited(seenFlags, "mode", "project", "scenes", "prefabs") {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --mode, --project, --scenes, or --prefabs\n", command)
+		return 2
+	}
+	if command == "apply" && anyFlagVisited(seenFlags, "mode", "scenes", "prefabs") {
+		_, _ = fmt.Fprintf(stderr, "ERROR apply does not accept --mode, --scenes, or --prefabs\n")
 		return 2
 	}
 	if command != "diff" && command != "apply" && command != "suggest" && seenFlags["patch"] {
@@ -729,6 +733,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			Patch:     *patchPath,
 			Write:     *writeFlag,
 			AckImpact: *ackImpact,
+			Project:   *project,
 		})
 
 		if *jsonOutput {

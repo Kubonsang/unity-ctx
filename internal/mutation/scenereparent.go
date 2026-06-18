@@ -2,6 +2,7 @@ package mutation
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -247,6 +248,83 @@ func blockChildIDs(b parser.Block) []int64 {
 		}
 		if id, ok := asInt64(m["fileID"]); ok {
 			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// ReparentTargetFileIDs returns the set of local fileIDs that together identify
+// the reparented object for a cross-file reference scan: the target Transform,
+// its backing GameObject, and every component on that GameObject. An external
+// referrer almost always points at the GameObject (`m_GameObject: {fileID: N}`)
+// or a sibling component (a UnityEvent target, a component PPtr), NOT the
+// Transform — so scanning the Transform fileID alone misses the common
+// reference class. The xref scanner takes a fileID SET precisely so the consumer
+// can pass this whole object. Returns a sorted, de-duplicated slice; the target
+// Transform fileID is always included even if its GameObject can't be resolved.
+func ReparentTargetFileIDs(blocks []parser.Block, targetTransformID int64) []int64 {
+	ids := map[int64]struct{}{targetTransformID: {}}
+	if tb, ok := findBlockByID(blocks, targetTransformID); ok {
+		if goID := blockGameObjectID(tb); goID != 0 {
+			ids[goID] = struct{}{}
+			if gb, ok := findBlockByID(blocks, goID); ok {
+				for _, cid := range blockComponentIDs(gb) {
+					if cid != 0 {
+						ids[cid] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+	out := make([]int64, 0, len(ids))
+	for id := range ids {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// blockGameObjectID reads a Transform/component block's m_GameObject back-pointer.
+func blockGameObjectID(b parser.Block) int64 {
+	m, ok := b.Fields["m_GameObject"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	id, _ := asInt64(m["fileID"])
+	return id
+}
+
+// blockComponentIDs reads a GameObject's m_Component list, returning each
+// component's fileID (the Transform is itself one of them). It accepts every
+// serialized entry shape: the modern `- component: {fileID: N}`, the legacy
+// numeric-classID key `- 4: {fileID: N}` / `- 114: {fileID: N}`, and a bare
+// `- {fileID: N}` — the fileID is taken from the entry's nested PPtr under
+// whatever key it carries.
+func blockComponentIDs(b parser.Block) []int64 {
+	raw, ok := b.Fields["m_Component"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]int64, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if id, ok := asInt64(m["fileID"]); ok { // bare `- {fileID: N}`
+			out = append(out, id)
+			continue
+		}
+		// `- <key>: {fileID: N}` where key is "component" (modern) or a numeric
+		// classID (legacy). A component entry is a single-key map, so the first
+		// nested PPtr value is the component reference.
+		for _, v := range m {
+			if inner, ok := v.(map[string]any); ok {
+				if id, ok := asInt64(inner["fileID"]); ok {
+					out = append(out, id)
+					break
+				}
+			}
 		}
 	}
 	return out
