@@ -101,6 +101,111 @@ func Parse(data []byte) ([]Block, error) {
 	return blocks, nil
 }
 
+// ScanInlinePPtrs scans raw Unity YAML text for every balanced inline brace group
+// `{...}` that carries a top-level `fileID` key, reporting its fileID and optional
+// guid via onPPtr. It reads the actual braces in the raw bytes, so — unlike a walk
+// of the parsed field tree — it is independent of how the line/value parser
+// happened to structure (or mangle) a PPtr. It is brace-depth aware (a PPtr with a
+// nested sub-mapping, or a PPtr nested inside another flow map, is handled), spans
+// newlines (multiline-flow list items), and unquotes 'single'/"double" keys and
+// values. Block-style PPtrs (no braces — fileID/guid on separate indented lines)
+// have no brace group and are NOT reported here; recover those from the parsed
+// tree. A guid is reported only when present and non-empty (hasGUID).
+func ScanInlinePPtrs(raw string, onPPtr func(fileID int64, guid string, hasGUID bool)) {
+	var stack []int // byte offsets of unmatched '{'
+	inSingle, inDouble := false, false
+	for i := 0; i < len(raw); i++ {
+		switch c := raw[i]; {
+		case inSingle:
+			if c == '\'' {
+				inSingle = false
+			}
+		case inDouble:
+			if c == '"' {
+				inDouble = false
+			}
+		case c == '\'':
+			inSingle = true
+		case c == '"':
+			inDouble = true
+		case c == '{':
+			stack = append(stack, i)
+		case c == '}':
+			if n := len(stack); n > 0 {
+				open := stack[n-1]
+				stack = stack[:n-1]
+				if fileID, guid, hasGUID, ok := parseInlinePPtrBody(raw[open+1 : i]); ok {
+					onPPtr(fileID, guid, hasGUID)
+				}
+			}
+		}
+	}
+}
+
+// parseInlinePPtrBody parses the inside of one brace group, splitting on
+// top-level commas, and returns its fileID (ok=true) and optional guid.
+func parseInlinePPtrBody(body string) (fileID int64, guid string, hasGUID, ok bool) {
+	for _, part := range splitTopLevelCommas(body) {
+		key, val, found := strings.Cut(part, ":")
+		if !found {
+			continue
+		}
+		switch unquoteToken(strings.TrimSpace(key)) {
+		case "fileID":
+			if n, err := strconv.ParseInt(unquoteToken(strings.TrimSpace(val)), 10, 64); err == nil {
+				fileID, ok = n, true
+			}
+		case "guid":
+			if g := unquoteToken(strings.TrimSpace(val)); g != "" {
+				guid, hasGUID = g, true
+			}
+		}
+	}
+	return fileID, guid, hasGUID, ok
+}
+
+// splitTopLevelCommas splits s on commas that are not inside a nested {}/[] group
+// or a quote.
+func splitTopLevelCommas(s string) []string {
+	var parts []string
+	depth := 0
+	inSingle, inDouble := false, false
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case inSingle:
+			if c == '\'' {
+				inSingle = false
+			}
+		case inDouble:
+			if c == '"' {
+				inDouble = false
+			}
+		case c == '\'':
+			inSingle = true
+		case c == '"':
+			inDouble = true
+		case c == '{' || c == '[':
+			depth++
+		case (c == '}' || c == ']') && depth > 0:
+			depth--
+		case c == ',' && depth == 0:
+			parts = append(parts, s[start:i])
+			start = i + 1
+		}
+	}
+	return append(parts, s[start:])
+}
+
+func unquoteToken(s string) string {
+	if len(s) >= 2 {
+		if (s[0] == '\'' && s[len(s)-1] == '\'') || (s[0] == '"' && s[len(s)-1] == '"') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
+}
+
 // AsInt64 coerces a parsed scalar value (as produced by Parse) to int64. Parse
 // yields integer scalars as int64 and floating scalars as float64; a plain int is
 // accepted defensively. Any other type yields ok=false.

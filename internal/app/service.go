@@ -2470,7 +2470,11 @@ func (s *Service) applyDelete(path string, args ApplyArgs, envelope scenepatch.F
 		return result, 0
 	}
 
-	plan, err := mutation.PlanSceneDelete(loaded.data, loaded.blocks, op)
+	// The scene's own guid lets the in-file dangling check catch a self-qualified
+	// same-file PPtr ({fileID, guid: <this scene>}). Best-effort: a missing/unreadable
+	// .meta yields "" (guid-less in-file refs are still checked).
+	sceneGUID, _ := impactscan.LoadPrefabGUID(path)
+	plan, err := mutation.PlanSceneDelete(loaded.data, loaded.blocks, op, sceneGUID)
 	if err != nil {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR %v", err)

@@ -1322,12 +1322,19 @@ Transform from the parent's `m_Children` (one file, one `.bak`). `--id` is the
   `BLOCKED code=CROSS_FILE_REFERENCED ... inbound_refs=N indeterminate=M`
   (file untouched). A dry-run shows `block_on_write=1` so the block is previewed
   (including the scan-failure case `BLOCKED code=CROSS_FILE_SCAN_FAILED`).
-- **In-file dangling is checked two ways**: a parsed-tree walk for block/inline-map
-  PPtrs, plus a raw-text backstop for same-file inline PPtrs inside flow sequences
-  (`[{fileID: N}]`) that Unity's parser leaves opaque.
+- **Reference detection is serialization-agnostic.** Both the cross-file scan and
+  the in-file dangling check combine a parsed-tree walk (block-style + clean inline
+  maps) with `parser.ScanInlinePPtrs` — a brace-aware scan of the raw bytes that
+  recovers inline PPtrs in *any* form the line parser renders opaque: flow
+  sequences `[{...}]` (flat, multi-item, multiline-flow list items), nested
+  sub-braces `{fileID: N, m_Range: {…}, guid: G}`, and quoted keys/values. A
+  same-file ref is one with no guid OR the scene's own guid (so a self-qualified
+  `{fileID: N, guid: <this scene>}` is caught too). The goal: no PPtr form yields a
+  silent "no refs".
 - **Limitation**: a *non-empty flow-style* `m_Children`/`m_Roots` on the target's
-  parent (e.g. `m_Children: [{fileID: N}]`, rare in modern Unity) is not rewritten
-  — the op fails safe (ERROR/BLOCKED, no write), same as reparent.
+  parent (e.g. `m_Children: [{fileID: N}]`, rare in modern Unity) is not *rewritten*
+  for the unlink — the op fails safe (ERROR/BLOCKED, no write), same as reparent.
+  (This is about editing the parent list, not detecting references, which is robust.)
 - **`--project` is REQUIRED for `--write`** (`ERROR delete --write requires
   --project`): a committed delete is always cross-file-verified. A dry-run without
   `--project` reports `cross_file_check=skipped reason=no_project` and runs only

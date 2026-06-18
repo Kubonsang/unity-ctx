@@ -26,7 +26,17 @@ func planDelete(t *testing.T, scene string, target int64, cascade bool) (SceneDe
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	return PlanSceneDelete(input, blocks, patch.Op{Op: patch.OpDelete, Target: target, Cascade: cascade})
+	return PlanSceneDelete(input, blocks, patch.Op{Op: patch.OpDelete, Target: target, Cascade: cascade}, "")
+}
+
+func planDeleteGUID(t *testing.T, scene, sceneGUID string, target int64, cascade bool) (SceneDeletePlan, error) {
+	t.Helper()
+	input := []byte(scene)
+	blocks, err := parser.Parse(input)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	return PlanSceneDelete(input, blocks, patch.Op{Op: patch.OpDelete, Target: target, Cascade: cascade}, sceneGUID)
 }
 
 func sameIDs(got []int64, want ...int64) bool {
@@ -265,5 +275,44 @@ func TestPlanSceneDeleteAllowsNullComponent(t *testing.T) {
 	}
 	if !sameIDs(plan.DeletedFileIDs, 1000, 4000) {
 		t.Fatalf("DeletedFileIDs = %v, want [1000 4000] (no fileID 0)", plan.DeletedFileIDs)
+	}
+}
+
+func TestPlanSceneDeleteInFileFlowWithExtraFieldBlocks(t *testing.T) {
+	// A surviving same-file flow PPtr carrying an extra field (`[{fileID: N, type: 0}]`,
+	// guid-less) — the parser leaves it opaque; the raw brace-aware scan must catch it.
+	scene := strings.Replace(deleteScene,
+		"--- !u!114 &114001\nMonoBehaviour:\n  m_GameObject: {fileID: 1001}\n  m_Enabled: 1\n",
+		"--- !u!114 &114001\nMonoBehaviour:\n  m_GameObject: {fileID: 1001}\n  m_Enabled: 1\n  m_Refs: [{fileID: 4002, type: 0}]\n",
+		1)
+	plan, err := planDelete(t, scene, 1002, false)
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if !plan.PlanBlocked || plan.PlanCode != "IN_FILE_REFERENCED" {
+		t.Fatalf("flow-with-extra-field in-file ref must BLOCK, got %+v", plan)
+	}
+}
+
+func TestPlanSceneDeleteInFileSelfQualifiedGUIDBlocks(t *testing.T) {
+	// A same-file ref that fully-qualifies with the scene's OWN guid
+	// ({fileID: 4002, guid: <sceneGUID>}) — only detectable when the in-file check
+	// knows the scene guid.
+	const sceneGUID = "0123456789abcdef0123456789abcdef"
+	scene := strings.Replace(deleteScene,
+		"--- !u!114 &114001\nMonoBehaviour:\n  m_GameObject: {fileID: 1001}\n  m_Enabled: 1\n",
+		"--- !u!114 &114001\nMonoBehaviour:\n  m_GameObject: {fileID: 1001}\n  m_Enabled: 1\n  m_Self: {fileID: 4002, guid: "+sceneGUID+", type: 2}\n",
+		1)
+	// Without the scene guid the ref looks cross-file (not in-file): not blocked here.
+	if plan, _ := planDelete(t, scene, 1002, false); plan.PlanBlocked {
+		t.Fatalf("without scene guid, a guid-qualified ref is treated cross-file, not in-file: %+v", plan)
+	}
+	// With the scene guid, it is recognized as a same-file dangling ref -> BLOCK.
+	plan, err := planDeleteGUID(t, scene, sceneGUID, 1002, false)
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if !plan.PlanBlocked || plan.PlanCode != "IN_FILE_REFERENCED" {
+		t.Fatalf("self-qualified-guid same-file ref must BLOCK, got %+v", plan)
 	}
 }

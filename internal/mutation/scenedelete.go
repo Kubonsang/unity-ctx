@@ -2,9 +2,7 @@ package mutation
 
 import (
 	"fmt"
-	"regexp"
 	"sort"
-	"strconv"
 
 	"github.com/Kubonsang/unity-ctx/internal/parser"
 	"github.com/Kubonsang/unity-ctx/internal/patch"
@@ -16,14 +14,6 @@ const (
 	// root-level Transform in the scene.
 	classSceneRoots = 1660057539
 )
-
-// inlineGuidlessPPtr matches a complete same-file inline PPtr `{fileID: N}` (no
-// guid). It is the raw-text backstop for the in-file dangling check: the parser
-// renders a non-empty FLOW sequence like `m_Targets: [{fileID: 4002}]` as an
-// opaque string, so a PPtr inside it is invisible to a parsed-tree walk. A PPtr
-// carrying a guid (`{fileID: N, guid: ...}`) is a cross-file ref (has a comma
-// before the closing brace) and is intentionally not matched here.
-var inlineGuidlessPPtr = regexp.MustCompile(`\{\s*fileID:\s*(-?\d+)\s*\}`)
 
 // SceneDeletePlan is the result of planning a delete op. EndpointBlocked
 // (Policy 1: target class / stripped / missing-transform) and PlanBlocked
@@ -56,7 +46,7 @@ type SceneDeletePlan struct {
 // the removed set; and no SURVIVING same-file PPtr may still reference a removed
 // fileID (would dangle in-file — the graph-check has no dangling validator, so
 // this is checked here). Cross-file references are the apply layer's concern.
-func PlanSceneDelete(input []byte, blocks []parser.Block, op patch.Op) (SceneDeletePlan, error) {
+func PlanSceneDelete(input []byte, blocks []parser.Block, op patch.Op, sceneGUID string) (SceneDeletePlan, error) {
 	if op.Op != patch.OpDelete {
 		return SceneDeletePlan{}, fmt.Errorf("UNSUPPORTED_OP op=%s", op.Op)
 	}
@@ -160,7 +150,7 @@ func PlanSceneDelete(input []byte, blocks []parser.Block, op patch.Op) (SceneDel
 	// ---- In-file dangling guard: any surviving SAME-FILE PPtr into the removed
 	// set would dangle. The graph-check (fgcheck) has no dangling validator, so the
 	// removal is refused here rather than committing a broken scene. ----
-	if dangler, danglee, found, perr := firstInFileDangling(data, deleted); perr != nil {
+	if dangler, danglee, found, perr := firstInFileDangling(data, deleted, sceneGUID); perr != nil {
 		return plan, perr
 	} else if found {
 		plan.PlanBlocked = true
@@ -294,38 +284,40 @@ func removeBlocks(data []byte, remove map[int64]struct{}) ([]byte, error) {
 	return joinLines(out), nil
 }
 
-// firstInFileDangling returns the first surviving same-file PPtr (a {fileID}
-// reference with no guid) that points at a removed fileID. data is the
-// post-removal scene, so every block in it survives; any such reference would
-// dangle once the delete commits.
-func firstInFileDangling(data []byte, deleted map[int64]struct{}) (dangler, danglee int64, found bool, err error) {
+// firstInFileDangling returns the first surviving SAME-FILE PPtr that points at a
+// removed fileID. data is the post-removal scene, so every block in it survives;
+// any such reference would dangle once the delete commits. A same-file PPtr is one
+// with no guid OR with a guid equal to the scene's own guid (Unity normally emits
+// in-scene refs guid-less, but a round-tripped/hand-edited scene can self-qualify
+// them). Each block is checked two ways so no PPtr serialization slips through:
+// the parsed tree (block-style + clean inline maps) and a raw brace-aware scan of
+// the block bytes (flow sequences, multiline-flow, nested, quoted forms the line
+// parser renders opaque).
+func firstInFileDangling(data []byte, deleted map[int64]struct{}, sceneGUID string) (dangler, danglee int64, found bool, err error) {
 	blocks, err := parser.Parse(data)
 	if err != nil {
 		return 0, 0, false, err
 	}
+	sameFileHit := func(fileID int64, guid string, hasGUID bool) int64 {
+		if fileID == 0 || (hasGUID && guid != sceneGUID) {
+			return 0 // a guid for another asset: a ref to that asset's fileID, not ours
+		}
+		if _, ok := deleted[fileID]; ok {
+			return fileID
+		}
+		return 0
+	}
 	for i := range blocks {
-		// (1) Parsed-tree walk: block-form and inline-map PPtrs.
 		hit := int64(0)
-		walkSameFilePPtrs(blocks[i].Fields, func(fileID int64) {
-			if hit != 0 {
-				return
+		report := func(fileID int64, guid string, hasGUID bool) {
+			if hit == 0 {
+				hit = sameFileHit(fileID, guid, hasGUID)
 			}
-			if _, ok := deleted[fileID]; ok {
-				hit = fileID
-			}
-		})
+		}
+		walkPPtrs(blocks[i].Fields, report)               // block-style + clean inline maps
+		parser.ScanInlinePPtrs(blocks[i].RawBody, report) // all inline brace forms, raw
 		if hit != 0 {
 			return blocks[i].FileID, hit, true, nil
-		}
-		// (2) Raw-text backstop: same-file inline PPtrs the parser left opaque
-		// (a non-empty FLOW sequence like `[{fileID: 4002}]` is rendered as a
-		// string, invisible to the walk above).
-		for _, m := range inlineGuidlessPPtr.FindAllStringSubmatch(blocks[i].RawBody, -1) {
-			if id, e := strconv.ParseInt(m[1], 10, 64); e == nil {
-				if _, ok := deleted[id]; ok {
-					return blocks[i].FileID, id, true, nil
-				}
-			}
 		}
 	}
 	return 0, 0, false, nil
@@ -349,25 +341,25 @@ func sceneRootsListing(blocks []parser.Block, transformID int64) (int64, bool) {
 	return 0, false
 }
 
-// walkSameFilePPtrs reports the fileID of every same-file PPtr (a map carrying
-// "fileID" and NO non-empty "guid"; fileID != 0) in a parsed field tree. A PPtr
-// with a guid is a cross-file/asset reference and is the xref scanner's concern.
-func walkSameFilePPtrs(value any, onRef func(fileID int64)) {
+// walkPPtrs reports every PPtr-shaped mapping (a map carrying a "fileID") in a
+// parsed field tree, with its optional guid — block-style and clean inline maps.
+// The caller decides same-file vs cross-file. (Inline brace forms the parser
+// leaves opaque are recovered separately by parser.ScanInlinePPtrs.)
+func walkPPtrs(value any, onRef func(fileID int64, guid string, hasGUID bool)) {
 	switch v := value.(type) {
 	case map[string]any:
 		if fidRaw, ok := v["fileID"]; ok {
-			if fileID, ok := parser.AsInt64(fidRaw); ok && fileID != 0 {
-				if g, hasG := v["guid"].(string); !hasG || g == "" {
-					onRef(fileID)
-				}
+			if fileID, ok := parser.AsInt64(fidRaw); ok {
+				g, hasG := v["guid"].(string)
+				onRef(fileID, g, hasG && g != "")
 			}
 		}
 		for _, child := range v {
-			walkSameFilePPtrs(child, onRef)
+			walkPPtrs(child, onRef)
 		}
 	case []any:
 		for _, child := range v {
-			walkSameFilePPtrs(child, onRef)
+			walkPPtrs(child, onRef)
 		}
 	}
 }

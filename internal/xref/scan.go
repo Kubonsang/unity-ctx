@@ -24,20 +24,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/Kubonsang/unity-ctx/internal/impact"
 	"github.com/Kubonsang/unity-ctx/internal/parser"
 )
-
-// inlinePPtrInString matches a complete inline PPtr `{...fileID...}` brace group.
-// Unity's parser renders a non-empty FLOW sequence (e.g.
-// `m_Targets: [{fileID: N, guid: G, type: 3}]`) as ONE opaque string, so its
-// PPtrs are invisible to a parsed-tree walk; this extracts them from the string.
-var inlinePPtrInString = regexp.MustCompile(`\{[^{}]*\bfileID:[^{}]*\}`)
 
 type Request struct {
 	ProjectPath string
@@ -176,6 +168,11 @@ func ScanInbound(req Request) (Result, error) {
 		for i := range blocks {
 			parsedGUIDMentions += scanFields(blocks[i].Fields, guid, onRef)
 		}
+		// Authoritative inline-PPtr detection straight from the raw bytes: catches
+		// every inline `{...}` form regardless of how the parser structured it
+		// (flow sequences, multiline-flow list items, nested sub-braces, quoted
+		// keys/values) — the forms the parsed-tree walk above renders opaque.
+		parser.ScanInlinePPtrs(string(data), onRef)
 		if len(hitIDs) > 0 {
 			result.Inbound = append(result.Inbound, InboundHit{
 				Path:    assetPath,
@@ -266,9 +263,9 @@ func readUnityYAML(path string) (data []byte, isYAML bool, err error) {
 func scanFields(value any, guid string, onRef func(fileID int64, guid string, hasGUID bool)) int {
 	switch v := value.(type) {
 	case string:
-		// A non-empty flow sequence / inline PPtr the parser left as an opaque
-		// string: extract its PPtrs so a cross-file ref inside one is still seen.
-		emitInlinePPtrsFromString(v, onRef)
+		// Count guid mentions for the completeness backstop. Inline PPtrs the
+		// parser left opaque inside this string are detected separately and
+		// robustly by parser.ScanInlinePPtrs over the raw bytes.
 		return strings.Count(v, guid)
 	case map[string]any:
 		if fidRaw, ok := v["fileID"]; ok {
@@ -291,46 +288,6 @@ func scanFields(value any, guid string, onRef func(fileID int64, guid string, ha
 		return n
 	default:
 		return 0
-	}
-}
-
-// emitInlinePPtrsFromString extracts every inline PPtr `{fileID: N[, guid: G]}`
-// from an opaque flow-sequence/inline string and reports it via onRef. It is the
-// cross-file counterpart of the in-file flow-sequence backstop: a single-line
-// flow list carries the guid INSIDE the string, so strings.Count alone would mark
-// the file "accounted for" (not indeterminate) while the PPtr went undetected —
-// a silent miss. Parsing the PPtrs out turns that into a real inbound hit.
-func emitInlinePPtrsFromString(s string, onRef func(fileID int64, guid string, hasGUID bool)) {
-	if !strings.Contains(s, "fileID:") {
-		return
-	}
-	for _, group := range inlinePPtrInString.FindAllString(s, -1) {
-		inner := group[1 : len(group)-1] // strip { }
-		var (
-			fileID   int64
-			haveFile bool
-			refGUID  string
-			haveGUID bool
-		)
-		for _, part := range strings.Split(inner, ",") {
-			key, value, ok := strings.Cut(part, ":")
-			if !ok {
-				continue
-			}
-			switch strings.TrimSpace(key) {
-			case "fileID":
-				if n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil {
-					fileID, haveFile = n, true
-				}
-			case "guid":
-				if g := strings.TrimSpace(value); g != "" {
-					refGUID, haveGUID = g, true
-				}
-			}
-		}
-		if haveFile {
-			onRef(fileID, refGUID, haveGUID)
-		}
 	}
 }
 

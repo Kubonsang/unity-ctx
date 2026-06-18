@@ -149,9 +149,10 @@ func TestScanInboundCoversNonStandardExtensions(t *testing.T) {
 func TestScanInboundClassifiesIndeterminate(t *testing.T) {
 	root := t.TempDir()
 	writeAsset(t, root, "A.unity", guidA, targetScene())
-	// A multiline-flow PPtr: the target GUID is present in the bytes but the brace
-	// spans two lines, so the parser does not recover it as a structured PPtr ->
-	// the raw-mention completeness backstop flags it indeterminate (never silent).
+	// A multiline-flow PPtr to the target. The line parser leaves it opaque, but
+	// the raw brace-aware scanner (parser.ScanInlinePPtrs) reads across the newline
+	// and recovers it precisely -> a real INBOUND hit (better than indeterminate;
+	// both BLOCK a delete).
 	multiline := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
 		"--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n" +
 		"  m_Ref: {fileID: 4001,\n    guid: " + guidA + ", type: 2}\n"
@@ -168,23 +169,19 @@ func TestScanInboundClassifiesIndeterminate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("error = %v", err)
 	}
-	hasD, hasE := false, false
+	// D.unity (multiline-flow) is now precisely detected as inbound.
+	if len(res.Inbound) != 1 || res.Inbound[0].Path != "Assets/D.unity" || res.Inbound[0].FileIDs[0] != 4001 {
+		t.Fatalf("multiline-flow ref not detected as inbound: %+v", res.Inbound)
+	}
+	// E.unity (parse failure) stays conservatively indeterminate (never silent).
+	hasE := false
 	for _, p := range res.Indeterminate {
-		if p == "Assets/D.unity" {
-			hasD = true
-		}
 		if p == "Assets/E.unity" {
 			hasE = true
 		}
 	}
-	if !hasD {
-		t.Fatalf("multiline-flow guid mention not flagged indeterminate: %v", res.Indeterminate)
-	}
 	if !hasE {
 		t.Fatalf("unparseable file not flagged indeterminate: %v", res.Indeterminate)
-	}
-	if len(res.Inbound) != 0 {
-		t.Fatalf("expected no structured inbound, got %+v", res.Inbound)
 	}
 }
 
