@@ -155,7 +155,7 @@ func ScanPrefabImpact(req Request) (Result, error) {
 			return nil
 		}
 
-		assetPath, err := assetPathFromAbsolute(assetsRoot, path)
+		assetPath, err := AssetPathFromAbsolute(assetsRoot, path)
 		if err != nil {
 			return err
 		}
@@ -236,7 +236,9 @@ func resolvePrefabAssetPath(projectRoot, targetPath string) (string, error) {
 	return filepath.ToSlash(filepath.Join("Assets", relative)), nil
 }
 
-func assetPathFromAbsolute(assetsRoot, filePath string) (string, error) {
+// AssetPathFromAbsolute renders an absolute path as a project-relative
+// "Assets/..." slash path. It errors if the path is not under assetsRoot.
+func AssetPathFromAbsolute(assetsRoot, filePath string) (string, error) {
 	relative, err := filepath.Rel(assetsRoot, filepath.Clean(filePath))
 	if err != nil {
 		return "", err

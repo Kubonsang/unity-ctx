@@ -188,19 +188,6 @@ func VerifySceneReparent(data []byte, target, oldParent, newParent int64) (bool,
 
 // --- helpers ---
 
-func asInt64(value any) (int64, bool) {
-	switch v := value.(type) {
-	case int64:
-		return v, true
-	case int:
-		return int64(v), true
-	case float64:
-		return int64(v), true
-	default:
-		return 0, false
-	}
-}
-
 func bytesEqual(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false
@@ -218,7 +205,7 @@ func blockFatherID(b parser.Block) int64 {
 	if !ok {
 		return 0
 	}
-	id, _ := asInt64(m["fileID"])
+	id, _ := parser.AsInt64(m["fileID"])
 	return id
 }
 
@@ -246,7 +233,7 @@ func blockChildIDs(b parser.Block) []int64 {
 		if !ok {
 			continue
 		}
-		if id, ok := asInt64(m["fileID"]); ok {
+		if id, ok := parser.AsInt64(m["fileID"]); ok {
 			out = append(out, id)
 		}
 	}
@@ -290,7 +277,7 @@ func blockGameObjectID(b parser.Block) int64 {
 	if !ok {
 		return 0
 	}
-	id, _ := asInt64(m["fileID"])
+	id, _ := parser.AsInt64(m["fileID"])
 	return id
 }
 
@@ -311,7 +298,7 @@ func blockComponentIDs(b parser.Block) []int64 {
 		if !ok {
 			continue
 		}
-		if id, ok := asInt64(m["fileID"]); ok { // bare `- {fileID: N}`
+		if id, ok := parser.AsInt64(m["fileID"]); ok { // bare `- {fileID: N}`
 			out = append(out, id)
 			continue
 		}
@@ -320,7 +307,7 @@ func blockComponentIDs(b parser.Block) []int64 {
 		// nested PPtr value is the component reference.
 		for _, v := range m {
 			if inner, ok := v.(map[string]any); ok {
-				if id, ok := asInt64(inner["fileID"]); ok {
+				if id, ok := parser.AsInt64(inner["fileID"]); ok {
 					out = append(out, id)
 					break
 				}
