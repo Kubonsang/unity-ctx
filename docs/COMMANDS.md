@@ -1277,17 +1277,55 @@ WARN REPARENT_INDETERMINATE_REFS count=M files=...
   conservatively (never a silent "no refs") but still **not** a block for reparent.
   Baked binary `.asset` data (LightingData, NavMesh) is out of scan scope, not
   flagged.
-- This deliberately differs from a future `delete`, which *removes* the fileID and
-  so will **BLOCK** on the same inbound/indeterminate signals (then the references
+- This deliberately differs from `delete` (below), which *removes* the fileID and
+  so **BLOCKS** on the same inbound/indeterminate signals (then the references
   genuinely dangle).
 - The scan is skipped (and says so explicitly, so a passing reparent is never
   misread as "cross-file verified") with a stated reason:
   `cross_file_check=skipped reason=<no_project|no_change|no_meta|no_assets_root|scan_error>`.
   `no_change` = a no-op reparent (target already under the requested parent), so
   nothing moved and the project is not walked.
-- `--project` applies only to reparent (v2 `ops[]`) patches. Passing it to a v1
-  `place_prefab` apply is an explicit error (`ERROR --project applies only to
+- `--project` applies only to v2 `ops[]` patches (reparent/delete). Passing it to a
+  v1 `place_prefab` apply is an explicit error (`ERROR --project applies only to
   reparent (v2 ops) patches`), never silently ignored.
+
+### scene delete (v2 ops[] patch)
+
+```bash
+unity-ctx scene patch Stage01.unity --op delete --id 1001 [--cascade] --json > delete.patch.json
+unity-ctx scene diff  Stage01.unity --patch delete.patch.json
+unity-ctx scene apply Stage01.unity --patch delete.patch.json --write --ack-impact --project DIR
+```
+
+Removes a GameObject and its component blocks from one scene, unlinking its
+Transform from the parent's `m_Children` (one file, one `.bak`). `--id` is the
+**GameObject** fileID.
+
+- **Target is a non-stripped GameObject.** A Transform/component/other class, or a
+  stripped (prefab-instance) GameObject, is refused:
+  `BLOCKED reason=UNSUPPORTED_ENDPOINT_CLASS endpoint=target id=<N> class=<C> is_stripped=<bool> allowed=1`.
+- **`--cascade` removes the whole Transform subtree.** Without it, deleting an
+  object that still has children is refused
+  (`BLOCKED phase=plan code=WOULD_ORPHAN_CHILDREN`).
+- **Plan-phase guards** (all `BLOCKED phase=plan`, exit 0, file untouched):
+  `STRIPPED_IN_SUBTREE` (a prefab-instance block is in the removed set — its
+  overrides live elsewhere, raw removal would corrupt the link); `PARENT_STRIPPED`
+  / `PARENT_NOT_FOUND` (the parent's `m_Children` cannot be edited); and
+  `IN_FILE_REFERENCED` (a surviving same-file PPtr still points at a removed
+  fileID — the graph-check has no dangling validator, so this is enforced here).
+- **Cross-file references BLOCK** (unlike reparent's visibility-only report):
+  removing the fileIDs would dangle inbound PPtrs, and an indeterminate referrer
+  cannot be proven safe. On `--write` either condition yields
+  `BLOCKED code=CROSS_FILE_REFERENCED ... inbound_refs=N indeterminate=M`
+  (file untouched). A dry-run shows `block_on_write=1` so the block is previewed.
+- **`--project` is REQUIRED for `--write`** (`ERROR delete --write requires
+  --project`): a committed delete is always cross-file-verified. A dry-run without
+  `--project` reports `cross_file_check=skipped reason=no_project` and runs only
+  the in-file checks.
+- **`--ack-impact` required** for `apply --write`. Same dry-run-first / `.bak` /
+  `pre`/`temp`/`final` / no-auto-revert contract. Verify is an **absence
+  assertion**: every removed fileID is gone and the parent no longer lists the
+  target.
 
 ## Output Stability Rules
 

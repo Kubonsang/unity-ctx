@@ -90,6 +90,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	position := flagSet.String("position", "", "")
 	op := flagSet.String("op", "", "")
 	newParent := flagSet.Int64("new-parent", 0, "")
+	cascade := flagSet.Bool("cascade", false, "")
 	patchPath := flagSet.String("patch", "", "")
 
 	if err := flagSet.Parse(args[3:]); err != nil {
@@ -150,6 +151,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	if command != "patch" && seenFlags["new-parent"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --new-parent\n", command)
+		return 2
+	}
+	if command != "patch" && seenFlags["cascade"] {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --cascade\n", command)
 		return 2
 	}
 	if command != "suggest" && anyFlagVisited(seenFlags, "near", "count", "align", "pick") {
@@ -403,8 +408,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 				_, _ = io.WriteString(stderr, "ERROR patch requires --position\n")
 				return 2
 			}
-			if anyFlagVisited(seenFlags, "id", "new-parent", "name", "type", "component", "field", "out", "task", "focus", "max-tokens") {
-				_, _ = io.WriteString(stderr, "ERROR patch does not accept --id, --new-parent, --name, --type, --component, --field, --out, --task, --focus, or --max-tokens\n")
+			if anyFlagVisited(seenFlags, "id", "new-parent", "cascade", "name", "type", "component", "field", "out", "task", "focus", "max-tokens") {
+				_, _ = io.WriteString(stderr, "ERROR patch does not accept --id, --new-parent, --cascade, --name, --type, --component, --field, --out, --task, --focus, or --max-tokens\n")
 				return 2
 			}
 
@@ -419,8 +424,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 		case "reparent":
-			if anyFlagVisited(seenFlags, "manifest", "prefab", "position", "prefab-guid", "project", "name", "type", "component", "field", "value", "write", "out", "task", "focus", "max-tokens") {
-				_, _ = io.WriteString(stderr, "ERROR patch reparent does not accept --manifest, --prefab, --position, --prefab-guid, --project, --name, --type, --component, --field, --value, --write, --out, --task, --focus, or --max-tokens\n")
+			if anyFlagVisited(seenFlags, "manifest", "prefab", "position", "prefab-guid", "project", "cascade", "name", "type", "component", "field", "value", "write", "out", "task", "focus", "max-tokens") {
+				_, _ = io.WriteString(stderr, "ERROR patch reparent does not accept --manifest, --prefab, --position, --prefab-guid, --project, --cascade, --name, --type, --component, --field, --value, --write, --out, --task, --focus, or --max-tokens\n")
 				return 2
 			}
 			if !seenFlags["id"] {
@@ -435,8 +440,21 @@ func Run(args []string, stdout, stderr io.Writer) int {
 				_, _ = io.WriteString(stderr, "ERROR patch reparent requires --new-parent\n")
 				return 2
 			}
+		case "delete":
+			if anyFlagVisited(seenFlags, "manifest", "prefab", "position", "prefab-guid", "project", "new-parent", "name", "type", "component", "field", "value", "write", "out", "task", "focus", "max-tokens") {
+				_, _ = io.WriteString(stderr, "ERROR patch delete does not accept --manifest, --prefab, --position, --prefab-guid, --project, --new-parent, --name, --type, --component, --field, --value, --write, --out, --task, --focus, or --max-tokens\n")
+				return 2
+			}
+			if !seenFlags["id"] {
+				_, _ = io.WriteString(stderr, "ERROR patch delete requires --id\n")
+				return 2
+			}
+			if *fileID == 0 {
+				_, _ = io.WriteString(stderr, "ERROR patch delete requires non-zero --id\n")
+				return 2
+			}
 		default:
-			_, _ = io.WriteString(stderr, "ERROR patch supports only --op place_prefab or --op reparent\n")
+			_, _ = io.WriteString(stderr, "ERROR patch supports only --op place_prefab, --op reparent, or --op delete\n")
 			return 2
 		}
 	}
@@ -695,6 +713,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			ID:           *fileID,
 			HasNewParent: seenFlags["new-parent"],
 			NewParent:    *newParent,
+			Cascade:      *cascade,
 		})
 
 		if *jsonOutput {

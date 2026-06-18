@@ -1800,9 +1800,12 @@ func (s *Service) Patch(namespace, path string, view core.View, jsonOut bool, ar
 	if args.Op == scenepatch.OpReparent {
 		return s.patchReparent(path, args, result)
 	}
+	if args.Op == scenepatch.OpDelete {
+		return s.patchDelete(path, args, result)
+	}
 	if args.Op != "place_prefab" {
 		result.Status = "ERROR"
-		result.Body = "ERROR patch supports only --op place_prefab or --op reparent"
+		result.Body = "ERROR patch supports only --op place_prefab, --op reparent, or --op delete"
 		return result, 1
 	}
 	if strings.TrimSpace(args.Manifest) == "" {
@@ -1940,6 +1943,33 @@ func (s *Service) patchReparent(path string, args PatchArgs, result PatchResult)
 	return result, 0
 }
 
+// patchDelete generates a v2 ops[] patch for a single GameObject delete. All
+// policy enforcement (target class, orphaned children, stripped, in-file and
+// cross-file references) happens at apply time.
+func (s *Service) patchDelete(path string, args PatchArgs, result PatchResult) (PatchResult, int) {
+	if err := validateSceneFileKind(path); err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	if !args.HasID || args.ID <= 0 {
+		result.Status = "ERROR"
+		result.Body = "ERROR patch delete requires non-zero --id"
+		return result, 1
+	}
+
+	op := scenepatch.Op{
+		Op:      scenepatch.OpDelete,
+		Target:  args.ID,
+		Cascade: args.Cascade,
+	}
+	result.SchemaVersion = scenepatch.FileSchemaVersionV2
+	result.Status = "OK"
+	result.Ops = []scenepatch.Op{op}
+	result.Body = fmt.Sprintf("OK op=delete target=%d cascade=%t", op.Target, op.Cascade)
+	return result, 0
+}
+
 func (s *Service) Diff(namespace, path string, view core.View, jsonOut bool, args DiffArgs) (PatchResult, int) {
 	_ = jsonOut
 
@@ -1986,7 +2016,12 @@ func (s *Service) Diff(namespace, path string, view core.View, jsonOut bool, arg
 		result.SchemaVersion = scenepatch.FileSchemaVersionV2
 		result.Status = "OK"
 		result.Ops = append([]scenepatch.Op(nil), envelope.Ops...)
-		result.Body = fmt.Sprintf("OK patch=%s op=%s target=%d new_parent=%d old_parent=%d", args.Patch, op.Op, op.Target, op.NewParent, op.OldParent)
+		switch op.Op {
+		case scenepatch.OpDelete:
+			result.Body = fmt.Sprintf("OK patch=%s op=delete target=%d cascade=%t", args.Patch, op.Target, op.Cascade)
+		default:
+			result.Body = fmt.Sprintf("OK patch=%s op=%s target=%d new_parent=%d old_parent=%d", args.Patch, op.Op, op.Target, op.NewParent, op.OldParent)
+		}
 		return result, 0
 	}
 
@@ -2050,6 +2085,9 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 	}
 
 	if envelope.SchemaVersion == scenepatch.FileSchemaVersionV2 {
+		if len(envelope.Ops) > 0 && envelope.Ops[0].Op == scenepatch.OpDelete {
+			return s.applyDelete(path, args, envelope, result)
+		}
 		return s.applyReparent(path, args, envelope, result)
 	}
 
@@ -2395,6 +2433,191 @@ func crossFileSkipReason(err error) string {
 	default:
 		return "scan_error"
 	}
+}
+
+// applyDelete removes a GameObject (and, with --cascade, its subtree) from a
+// scene. Unlike reparent, cross-file references are a hard BLOCK (delete removes
+// the fileIDs, so external PPtrs would dangle), and --project is REQUIRED for
+// --write so a committed delete is always cross-file-verified. Apply verify is an
+// absence assertion.
+func (s *Service) applyDelete(path string, args ApplyArgs, envelope scenepatch.File, result PatchResult) (PatchResult, int) {
+	result.SchemaVersion = scenepatch.FileSchemaVersionV2
+	if err := validateSceneFileKind(path); err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	if len(envelope.Ops) == 0 {
+		result.Status = "ERROR"
+		result.Body = "ERROR patch has no ops"
+		return result, 1
+	}
+	op := envelope.Ops[0]
+	idKV := fmt.Sprintf(" patch=%s file=%s", args.Patch, path)
+
+	loaded, err := s.load(path)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+
+	preCheck := phaseCheck{phase: safety.PhasePre, report: safety.CheckBytes(loaded.data)}
+	if preCheck.report.Blocking() {
+		result.Status = "BLOCKED"
+		result.Body = blockedBody(idKV, preCheck)
+		result.Safety = newSafetyPayload([]phaseCheck{preCheck})
+		return result, 0
+	}
+
+	plan, err := mutation.PlanSceneDelete(loaded.data, loaded.blocks, op)
+	if err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	// Policy 1: target class / stripped / missing-transform guard.
+	if plan.EndpointBlocked {
+		result.Status = "BLOCKED"
+		result.Body = fmt.Sprintf("BLOCKED %s%s", plan.EndpointBody, idKV)
+		return result, 0
+	}
+	// Plan-phase guards: would-orphan / stripped-in-subtree / in-file-referenced.
+	if plan.PlanBlocked {
+		result.Status = "BLOCKED"
+		result.Body = fmt.Sprintf("BLOCKED phase=%s code=%s %s%s", safety.PhasePlan, plan.PlanCode, plan.PlanDetail, idKV)
+		return result, 0
+	}
+
+	tempCheck := phaseCheck{phase: safety.PhaseTemp, report: safety.CheckBytes(plan.UpdatedData)}
+	if tempCheck.report.Blocking() {
+		result.Status = "BLOCKED"
+		result.Body = blockedBody(idKV, tempCheck)
+		result.Safety = newSafetyPayload([]phaseCheck{preCheck, tempCheck})
+		return result, 0
+	}
+	checks := []phaseCheck{preCheck, tempCheck}
+
+	summary := fmt.Sprintf("op=delete target=%d cascade=%t deleted=%d changed=%d",
+		plan.Target, plan.Cascade, len(plan.DeletedFileIDs), boolToInt(plan.Changed))
+
+	// Cross-file reverse-reference scan over the full removed set. Inbound and
+	// indeterminate references both BLOCK a delete (the fileIDs are removed, so the
+	// refs would dangle / cannot be proven safe).
+	xfSummary, xfDetail, xfBlocked, xfErr := deleteCrossFileScan(args.Project, path, plan.DeletedFileIDs)
+
+	if !args.Write {
+		blockNote := ""
+		if xfBlocked {
+			blockNote = " block_on_write=1"
+		}
+		result.Status = "OK"
+		result.Body = fmt.Sprintf("DRY_RUN %s ack_required=1%s%s%s%s%s",
+			summary, xfSummary, blockNote, checkSuffix(checks), checkDetailLines(checks), xfDetail)
+		result.Safety = newSafetyPayload(checks)
+		return result, 0
+	}
+
+	// ---- write path ----
+	if strings.TrimSpace(args.Project) == "" {
+		result.Status = "ERROR"
+		result.Body = "ERROR delete --write requires --project (cross-file references cannot be verified without it)"
+		return result, 1
+	}
+	if xfErr != nil {
+		result.Status = "BLOCKED"
+		result.Body = fmt.Sprintf("BLOCKED code=CROSS_FILE_SCAN_FAILED %s%s%s", summary, xfSummary, idKV)
+		result.Safety = newSafetyPayload(checks)
+		return result, 0
+	}
+	if xfBlocked {
+		result.Status = "BLOCKED"
+		result.Body = fmt.Sprintf("BLOCKED code=CROSS_FILE_REFERENCED %s%s%s%s", summary, xfSummary, idKV, xfDetail)
+		result.Safety = newSafetyPayload(checks)
+		return result, 0
+	}
+	if !args.AckImpact {
+		result.Status = "ERROR"
+		result.Body = "ERROR apply requires --ack-impact for delete"
+		return result, 1
+	}
+
+	backupPath, writeErr := mutation.WriteWithBackup(path, plan.UpdatedData)
+	if writeErr != nil && !writeCommitted(writeErr) {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", writeErr)
+		return result, 1
+	}
+
+	finalData, finalErr := readFinalState(path)
+	if finalErr != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR WRITE_COMMITTED backup=%s %s verified=0 err=final re-read failed: %v", backupPath, summary, finalErr)
+		return result, 1
+	}
+	verified, verifyReason := mutation.VerifySceneDelete(finalData, plan.DeletedFileIDs, plan.ParentTransform, plan.TargetTransform)
+	if !verified {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR WRITE_COMMITTED backup=%s %s verified=0 err=VERIFY_FAILED reason=%s", backupPath, summary, verifyReason)
+		return result, 1
+	}
+	if writeErr != nil { // committed-write (dir sync) error, but bytes are on disk
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR WRITE_COMMITTED backup=%s %s verified=1 err=%v", backupPath, summary, writeErr)
+		return result, 1
+	}
+
+	finalCheck := phaseCheck{phase: safety.PhaseFinal, report: safety.CheckBytes(finalData)}
+	if finalCheck.report.Blocking() {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf(
+			"ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check backup=%s %s verified=1%s",
+			backupPath, summary, checkDetailLines([]phaseCheck{finalCheck}),
+		)
+		result.Safety = newSafetyPayload(append(checks, finalCheck))
+		return result, 1
+	}
+	checks = append(checks, finalCheck)
+
+	result.Status = "OK"
+	result.Body = fmt.Sprintf("WRITE backup=%s %s verified=1%s%s%s%s", backupPath, summary, xfSummary, checkSuffix(checks), checkDetailLines(checks), xfDetail)
+	result.Safety = newSafetyPayload(checks)
+	return result, 0
+}
+
+// deleteCrossFileScan runs the per-mutation reverse-reference scan over the
+// removed fileID set. For delete (unlike reparent) any inbound or indeterminate
+// reference is a BLOCK reason: removing the fileIDs would dangle inbound refs, and
+// an indeterminate referrer cannot be proven safe. blocked is true when the scan
+// ran and found either. err is non-nil only when --project was given but the scan
+// itself failed (the write path treats that as a block).
+func deleteCrossFileScan(project, scenePath string, fileIDs []int64) (summary, detail string, blocked bool, err error) {
+	if strings.TrimSpace(project) == "" {
+		return " cross_file_check=skipped reason=no_project", "", false, nil
+	}
+	res, scanErr := xref.ScanInbound(xref.Request{
+		ProjectPath: project,
+		TargetPath:  scenePath,
+		FileIDs:     fileIDs,
+	})
+	if scanErr != nil {
+		return fmt.Sprintf(" cross_file_check=skipped reason=%s", crossFileSkipReason(scanErr)), "", false, scanErr
+	}
+
+	summary = fmt.Sprintf(" cross_file_check=ok inbound_refs=%d indeterminate=%d", len(res.Inbound), len(res.Indeterminate))
+	blocked = len(res.Inbound) > 0 || len(res.Indeterminate) > 0
+	var lines strings.Builder
+	if len(res.Inbound) > 0 {
+		paths := make([]string, 0, len(res.Inbound))
+		for _, hit := range res.Inbound {
+			paths = append(paths, hit.Path)
+		}
+		fmt.Fprintf(&lines, "\nDELETE_HAS_INBOUND_REFS count=%d files=%s", len(res.Inbound), strings.Join(paths, ","))
+	}
+	if len(res.Indeterminate) > 0 {
+		fmt.Fprintf(&lines, "\nDELETE_INDETERMINATE_REFS count=%d files=%s", len(res.Indeterminate), strings.Join(res.Indeterminate, ","))
+	}
+	return summary, lines.String(), blocked, nil
 }
 
 func (s *Service) load(path string) (*loadedDoc, error) {

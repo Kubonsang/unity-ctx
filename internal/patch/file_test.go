@@ -312,7 +312,8 @@ func TestLoadFileRejectsV2BadOps(t *testing.T) {
 		"patch_plan in v2": `{"schema_version":2,"status":"OK","namespace":"scene","command":"patch","file":"s.unity","view":"compact","body":"x","ops":[{"op":"reparent","target":1,"new_parent":2,"old_parent":0}],"patch_plan":{}}`,
 		"empty ops":        `{"schema_version":2,"status":"OK","namespace":"scene","command":"patch","file":"s.unity","view":"compact","body":"x","ops":[]}`,
 		"two ops":          `{"schema_version":2,"status":"OK","namespace":"scene","command":"patch","file":"s.unity","view":"compact","body":"x","ops":[{"op":"reparent","target":1,"new_parent":2,"old_parent":0},{"op":"reparent","target":3,"new_parent":4,"old_parent":0}]}`,
-		"unknown op":       `{"schema_version":2,"status":"OK","namespace":"scene","command":"patch","file":"s.unity","view":"compact","body":"x","ops":[{"op":"delete","target":1,"new_parent":0,"old_parent":0}]}`,
+		"unknown op":          `{"schema_version":2,"status":"OK","namespace":"scene","command":"patch","file":"s.unity","view":"compact","body":"x","ops":[{"op":"rotate","target":1,"new_parent":0,"old_parent":0}]}`,
+		"delete with parents":  `{"schema_version":2,"status":"OK","namespace":"scene","command":"patch","file":"s.unity","view":"compact","body":"x","ops":[{"op":"delete","target":1,"new_parent":2,"old_parent":0}]}`,
 		"self parent":      `{"schema_version":2,"status":"OK","namespace":"scene","command":"patch","file":"s.unity","view":"compact","body":"x","ops":[{"op":"reparent","target":5,"new_parent":5,"old_parent":0}]}`,
 	}
 	for name, body := range cases {

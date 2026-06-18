@@ -2154,7 +2154,7 @@ func TestPatchRejectsUnsupportedOp(t *testing.T) {
 		t.Fatalf("expected error exit code, got %d body=%q", code, got.Body)
 	}
 
-	want := "ERROR patch supports only --op place_prefab or --op reparent"
+	want := "ERROR patch supports only --op place_prefab, --op reparent, or --op delete"
 	if got.Body != want {
 		t.Fatalf("body mismatch: got %q want %q", got.Body, want)
 	}
@@ -3896,5 +3896,123 @@ func TestApplyReparentNoOpSkipsCrossFileScan(t *testing.T) {
 	}
 	if strings.Contains(got.Body, "WARN REPARENT_") {
 		t.Fatalf("no-op must not emit a cross-file WARN: %q", got.Body)
+	}
+}
+
+func writeDeletePatch(t *testing.T, scenePath string, target int64, cascade bool) string {
+	t.Helper()
+	body := fmt.Sprintf(`{"schema_version":2,"status":"OK","namespace":"scene","command":"patch","file":%q,"view":"compact","body":"delete","ops":[{"op":"delete","target":%d,"cascade":%t}]}`,
+		scenePath, target, cascade)
+	path := filepath.Join(filepath.Dir(scenePath), "delete.patch.json")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile patch: %v", err)
+	}
+	return path
+}
+
+func TestApplyDeleteDryRunNoProjectDoesNotWrite(t *testing.T) {
+	_, scene := setupReparentProject(t, nil)
+	patchPath := writeDeletePatch(t, scene, 1001, false) // leaf GameObject (Transform 4001)
+
+	got, code := app.New().Apply("scene", scene, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath})
+	if code != 0 {
+		t.Fatalf("dry-run exit=%d body=%q", code, got.Body)
+	}
+	want := "DRY_RUN op=delete target=1001 cascade=false deleted=2 changed=1 ack_required=1 cross_file_check=skipped reason=no_project pre_check=OK temp_check=OK"
+	if got.Body != want {
+		t.Fatalf("body:\n got %q\nwant %q", got.Body, want)
+	}
+	data, _ := os.ReadFile(scene)
+	if !strings.Contains(string(data), "&1001") {
+		t.Fatal("dry-run deleted the object")
+	}
+}
+
+func TestApplyDeleteWriteRequiresProject(t *testing.T) {
+	_, scene := setupReparentProject(t, nil)
+	patchPath := writeDeletePatch(t, scene, 1001, false)
+
+	got, code := app.New().Apply("scene", scene, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Write: true, AckImpact: true})
+	if code != 1 {
+		t.Fatalf("delete --write without --project must error: code=%d body=%q", code, got.Body)
+	}
+	if !strings.Contains(got.Body, "delete --write requires --project") {
+		t.Fatalf("wrong error: %q", got.Body)
+	}
+	data, _ := os.ReadFile(scene)
+	if !strings.Contains(string(data), "&1001") {
+		t.Fatal("errored delete must not touch the scene")
+	}
+}
+
+func TestApplyDeleteWriteSucceeds(t *testing.T) {
+	root, scene := setupReparentProject(t, nil)
+	patchPath := writeDeletePatch(t, scene, 1001, false)
+
+	got, code := app.New().Apply("scene", scene, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Write: true, AckImpact: true, Project: root})
+	if code != 0 {
+		t.Fatalf("write exit=%d body=%q", code, got.Body)
+	}
+	if !strings.Contains(got.Body, "WRITE backup=") ||
+		!strings.Contains(got.Body, "op=delete target=1001 cascade=false deleted=2 changed=1 verified=1") ||
+		!strings.Contains(got.Body, "cross_file_check=ok inbound_refs=0 indeterminate=0") ||
+		!strings.Contains(got.Body, "final_check=OK") {
+		t.Fatalf("unexpected write body: %q", got.Body)
+	}
+	data, _ := os.ReadFile(scene)
+	if strings.Contains(string(data), "&1001") || strings.Contains(string(data), "&4001") {
+		t.Fatalf("object not deleted:\n%s", data)
+	}
+	if !strings.Contains(string(data), "  m_Children: []\n  m_Father: {fileID: 0}\n") {
+		t.Fatalf("parent m_Children not collapsed:\n%s", data)
+	}
+}
+
+func TestApplyDeleteBlocksCrossFileInbound(t *testing.T) {
+	const ga = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	refBody := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n  m_Ref: {fileID: 1001, guid: " + ga + ", type: 2}\n"
+	root, scene := setupReparentProject(t, map[string]string{"ref.unity": refBody})
+	patchPath := writeDeletePatch(t, scene, 1001, false)
+
+	got, code := app.New().Apply("scene", scene, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Write: true, AckImpact: true, Project: root})
+	if code != 0 {
+		t.Fatalf("a cross-file-referenced delete must BLOCK (exit 0, untouched): code=%d body=%q", code, got.Body)
+	}
+	if !strings.Contains(got.Body, "BLOCKED code=CROSS_FILE_REFERENCED") ||
+		!strings.Contains(got.Body, "inbound_refs=1") ||
+		!strings.Contains(got.Body, "DELETE_HAS_INBOUND_REFS count=1 files=Assets/ref.unity") {
+		t.Fatalf("unexpected block body: %q", got.Body)
+	}
+	data, _ := os.ReadFile(scene)
+	if !strings.Contains(string(data), "&1001") {
+		t.Fatal("a BLOCKED delete must leave the scene untouched")
+	}
+}
+
+func TestApplyDeleteDryRunFlagsBlockOnWrite(t *testing.T) {
+	const ga = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	refBody := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n  m_Ref: {fileID: 1001, guid: " + ga + ", type: 2}\n"
+	root, scene := setupReparentProject(t, map[string]string{"ref.unity": refBody})
+	patchPath := writeDeletePatch(t, scene, 1001, false)
+
+	got, code := app.New().Apply("scene", scene, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Project: root}) // dry-run
+	if code != 0 {
+		t.Fatalf("dry-run exit=%d body=%q", code, got.Body)
+	}
+	if !strings.Contains(got.Body, "block_on_write=1") || !strings.Contains(got.Body, "DELETE_HAS_INBOUND_REFS") {
+		t.Fatalf("dry-run should flag the cross-file block: %q", got.Body)
+	}
+}
+
+func TestPatchAndDiffDelete(t *testing.T) {
+	scene := writeReparentScene(t) // reparentSceneContent
+	got, code := app.New().Patch("scene", scene, core.ViewCompact, false, app.PatchArgs{Op: "delete", HasID: true, ID: 1001, Cascade: true})
+	if code != 0 || got.Body != "OK op=delete target=1001 cascade=true" {
+		t.Fatalf("patch delete: code=%d body=%q", code, got.Body)
+	}
+	patchPath := writeDeletePatch(t, scene, 1001, true)
+	d, dc := app.New().Diff("scene", scene, core.ViewCompact, false, app.DiffArgs{Patch: patchPath})
+	if dc != 0 || !strings.Contains(d.Body, "op=delete target=1001 cascade=true") {
+		t.Fatalf("diff delete: code=%d body=%q", dc, d.Body)
 	}
 }

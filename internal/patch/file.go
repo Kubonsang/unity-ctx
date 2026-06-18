@@ -158,24 +158,31 @@ func decodeFileV2(data []byte) (File, error) {
 	}, nil
 }
 
-// validateOps enforces the S4a contract: exactly one reparent op (no op mixing),
-// with a positive target and distinct, non-self endpoints.
+// validateOps enforces the v2 contract: exactly one op (no op mixing) — either a
+// reparent (positive target, distinct non-self endpoints) or a delete (positive
+// target; the parent fields are unused and must be 0).
 func validateOps(ops []Op) error {
 	if len(ops) != 1 {
-		return fmt.Errorf("invalid patch file: ops must contain exactly 1 operation (S4a supports one reparent per patch)")
+		return fmt.Errorf("invalid patch file: ops must contain exactly 1 operation (one op per patch)")
 	}
 	op := ops[0]
-	if op.Op != OpReparent {
-		return fmt.Errorf("invalid patch file: ops[0].op must be %q", OpReparent)
-	}
 	if op.Target <= 0 {
 		return fmt.Errorf("invalid patch file: ops[0].target must be > 0")
 	}
-	if op.NewParent < 0 || op.OldParent < 0 {
-		return fmt.Errorf("invalid patch file: ops[0] parent file IDs must be >= 0")
-	}
-	if op.NewParent == op.Target {
-		return fmt.Errorf("invalid patch file: ops[0].new_parent must differ from target")
+	switch op.Op {
+	case OpReparent:
+		if op.NewParent < 0 || op.OldParent < 0 {
+			return fmt.Errorf("invalid patch file: ops[0] parent file IDs must be >= 0")
+		}
+		if op.NewParent == op.Target {
+			return fmt.Errorf("invalid patch file: ops[0].new_parent must differ from target")
+		}
+	case OpDelete:
+		if op.NewParent != 0 || op.OldParent != 0 {
+			return fmt.Errorf("invalid patch file: ops[0] delete must not set new_parent/old_parent")
+		}
+	default:
+		return fmt.Errorf("invalid patch file: ops[0].op must be %q or %q", OpReparent, OpDelete)
 	}
 	return nil
 }

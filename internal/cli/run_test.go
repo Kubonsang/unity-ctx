@@ -812,7 +812,7 @@ func TestScenePatchRejectsUnsupportedOp(t *testing.T) {
 		t.Fatalf("expected empty stdout, got %q", result.stdout)
 	}
 
-	want := "ERROR patch supports only --op place_prefab or --op reparent\n"
+	want := "ERROR patch supports only --op place_prefab, --op reparent, or --op delete\n"
 	if result.stderr != want {
 		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
 	}
@@ -940,7 +940,7 @@ func TestScenePatchRejectsSelectorFlags(t *testing.T) {
 		t.Fatalf("expected empty stdout, got %q", result.stdout)
 	}
 
-	want := "ERROR patch does not accept --id, --new-parent, --name, --type, --component, --field, --out, --task, --focus, or --max-tokens\n"
+	want := "ERROR patch does not accept --id, --new-parent, --cascade, --name, --type, --component, --field, --out, --task, --focus, or --max-tokens\n"
 	if result.stderr != want {
 		t.Fatalf("stderr mismatch: got %q want %q", result.stderr, want)
 	}
@@ -4340,5 +4340,37 @@ func TestSceneReparentEndToEnd(t *testing.T) {
 	data, _ := os.ReadFile(scene)
 	if !strings.Contains(string(data), "  m_Father: {fileID: 4002}\n") {
 		t.Fatalf("scene not reparented:\n%s", string(data))
+	}
+}
+
+func TestScenePatchDelete(t *testing.T) {
+	scene := reparentSceneForCLI(t)
+	r := runCLI(t, "scene", "patch", scene, "--op", "delete", "--id", "1001", "--cascade")
+	if r.exitCode != 0 || !strings.Contains(r.stdout, "OK op=delete target=1001 cascade=true") {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", r.exitCode, r.stdout, r.stderr)
+	}
+}
+
+func TestScenePatchDeleteRequiresID(t *testing.T) {
+	scene := reparentSceneForCLI(t)
+	r := runCLI(t, "scene", "patch", scene, "--op", "delete")
+	if r.exitCode != 2 || r.stderr != "ERROR patch delete requires --id\n" {
+		t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+	}
+}
+
+func TestScenePatchDeleteRejectsNewParent(t *testing.T) {
+	scene := reparentSceneForCLI(t)
+	r := runCLI(t, "scene", "patch", scene, "--op", "delete", "--id", "1001", "--new-parent", "4000")
+	if r.exitCode != 2 || !strings.Contains(r.stderr, "patch delete does not accept") || !strings.Contains(r.stderr, "--new-parent") {
+		t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+	}
+}
+
+func TestSceneApplyRejectsCascade(t *testing.T) {
+	scene := reparentSceneForCLI(t)
+	r := runCLI(t, "scene", "apply", scene, "--patch", "x.json", "--cascade")
+	if r.exitCode != 2 || r.stderr != "ERROR apply does not accept --cascade\n" {
+		t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
 	}
 }
