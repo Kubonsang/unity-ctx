@@ -4016,3 +4016,24 @@ func TestPatchAndDiffDelete(t *testing.T) {
 		t.Fatalf("diff delete: code=%d body=%q", dc, d.Body)
 	}
 }
+
+func TestApplyDeleteBlocksCrossFileFlowSequenceRef(t *testing.T) {
+	const ga = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	// ref.unity references the deleted GameObject 1001 via a single-line FLOW list
+	// (the cross-file analogue of the in-file flow-sequence gap).
+	refBody := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n  m_Targets: [{fileID: 1001, guid: " + ga + ", type: 3}]\n"
+	root, scene := setupReparentProject(t, map[string]string{"ref.unity": refBody})
+	patchPath := writeDeletePatch(t, scene, 1001, false)
+
+	got, code := app.New().Apply("scene", scene, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Write: true, AckImpact: true, Project: root})
+	if code != 0 {
+		t.Fatalf("a flow-list cross-file ref must BLOCK (exit 0, untouched): code=%d body=%q", code, got.Body)
+	}
+	if !strings.Contains(got.Body, "BLOCKED code=CROSS_FILE_REFERENCED") || !strings.Contains(got.Body, "inbound_refs=1") {
+		t.Fatalf("flow-list cross-file ref not blocked: %q", got.Body)
+	}
+	data, _ := os.ReadFile(scene)
+	if !strings.Contains(string(data), "&1001") {
+		t.Fatal("a BLOCKED delete must leave the scene untouched")
+	}
+}

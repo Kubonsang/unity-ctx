@@ -412,3 +412,42 @@ func TestScanInboundFlagsBinaryUnityAsset(t *testing.T) {
 		t.Fatalf("non-asset binary .png should be skipped, not flagged: %v", res.Indeterminate)
 	}
 }
+
+// TestScanInboundDetectsFlowSequenceCrossFileRef is the fix for the cross-file
+// flow-sequence blind spot: a referrer pointing at the target via a single-line
+// FLOW list (which the parser renders as an opaque string) must be detected as
+// inbound, never reported as a silent "no refs".
+func TestScanInboundDetectsFlowSequenceCrossFileRef(t *testing.T) {
+	root := t.TempDir()
+	writeAsset(t, root, "A.unity", guidA, targetScene())
+	flow := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n" +
+		"  m_Targets: [{fileID: 4001, guid: " + guidA + ", type: 3}]\n"
+	writeAsset(t, root, "B.unity", guidB, flow)
+
+	res, err := ScanInbound(Request{ProjectPath: root, TargetPath: filepath.Join(root, "Assets", "A.unity"), FileIDs: []int64{4001}})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if len(res.Inbound) != 1 || res.Inbound[0].Path != "Assets/B.unity" || len(res.Inbound[0].FileIDs) != 1 || res.Inbound[0].FileIDs[0] != 4001 {
+		t.Fatalf("flow-sequence cross-file ref not detected: inbound=%+v indeterminate=%v", res.Inbound, res.Indeterminate)
+	}
+}
+
+// TestScanInboundDetectsFlowSequenceMultiItem covers a multi-entry flow list.
+func TestScanInboundDetectsFlowSequenceMultiItem(t *testing.T) {
+	root := t.TempDir()
+	writeAsset(t, root, "A.unity", guidA, targetScene())
+	flow := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n" +
+		"  m_Refs: [{fileID: 4001, guid: " + guidA + ", type: 3}, {fileID: 4002, guid: " + guidA + ", type: 3}]\n"
+	writeAsset(t, root, "B.unity", guidB, flow)
+
+	res, err := ScanInbound(Request{ProjectPath: root, TargetPath: filepath.Join(root, "Assets", "A.unity"), FileIDs: []int64{4001, 4002}})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if len(res.Inbound) != 1 || len(res.Inbound[0].FileIDs) != 2 {
+		t.Fatalf("multi-item flow-sequence refs not both detected: inbound=%+v", res.Inbound)
+	}
+}
