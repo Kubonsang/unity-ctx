@@ -85,37 +85,54 @@ func ScanInbound(req Request) (Result, error) {
 	for _, id := range req.FileIDs {
 		fileIDSet[id] = struct{}{}
 	}
-	// Physical-path identity of the target and the scan root, resolved once.
+	// Physical-path identity of the target, resolved once.
 	targetReal := impact.ResolvePath(targetAbs)
-	assetsRootReal := impact.ResolvePath(assetsRoot)
 
 	result := Result{TargetGUID: guid}
 	indeterminate := map[string]struct{}{}
 
-	walkErr := filepath.WalkDir(assetsRoot, func(path string, d fs.DirEntry, werr error) error {
+	// relPath renders a walked path as a project-relative slash path
+	// ("Assets/..." or "Packages/...").
+	relPath := func(path string) string {
+		rel, e := filepath.Rel(projectRoot, filepath.Clean(path))
+		if e != nil {
+			return filepath.ToSlash(path)
+		}
+		return filepath.ToSlash(rel)
+	}
+
+	scanEntry := func(root, rootReal, path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			// A per-entry error (unreadable directory, broken symlink, transient
 			// I/O) must NEVER abort the whole walk — aborting would silently drop
 			// ALL inbound detection and report a clean "no refs", the exact failure
 			// this package promises to avoid. Flag the path indeterminate and keep
 			// scanning everything else.
-			indeterminate[assetPathRel(assetsRoot, path)] = struct{}{}
+			indeterminate[relPath(path)] = struct{}{}
 			return nil
 		}
 		if d.IsDir() {
 			return nil
 		}
+		// A symlink to a directory is NOT descended by WalkDir, so its contents
+		// would go silently unscanned: flag it indeterminate (never silent). (A
+		// symlink to a FILE is followed by os.Open below and handled normally.)
+		if d.Type()&fs.ModeSymlink != 0 {
+			if info, e := os.Stat(path); e == nil && info.IsDir() {
+				indeterminate[relPath(path)] = struct{}{}
+				return nil
+			}
+		}
 		// Self-exclusion by physical-path identity (the file's in-file links are
 		// the graph-check's job, not a cross-file reference). WalkDir does not
 		// descend through symlinked directories, so a regular walked file has no
-		// symlink in its path below assetsRoot: its real path is assetsRootReal+rel,
-		// a pure string computation with no per-file syscall. This also collapses a
+		// symlink in its path below root: its real path is rootReal+rel, a pure
+		// string computation with no per-file syscall. This also collapses a
 		// symlinked project root / cwd-relative target spelling (the differing
-		// prefix folds into assetsRootReal). The ONLY per-file resolve is for a leaf
-		// symlink — a differently-named alias to the target — gated on the entry
-		// actually being a symlink, so the hot path stays syscall-free.
-		if rel, relErr := filepath.Rel(assetsRoot, path); relErr == nil &&
-			filepath.Clean(filepath.Join(assetsRootReal, rel)) == targetReal {
+		// prefix folds into rootReal). The ONLY per-file resolve is for a leaf
+		// symlink — a differently-named alias to the target.
+		if rel, relErr := filepath.Rel(root, path); relErr == nil &&
+			filepath.Clean(filepath.Join(rootReal, rel)) == targetReal {
 			return nil
 		}
 		if d.Type()&fs.ModeSymlink != 0 && impact.ResolvePath(path) == targetReal {
@@ -131,7 +148,7 @@ func ScanInbound(req Request) (Result, error) {
 			// Confirmed-YAML-but-unreadable, or a known Unity asset we could not
 			// open/read: cannot account for its refs -> indeterminate, never silent.
 			if isYAML || isUnityYAMLAssetExt(path) {
-				indeterminate[assetPathRel(assetsRoot, path)] = struct{}{}
+				indeterminate[relPath(path)] = struct{}{}
 			}
 			return nil
 		}
@@ -143,11 +160,11 @@ func ScanInbound(req Request) (Result, error) {
 			// binaries (textures, audio, meshes) hold no PPtrs and are skipped. In a
 			// normal Force-Text project no asset hits this branch.
 			if isUnityYAMLAssetExt(path) {
-				indeterminate[assetPathRel(assetsRoot, path)] = struct{}{}
+				indeterminate[relPath(path)] = struct{}{}
 			}
 			return nil
 		}
-		assetPath := assetPathRel(assetsRoot, path)
+		assetPath := relPath(path)
 
 		blocks, parseErr := parser.Parse(data)
 		if parseErr != nil {
@@ -189,9 +206,23 @@ func ScanInbound(req Request) (Result, error) {
 			indeterminate[assetPath] = struct{}{}
 		}
 		return nil
-	})
-	if walkErr != nil {
-		return Result{}, walkErr
+	}
+
+	// Scan Assets/ AND Packages/ — an embedded/local package asset can hold a
+	// cross-file PPtr to a scene object, so excluding Packages/ would be a silent
+	// pass. (Read-only package caches live under Library/, not Packages/.)
+	roots := []string{assetsRoot}
+	if packagesRoot := filepath.Join(projectRoot, "Packages"); dirExists(packagesRoot) {
+		roots = append(roots, packagesRoot)
+	}
+	for _, root := range roots {
+		rootReal := impact.ResolvePath(root)
+		walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, werr error) error {
+			return scanEntry(root, rootReal, path, d, werr)
+		})
+		if walkErr != nil {
+			return Result{}, walkErr
+		}
 	}
 
 	sort.Slice(result.Inbound, func(i, j int) bool { return result.Inbound[i].Path < result.Inbound[j].Path })
@@ -316,15 +347,9 @@ func isUnityYAMLAssetExt(path string) bool {
 	return ok
 }
 
-// assetPathRel renders a walked path as a project-relative "Assets/..." path,
-// falling back to the path itself if it is somehow not under assetsRoot (it
-// always is here, since WalkDir is rooted at assetsRoot).
-func assetPathRel(assetsRoot, path string) string {
-	rel, err := impact.AssetPathFromAbsolute(assetsRoot, path)
-	if err != nil {
-		return filepath.ToSlash(path)
-	}
-	return rel
+func dirExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
 }
 
 func sortedInt64Keys(m map[int64]struct{}) []int64 {

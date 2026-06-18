@@ -23,6 +23,10 @@ func TestScanInlinePPtrs(t *testing.T) {
 		{"quoted guid value", `m_X: {fileID: 4001, guid: 'G', type: 3}`, []ref{{4001, "G", true}}},
 		{"quoted key", `m_X: {"fileID": 4001, guid: G, type: 3}`, []ref{{4001, "G", true}}},
 		{"flow with extra field", `m_X: [{fileID: 4002, type: 0}]`, []ref{{4002, "", false}}},
+		{"apostrophe in plain scalar before pptr", "m_Name: Player's Gun\nm_Ref: {fileID: 4001, guid: G, type: 3}", []ref{{4001, "G", true}}},
+		{"double-quote scalar before pptr", "m_Name: \"a\\\"b\"\nm_Ref: {fileID: 4001, guid: G}", []ref{{4001, "G", true}}},
+		{"two apostrophes then pptr", "m_A: don't\nm_B: can't\nm_Ref: {fileID: 4001, guid: G}", []ref{{4001, "G", true}}},
+		{"duplicate fileID keys both emitted", `m_X: {fileID: 4001, fileID: 9999, guid: G}`, []ref{{4001, "G", true}, {9999, "G", true}}},
 		{"no pptr", `m_X: {x: 0, y: 1}`, nil},
 	}
 	for _, tc := range cases {
