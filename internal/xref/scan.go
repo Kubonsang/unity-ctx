@@ -41,7 +41,6 @@ type Request struct {
 type InboundHit struct {
 	Path    string
 	FileIDs []int64
-	Count   int
 }
 
 type Result struct {
@@ -158,22 +157,21 @@ func ScanInbound(req Request) (Result, error) {
 
 		hitIDs := map[int64]struct{}{}
 		parsedGUIDMentions := 0
+		onRef := func(fileID int64, refGUID string, hasGUID bool) {
+			if !hasGUID || refGUID != guid {
+				return
+			}
+			if _, ok := fileIDSet[fileID]; ok {
+				hitIDs[fileID] = struct{}{}
+			}
+		}
 		for i := range blocks {
-			parsedGUIDMentions += countGUIDMentions(blocks[i].Fields, guid)
-			collectPPtrs(blocks[i].Fields, func(fileID int64, refGUID string, hasGUID bool) {
-				if !hasGUID || refGUID != guid {
-					return
-				}
-				if _, ok := fileIDSet[fileID]; ok {
-					hitIDs[fileID] = struct{}{}
-				}
-			})
+			parsedGUIDMentions += scanFields(blocks[i].Fields, guid, onRef)
 		}
 		if len(hitIDs) > 0 {
 			result.Inbound = append(result.Inbound, InboundHit{
 				Path:    assetPath,
 				FileIDs: sortedInt64Keys(hitIDs),
-				Count:   len(hitIDs),
 			})
 		}
 		// Completeness backstop: if the target GUID appears in the raw bytes more
@@ -239,66 +237,49 @@ func readUnityYAML(path string) (data []byte, isYAML bool, err error) {
 // accounted for — a PPtr guid, a bare guid field, a guid map key, or prose — is
 // counted, so only mentions that survive in the raw bytes but not here (an
 // unparsed/malformed reference form) drive a file to indeterminate.
-func countGUIDMentions(value any, guid string) int {
+// scanFields walks a parsed field tree ONCE, doing two jobs in a single pass that
+// previously took two full recursions (collectPPtrs + countGUIDMentions):
+//
+//   - it returns the completeness-backstop denominator: how many times guid occurs
+//     as a substring of any string the parser recovered — both map KEYS (a
+//     serialized dictionary can key on a guid) and string VALUES — so only mentions
+//     that survive in the raw bytes but not here (an unparsed/malformed reference
+//     form) drive a file to indeterminate; and
+//   - it reports every PPtr-shaped mapping (a map carrying a "fileID") via onRef,
+//     with its optional "guid", handling inline and block-style PPtrs identically
+//     (the parser yields a nested map for both).
+//
+// The guid is read as a string. A real Unity GUID is 32 hex chars, effectively
+// always containing a-f, so the parser keeps it a string. The vanishingly rare
+// all-decimal GUID parses to a number and is missed by the PPtr match here — but
+// the raw-mention backstop then flags the file indeterminate (raw>parsed), so it
+// degrades to "unknown", never to a silent "no refs"; the conservative contract
+// still holds.
+func scanFields(value any, guid string, onRef func(fileID int64, guid string, hasGUID bool)) int {
 	switch v := value.(type) {
 	case string:
 		return strings.Count(v, guid)
 	case map[string]any:
-		n := 0
-		for k, child := range v {
-			n += strings.Count(k, guid)
-			n += countGUIDMentions(child, guid)
-		}
-		return n
-	case []any:
-		n := 0
-		for _, child := range v {
-			n += countGUIDMentions(child, guid)
-		}
-		return n
-	default:
-		return 0
-	}
-}
-
-// collectPPtrs walks a parsed field tree and reports every PPtr-shaped mapping
-// (a map carrying a "fileID"), with its optional "guid". Handles inline and
-// block-style PPtrs identically (the parser yields a nested map for both).
-func collectPPtrs(value any, onRef func(fileID int64, guid string, hasGUID bool)) {
-	switch v := value.(type) {
-	case map[string]any:
 		if fidRaw, ok := v["fileID"]; ok {
-			if fileID, ok := asInt64(fidRaw); ok {
-				// The guid is read as a string. A real Unity GUID is 32 hex chars,
-				// effectively always containing a-f, so the parser keeps it a string.
-				// The vanishingly rare all-decimal GUID parses to a number and is
-				// missed here — but the raw-mention backstop then flags the file
-				// indeterminate (raw>parsed), so it degrades to "unknown", never to a
-				// silent "no refs"; the conservative contract still holds.
+			if fileID, ok := parser.AsInt64(fidRaw); ok {
 				g, hasG := v["guid"].(string)
 				onRef(fileID, g, hasG && g != "")
 			}
 		}
-		for _, child := range v {
-			collectPPtrs(child, onRef)
+		n := 0
+		for k, child := range v {
+			n += strings.Count(k, guid)
+			n += scanFields(child, guid, onRef)
 		}
+		return n
 	case []any:
+		n := 0
 		for _, child := range v {
-			collectPPtrs(child, onRef)
+			n += scanFields(child, guid, onRef)
 		}
-	}
-}
-
-func asInt64(value any) (int64, bool) {
-	switch v := value.(type) {
-	case int64:
-		return v, true
-	case int:
-		return int64(v), true
-	case float64:
-		return int64(v), true
+		return n
 	default:
-		return 0, false
+		return 0
 	}
 }
 
@@ -327,12 +308,15 @@ func isUnityYAMLAssetExt(path string) bool {
 	return ok
 }
 
+// assetPathRel renders a walked path as a project-relative "Assets/..." path,
+// falling back to the path itself if it is somehow not under assetsRoot (it
+// always is here, since WalkDir is rooted at assetsRoot).
 func assetPathRel(assetsRoot, path string) string {
-	rel, err := filepath.Rel(assetsRoot, filepath.Clean(path))
+	rel, err := impact.AssetPathFromAbsolute(assetsRoot, path)
 	if err != nil {
 		return filepath.ToSlash(path)
 	}
-	return filepath.ToSlash(filepath.Join("Assets", rel))
+	return rel
 }
 
 func sortedInt64Keys(m map[int64]struct{}) []int64 {

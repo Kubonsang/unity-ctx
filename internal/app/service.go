@@ -1924,7 +1924,7 @@ func (s *Service) patchReparent(path string, args PatchArgs, result PatchResult)
 	}
 	var oldParent int64
 	if raw, ok := document.ResolveField(target.Fields, "m_Father.fileID"); ok {
-		oldParent, _ = asInt64(raw)
+		oldParent, _ = parser.AsInt64(raw)
 	}
 
 	op := scenepatch.Op{

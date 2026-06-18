@@ -7,7 +7,6 @@ import (
 	"io"
 	"math"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/Kubonsang/unity-ctx/internal/bounds"
 	"github.com/Kubonsang/unity-ctx/internal/contextpack"
 	"github.com/Kubonsang/unity-ctx/internal/core"
+	"github.com/Kubonsang/unity-ctx/internal/impact"
 	"github.com/Kubonsang/unity-ctx/internal/mcp"
 	"github.com/Kubonsang/unity-ctx/internal/parser"
 	"github.com/Kubonsang/unity-ctx/internal/version"
@@ -298,7 +298,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = io.WriteString(stderr, "ERROR index requires --out\n")
 		return 2
 	}
-	if command == "index" && samePath(file, *out) {
+	if command == "index" && impact.SamePath(file, *out) {
 		_, _ = io.WriteString(stderr, "ERROR index requires --out to differ from input file\n")
 		return 2
 	}
@@ -1061,24 +1061,6 @@ func countVisitedFlags(seen map[string]bool, names ...string) int {
 		}
 	}
 	return count
-}
-
-func samePath(left, right string) bool {
-	leftAbs, err := filepath.Abs(left)
-	if err != nil {
-		return false
-	}
-	rightAbs, err := filepath.Abs(right)
-	if err != nil {
-		return false
-	}
-	if resolved, err := filepath.EvalSymlinks(leftAbs); err == nil {
-		leftAbs = resolved
-	}
-	if resolved, err := filepath.EvalSymlinks(rightAbs); err == nil {
-		rightAbs = resolved
-	}
-	return filepath.Clean(leftAbs) == filepath.Clean(rightAbs)
 }
 
 func runMetaGUID(command, file string, rest []string, stdout, stderr io.Writer) int {

@@ -101,6 +101,22 @@ func Parse(data []byte) ([]Block, error) {
 	return blocks, nil
 }
 
+// AsInt64 coerces a parsed scalar value (as produced by Parse) to int64. Parse
+// yields integer scalars as int64 and floating scalars as float64; a plain int is
+// accepted defensively. Any other type yields ok=false.
+func AsInt64(value any) (int64, bool) {
+	switch v := value.(type) {
+	case int64:
+		return v, true
+	case int:
+		return int64(v), true
+	case float64:
+		return int64(v), true
+	default:
+		return 0, false
+	}
+}
+
 func parseBody(lines []string, block *Block) {
 	typeLine := -1
 	for i, raw := range lines {

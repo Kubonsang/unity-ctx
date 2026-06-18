@@ -504,7 +504,7 @@ func findComponentsForObject(blocks []parser.Block, objectID int64, component st
 		if !ok {
 			continue
 		}
-		fileID, ok := asInt64(gameObjectRef["fileID"])
+		fileID, ok := parser.AsInt64(gameObjectRef["fileID"])
 		if !ok || fileID != objectID {
 			continue
 		}
@@ -514,19 +514,6 @@ func findComponentsForObject(blocks []parser.Block, objectID int64, component st
 		count++
 	}
 	return found, count
-}
-
-func asInt64(value any) (int64, bool) {
-	switch typed := value.(type) {
-	case int64:
-		return typed, true
-	case int:
-		return int64(typed), true
-	case float64:
-		return int64(typed), true
-	default:
-		return 0, false
-	}
 }
 
 func resolveSetTarget(blocks []parser.Block, doc *document.Doc, hasID bool, id int64) (parser.Block, error) {
