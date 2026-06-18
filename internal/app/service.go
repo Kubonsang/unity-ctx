@@ -2507,8 +2507,10 @@ func (s *Service) applyDelete(path string, args ApplyArgs, envelope scenepatch.F
 	xfSummary, xfDetail, xfBlocked, xfErr := deleteCrossFileScan(args.Project, path, plan.DeletedFileIDs)
 
 	if !args.Write {
+		// Preview the write-time block honestly: --write BLOCKs on both a found
+		// reference (xfBlocked) AND a scan failure with --project given (xfErr).
 		blockNote := ""
-		if xfBlocked {
+		if xfBlocked || xfErr != nil {
 			blockNote = " block_on_write=1"
 		}
 		result.Status = "OK"

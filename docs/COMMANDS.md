@@ -1313,11 +1313,21 @@ Transform from the parent's `m_Children` (one file, one `.bak`). `--id` is the
   / `PARENT_NOT_FOUND` (the parent's `m_Children` cannot be edited); and
   `IN_FILE_REFERENCED` (a surviving same-file PPtr still points at a removed
   fileID — the graph-check has no dangling validator, so this is enforced here).
+- **Root objects update `SceneRoots`.** A root-level object's Transform is
+  registered in the scene's `SceneRoots` (`!u!1660057539`) `m_Roots` list, not in
+  any parent's `m_Children`; the delete unlinks it there too.
 - **Cross-file references BLOCK** (unlike reparent's visibility-only report):
   removing the fileIDs would dangle inbound PPtrs, and an indeterminate referrer
   cannot be proven safe. On `--write` either condition yields
   `BLOCKED code=CROSS_FILE_REFERENCED ... inbound_refs=N indeterminate=M`
-  (file untouched). A dry-run shows `block_on_write=1` so the block is previewed.
+  (file untouched). A dry-run shows `block_on_write=1` so the block is previewed
+  (including the scan-failure case `BLOCKED code=CROSS_FILE_SCAN_FAILED`).
+- **In-file dangling is checked two ways**: a parsed-tree walk for block/inline-map
+  PPtrs, plus a raw-text backstop for same-file inline PPtrs inside flow sequences
+  (`[{fileID: N}]`) that Unity's parser leaves opaque.
+- **Limitation**: a *non-empty flow-style* `m_Children`/`m_Roots` on the target's
+  parent (e.g. `m_Children: [{fileID: N}]`, rare in modern Unity) is not rewritten
+  — the op fails safe (ERROR/BLOCKED, no write), same as reparent.
 - **`--project` is REQUIRED for `--write`** (`ERROR delete --write requires
   --project`): a committed delete is always cross-file-verified. A dry-run without
   `--project` reports `cross_file_check=skipped reason=no_project` and runs only

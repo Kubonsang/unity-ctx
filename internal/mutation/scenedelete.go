@@ -2,13 +2,28 @@ package mutation
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
+	"strconv"
 
 	"github.com/Kubonsang/unity-ctx/internal/parser"
 	"github.com/Kubonsang/unity-ctx/internal/patch"
 )
 
-const classGameObject = 1
+const (
+	classGameObject = 1
+	// classSceneRoots is Unity's SceneRoots block; its m_Roots lists every
+	// root-level Transform in the scene.
+	classSceneRoots = 1660057539
+)
+
+// inlineGuidlessPPtr matches a complete same-file inline PPtr `{fileID: N}` (no
+// guid). It is the raw-text backstop for the in-file dangling check: the parser
+// renders a non-empty FLOW sequence like `m_Targets: [{fileID: 4002}]` as an
+// opaque string, so a PPtr inside it is invisible to a parsed-tree walk. A PPtr
+// carrying a guid (`{fileID: N, guid: ...}`) is a cross-file ref (has a comma
+// before the closing brace) and is intentionally not matched here.
+var inlineGuidlessPPtr = regexp.MustCompile(`\{\s*fileID:\s*(-?\d+)\s*\}`)
 
 // SceneDeletePlan is the result of planning a delete op. EndpointBlocked
 // (Policy 1: target class / stripped / missing-transform) and PlanBlocked
@@ -108,10 +123,12 @@ func PlanSceneDelete(input []byte, blocks []parser.Block, op patch.Op) (SceneDel
 	// ---- Collect the removed set (object + components, + subtree if cascading) ----
 	deleted := map[int64]struct{}{}
 	collectDeleteSet(byID, targetGO, deleted, op.Cascade)
+	plan.DeletedFileIDs = sortedSet(deleted)
 
 	// Never raw-delete prefab-instance (stripped) content: its overrides live in a
 	// PrefabInstance/source asset and a raw block removal would corrupt the link.
-	for id := range deleted {
+	// Iterate the sorted set so the reported id is deterministic.
+	for _, id := range plan.DeletedFileIDs {
 		if b, ok := byID[id]; ok && b.IsStripped {
 			plan.PlanBlocked = true
 			plan.PlanCode = "STRIPPED_IN_SUBTREE"
@@ -119,13 +136,20 @@ func PlanSceneDelete(input []byte, blocks []parser.Block, op patch.Op) (SceneDel
 			return plan, nil
 		}
 	}
-	plan.DeletedFileIDs = sortedSet(deleted)
 
-	// ---- Build the mutation: unlink from parent m_Children, then remove blocks ----
+	// ---- Build the mutation: unlink the target transform, then remove blocks ----
 	data := cloneBytes(input)
 	var err error
 	if plan.ParentTransform != 0 {
 		if data, err = applyRemoveChild(data, plan.ParentTransform, targetTransform); err != nil {
+			return plan, err
+		}
+	} else if rootsID, listed := sceneRootsListing(blocks, targetTransform); listed {
+		// Root-level object: its Transform is registered in the scene's SceneRoots
+		// m_Roots, not in any parent's m_Children. Unlink it there, else SceneRoots
+		// would still reference the removed fileID (a dangling self-ref that would
+		// otherwise BLOCK every root-object delete).
+		if data, err = applyRemoveListEntry(data, rootsID, "m_Roots", targetTransform); err != nil {
 			return plan, err
 		}
 	}
@@ -177,6 +201,11 @@ func VerifySceneDelete(data []byte, deleted []int64, parentTransform, targetTran
 			return false, fmt.Sprintf("parent_still_lists_child parent=%d child=%d", parentTransform, targetTransform)
 		}
 	}
+	// The scene's SceneRoots must never still list the removed target transform
+	// (covers the root-object delete, where the unlink edits m_Roots not a parent).
+	if _, listed := sceneRootsListing(blocks, targetTransform); listed {
+		return false, fmt.Sprintf("scene_roots_still_lists id=%d", targetTransform)
+	}
 	return true, ""
 }
 
@@ -204,7 +233,9 @@ func collectDeleteSet(byID map[int64]parser.Block, gameObject parser.Block, dele
 	}
 	deleted[gameObject.FileID] = struct{}{}
 	for _, cid := range blockComponentIDs(gameObject) {
-		deleted[cid] = struct{}{}
+		if cid != 0 { // a null/broken component serializes as {fileID: 0}; never add 0
+			deleted[cid] = struct{}{}
+		}
 	}
 	if !cascade {
 		return
@@ -220,7 +251,7 @@ func collectDeleteSet(byID map[int64]parser.Block, gameObject parser.Block, dele
 		}
 		if childGO, ok := byID[blockGameObjectID(ct)]; ok {
 			collectDeleteSet(byID, childGO, deleted, true)
-		} else {
+		} else if childTransform != 0 {
 			deleted[childTransform] = struct{}{}
 		}
 	}
@@ -240,8 +271,10 @@ func removeBlocks(data []byte, remove map[int64]struct{}) ([]byte, error) {
 		if _, ok := remove[b.FileID]; !ok {
 			continue
 		}
-		header := b.StartLine - 1 // StartLine is the first body line (0-based); header precedes it
-		end := b.EndLine          // exclusive: the next block's header (or trimmed EOF)
+		// parser sets StartLine = headerIndex+1 (the 0-based index of the block's
+		// first body line); the `--- !u!... &id` header line is at StartLine-1.
+		header := b.StartLine - 1
+		end := b.EndLine // exclusive: the next block's header index (or trimmed EOF)
 		if header < 0 {
 			header = 0
 		}
@@ -271,6 +304,7 @@ func firstInFileDangling(data []byte, deleted map[int64]struct{}) (dangler, dang
 		return 0, 0, false, err
 	}
 	for i := range blocks {
+		// (1) Parsed-tree walk: block-form and inline-map PPtrs.
 		hit := int64(0)
 		walkSameFilePPtrs(blocks[i].Fields, func(fileID int64) {
 			if hit != 0 {
@@ -283,8 +317,36 @@ func firstInFileDangling(data []byte, deleted map[int64]struct{}) (dangler, dang
 		if hit != 0 {
 			return blocks[i].FileID, hit, true, nil
 		}
+		// (2) Raw-text backstop: same-file inline PPtrs the parser left opaque
+		// (a non-empty FLOW sequence like `[{fileID: 4002}]` is rendered as a
+		// string, invisible to the walk above).
+		for _, m := range inlineGuidlessPPtr.FindAllStringSubmatch(blocks[i].RawBody, -1) {
+			if id, e := strconv.ParseInt(m[1], 10, 64); e == nil {
+				if _, ok := deleted[id]; ok {
+					return blocks[i].FileID, id, true, nil
+				}
+			}
+		}
 	}
 	return 0, 0, false, nil
+}
+
+// sceneRootsListing finds the scene's SceneRoots block and reports its fileID and
+// whether its m_Roots lists transformID. (0, false) if there is no SceneRoots
+// block or it does not list the transform.
+func sceneRootsListing(blocks []parser.Block, transformID int64) (int64, bool) {
+	for _, b := range blocks {
+		if b.ClassID != classSceneRoots {
+			continue
+		}
+		for _, id := range blockListFileIDs(b, "m_Roots") {
+			if id == transformID {
+				return b.FileID, true
+			}
+		}
+		return b.FileID, false
+	}
+	return 0, false
 }
 
 // walkSameFilePPtrs reports the fileID of every same-file PPtr (a map carrying

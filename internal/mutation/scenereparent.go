@@ -219,7 +219,14 @@ func mChildrenContains(b parser.Block, childID int64) bool {
 }
 
 func blockChildIDs(b parser.Block) []int64 {
-	raw, ok := b.Fields["m_Children"]
+	return blockListFileIDs(b, "m_Children")
+}
+
+// blockListFileIDs reads a dash-list field of {fileID: N} entries (m_Children,
+// m_Roots, ...) and returns the fileIDs. Returns nil for an absent/inline-empty
+// or flow-style (string-rendered) field.
+func blockListFileIDs(b parser.Block, field string) []int64 {
+	raw, ok := b.Fields[field]
 	if !ok {
 		return nil
 	}
@@ -396,8 +403,8 @@ type mChildScan struct {
 	childIDs      []int64
 }
 
-func scanMChildren(lines []preservedLine, block parser.Block) (mChildScan, error) {
-	idx, err := findFieldLine(lines, block, "m_Children")
+func scanMChildren(lines []preservedLine, block parser.Block, field string) (mChildScan, error) {
+	idx, err := findFieldLine(lines, block, field)
 	if err != nil {
 		return mChildScan{}, err
 	}
@@ -410,7 +417,7 @@ func scanMChildren(lines []preservedLine, block parser.Block) (mChildScan, error
 		return sc, nil
 	}
 	if value != "" {
-		return mChildScan{}, fmt.Errorf("UNSUPPORTED_MCHILDREN_SHAPE value=%q", value)
+		return mChildScan{}, fmt.Errorf("UNSUPPORTED_LIST_SHAPE field=%s value=%q", field, value)
 	}
 
 	end := block.EndLine
@@ -438,7 +445,7 @@ func scanMChildren(lines []preservedLine, block parser.Block) (mChildScan, error
 		}
 		fid, ok := parseDashChildID(trimmed)
 		if !ok {
-			return mChildScan{}, fmt.Errorf("UNSUPPORTED_MCHILDREN_SHAPE entry=%q", trimmed)
+			return mChildScan{}, fmt.Errorf("UNSUPPORTED_LIST_SHAPE field=%s entry=%q", field, trimmed)
 		}
 		sc.childLineIdx = append(sc.childLineIdx, i)
 		sc.childIDs = append(sc.childIDs, fid)
@@ -473,7 +480,7 @@ func applyAddChild(data []byte, parentID, childID int64) ([]byte, error) {
 		return nil, fmt.Errorf("NOT_FOUND fileID=%d", parentID)
 	}
 	lines := splitPreservedLines(data)
-	sc, err := scanMChildren(lines, block)
+	sc, err := scanMChildren(lines, block, "m_Children")
 	if err != nil {
 		return nil, err
 	}
@@ -507,6 +514,14 @@ func applyAddChild(data []byte, parentID, childID int64) ([]byte, error) {
 }
 
 func applyRemoveChild(data []byte, parentID, childID int64) ([]byte, error) {
+	return applyRemoveListEntry(data, parentID, "m_Children", childID)
+}
+
+// applyRemoveListEntry removes the `- {fileID: childID}` entry from a block's
+// dash-list field (m_Children, m_Roots, ...), collapsing the field to the
+// canonical `[]` when it was the only entry. Used for reparent/delete m_Children
+// edits and for unlinking a deleted root from the scene's SceneRoots m_Roots.
+func applyRemoveListEntry(data []byte, parentID int64, field string, childID int64) ([]byte, error) {
 	blocks, err := parser.Parse(data)
 	if err != nil {
 		return nil, err
@@ -516,7 +531,7 @@ func applyRemoveChild(data []byte, parentID, childID int64) ([]byte, error) {
 		return nil, fmt.Errorf("NOT_FOUND fileID=%d", parentID)
 	}
 	lines := splitPreservedLines(data)
-	sc, err := scanMChildren(lines, block)
+	sc, err := scanMChildren(lines, block, field)
 	if err != nil {
 		return nil, err
 	}
@@ -529,7 +544,7 @@ func applyRemoveChild(data []byte, parentID, childID int64) ([]byte, error) {
 		}
 	}
 	if removeAt == -1 {
-		return nil, fmt.Errorf("CHILD_NOT_FOUND parent=%d child=%d", parentID, childID)
+		return nil, fmt.Errorf("LIST_ENTRY_NOT_FOUND parent=%d field=%s entry=%d", parentID, field, childID)
 	}
 
 	if len(sc.childIDs) == 1 {

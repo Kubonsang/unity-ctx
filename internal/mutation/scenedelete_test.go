@@ -205,3 +205,65 @@ func TestPlanSceneDeleteBlocksStrippedParent(t *testing.T) {
 		t.Fatalf("expected PARENT_STRIPPED, got %+v", plan)
 	}
 }
+
+func TestPlanSceneDeleteRootUnlinksSceneRoots(t *testing.T) {
+	// A real scene registers root transforms in a SceneRoots (class 1660057539)
+	// m_Roots list. Deleting a root object must unlink it from m_Roots, not BLOCK.
+	scene := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!1660057539 &1\nSceneRoots:\n  m_ObjectHideFlags: 0\n  m_Roots:\n  - {fileID: 4000}\n  - {fileID: 4002}\n" +
+		"--- !u!1 &1000\nGameObject:\n  m_Component:\n  - component: {fileID: 4000}\n  m_Name: RootA\n" +
+		"--- !u!4 &4000\nTransform:\n  m_GameObject: {fileID: 1000}\n  m_Children: []\n  m_Father: {fileID: 0}\n" +
+		"--- !u!1 &1002\nGameObject:\n  m_Component:\n  - component: {fileID: 4002}\n  m_Name: RootB\n" +
+		"--- !u!4 &4002\nTransform:\n  m_GameObject: {fileID: 1002}\n  m_Children: []\n  m_Father: {fileID: 0}\n"
+	plan, err := planDelete(t, scene, 1000, false)
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if plan.EndpointBlocked || plan.PlanBlocked {
+		t.Fatalf("root delete must not be blocked (SceneRoots must be unlinked): %+v", plan)
+	}
+	out := string(plan.UpdatedData)
+	if strings.Contains(out, "&1000") || strings.Contains(out, "&4000") {
+		t.Fatalf("blocks not removed:\n%s", out)
+	}
+	// SceneRoots keeps the OTHER root (4002) but drops 4000.
+	if !strings.Contains(out, "  m_Roots:\n  - {fileID: 4002}\n") {
+		t.Fatalf("SceneRoots m_Roots not correctly unlinked:\n%s", out)
+	}
+	if ok, reason := VerifySceneDelete(plan.UpdatedData, plan.DeletedFileIDs, plan.ParentTransform, plan.TargetTransform); !ok {
+		t.Fatalf("verify failed: %s", reason)
+	}
+}
+
+func TestPlanSceneDeleteFlowSequenceInFileRefBlocks(t *testing.T) {
+	// 114001 references the deleted grandchild transform 4002 via a FLOW sequence
+	// (parser renders it as an opaque string); the raw-text backstop must catch it.
+	scene := strings.Replace(deleteScene,
+		"--- !u!114 &114001\nMonoBehaviour:\n  m_GameObject: {fileID: 1001}\n  m_Enabled: 1\n",
+		"--- !u!114 &114001\nMonoBehaviour:\n  m_GameObject: {fileID: 1001}\n  m_Enabled: 1\n  m_Targets: [{fileID: 4002}]\n",
+		1)
+	plan, err := planDelete(t, scene, 1002, false)
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if !plan.PlanBlocked || plan.PlanCode != "IN_FILE_REFERENCED" {
+		t.Fatalf("flow-sequence in-file ref must BLOCK, got %+v", plan)
+	}
+}
+
+func TestPlanSceneDeleteAllowsNullComponent(t *testing.T) {
+	// A null/broken component serializes as {fileID: 0}; it must not leak into the
+	// removed set (which would spuriously match a {fileID: 0, guid: scene} ref).
+	scene := "%YAML 1.1\n--- !u!1 &1000\nGameObject:\n  m_Component:\n  - component: {fileID: 4000}\n  - component: {fileID: 0}\n  m_Name: Obj\n" +
+		"--- !u!4 &4000\nTransform:\n  m_GameObject: {fileID: 1000}\n  m_Children: []\n  m_Father: {fileID: 0}\n"
+	plan, err := planDelete(t, scene, 1000, false)
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if plan.EndpointBlocked || plan.PlanBlocked {
+		t.Fatalf("unexpected block: %+v", plan)
+	}
+	if !sameIDs(plan.DeletedFileIDs, 1000, 4000) {
+		t.Fatalf("DeletedFileIDs = %v, want [1000 4000] (no fileID 0)", plan.DeletedFileIDs)
+	}
+}
