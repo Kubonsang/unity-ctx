@@ -84,6 +84,8 @@ type PatchArgs struct {
 	ID           int64
 	HasNewParent bool
 	NewParent    int64
+	// delete (op=delete, v2 ops[])
+	Cascade bool
 }
 
 type DiffArgs struct {

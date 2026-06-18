@@ -149,9 +149,10 @@ func TestScanInboundCoversNonStandardExtensions(t *testing.T) {
 func TestScanInboundClassifiesIndeterminate(t *testing.T) {
 	root := t.TempDir()
 	writeAsset(t, root, "A.unity", guidA, targetScene())
-	// A multiline-flow PPtr: the target GUID is present in the bytes but the brace
-	// spans two lines, so the parser does not recover it as a structured PPtr ->
-	// the raw-mention completeness backstop flags it indeterminate (never silent).
+	// A multiline-flow PPtr to the target. The line parser leaves it opaque, but
+	// the raw brace-aware scanner (parser.ScanInlinePPtrs) reads across the newline
+	// and recovers it precisely -> a real INBOUND hit (better than indeterminate;
+	// both BLOCK a delete).
 	multiline := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
 		"--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n" +
 		"  m_Ref: {fileID: 4001,\n    guid: " + guidA + ", type: 2}\n"
@@ -168,23 +169,19 @@ func TestScanInboundClassifiesIndeterminate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("error = %v", err)
 	}
-	hasD, hasE := false, false
+	// D.unity (multiline-flow) is now precisely detected as inbound.
+	if len(res.Inbound) != 1 || res.Inbound[0].Path != "Assets/D.unity" || res.Inbound[0].FileIDs[0] != 4001 {
+		t.Fatalf("multiline-flow ref not detected as inbound: %+v", res.Inbound)
+	}
+	// E.unity (parse failure) stays conservatively indeterminate (never silent).
+	hasE := false
 	for _, p := range res.Indeterminate {
-		if p == "Assets/D.unity" {
-			hasD = true
-		}
 		if p == "Assets/E.unity" {
 			hasE = true
 		}
 	}
-	if !hasD {
-		t.Fatalf("multiline-flow guid mention not flagged indeterminate: %v", res.Indeterminate)
-	}
 	if !hasE {
 		t.Fatalf("unparseable file not flagged indeterminate: %v", res.Indeterminate)
-	}
-	if len(res.Inbound) != 0 {
-		t.Fatalf("expected no structured inbound, got %+v", res.Inbound)
 	}
 }
 
@@ -410,5 +407,117 @@ func TestScanInboundFlagsBinaryUnityAsset(t *testing.T) {
 	}
 	if hasPNG {
 		t.Fatalf("non-asset binary .png should be skipped, not flagged: %v", res.Indeterminate)
+	}
+}
+
+// TestScanInboundDetectsFlowSequenceCrossFileRef is the fix for the cross-file
+// flow-sequence blind spot: a referrer pointing at the target via a single-line
+// FLOW list (which the parser renders as an opaque string) must be detected as
+// inbound, never reported as a silent "no refs".
+func TestScanInboundDetectsFlowSequenceCrossFileRef(t *testing.T) {
+	root := t.TempDir()
+	writeAsset(t, root, "A.unity", guidA, targetScene())
+	flow := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n" +
+		"  m_Targets: [{fileID: 4001, guid: " + guidA + ", type: 3}]\n"
+	writeAsset(t, root, "B.unity", guidB, flow)
+
+	res, err := ScanInbound(Request{ProjectPath: root, TargetPath: filepath.Join(root, "Assets", "A.unity"), FileIDs: []int64{4001}})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if len(res.Inbound) != 1 || res.Inbound[0].Path != "Assets/B.unity" || len(res.Inbound[0].FileIDs) != 1 || res.Inbound[0].FileIDs[0] != 4001 {
+		t.Fatalf("flow-sequence cross-file ref not detected: inbound=%+v indeterminate=%v", res.Inbound, res.Indeterminate)
+	}
+}
+
+// TestScanInboundDetectsFlowSequenceMultiItem covers a multi-entry flow list.
+func TestScanInboundDetectsFlowSequenceMultiItem(t *testing.T) {
+	root := t.TempDir()
+	writeAsset(t, root, "A.unity", guidA, targetScene())
+	flow := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n" +
+		"  m_Refs: [{fileID: 4001, guid: " + guidA + ", type: 3}, {fileID: 4002, guid: " + guidA + ", type: 3}]\n"
+	writeAsset(t, root, "B.unity", guidB, flow)
+
+	res, err := ScanInbound(Request{ProjectPath: root, TargetPath: filepath.Join(root, "Assets", "A.unity"), FileIDs: []int64{4001, 4002}})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if len(res.Inbound) != 1 || len(res.Inbound[0].FileIDs) != 2 {
+		t.Fatalf("multi-item flow-sequence refs not both detected: inbound=%+v", res.Inbound)
+	}
+}
+
+// TestScanInboundScansPackages: an embedded/local package asset under Packages/
+// that references the target must be detected (not a silent pass at the scope
+// boundary).
+func TestScanInboundScansPackages(t *testing.T) {
+	root := t.TempDir()
+	writeAsset(t, root, "A.unity", guidA, targetScene())
+	pkgDir := filepath.Join(root, "Packages", "com.example.foo")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "Foo.asset"), []byte(refFile(4001, guidA, guidC)), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "Foo.asset.meta"), []byte("guid: "+guidC+"\n"), 0o644); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+
+	res, err := ScanInbound(Request{ProjectPath: root, TargetPath: filepath.Join(root, "Assets", "A.unity"), FileIDs: []int64{4001}})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if len(res.Inbound) != 1 || res.Inbound[0].Path != "Packages/com.example.foo/Foo.asset" {
+		t.Fatalf("Packages referrer not detected: %+v", res.Inbound)
+	}
+}
+
+// TestScanInboundApostropheDoesNotHideRef: a literal apostrophe in an unquoted
+// name before a flow-list PPtr must not stop detection (the quote-tracking bug).
+func TestScanInboundApostropheDoesNotHideRef(t *testing.T) {
+	root := t.TempDir()
+	writeAsset(t, root, "A.unity", guidA, targetScene())
+	body := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &9000\nMonoBehaviour:\n  m_GameObject: {fileID: 0}\n" +
+		"  m_Name: Player's Gun\n  m_Targets: [{fileID: 4001, guid: " + guidA + ", type: 3}]\n"
+	writeAsset(t, root, "B.unity", guidB, body)
+
+	res, err := ScanInbound(Request{ProjectPath: root, TargetPath: filepath.Join(root, "Assets", "A.unity"), FileIDs: []int64{4001}})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if len(res.Inbound) != 1 || res.Inbound[0].Path != "Assets/B.unity" {
+		t.Fatalf("apostrophe-before-ref not detected: %+v indeterminate=%v", res.Inbound, res.Indeterminate)
+	}
+}
+
+// TestScanInboundFlagsSymlinkedDirIndeterminate: WalkDir does not descend a
+// symlinked directory, so its contents are unscanned -> flag it indeterminate
+// rather than silently report "no refs".
+func TestScanInboundFlagsSymlinkedDirIndeterminate(t *testing.T) {
+	root := t.TempDir()
+	writeAsset(t, root, "A.unity", guidA, targetScene())
+	realDir := filepath.Join(t.TempDir(), "external")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(realDir, filepath.Join(root, "Assets", "Linked")); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	res, err := ScanInbound(Request{ProjectPath: root, TargetPath: filepath.Join(root, "Assets", "A.unity"), FileIDs: []int64{4001}})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	found := false
+	for _, p := range res.Indeterminate {
+		if p == "Assets/Linked" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("symlinked dir not flagged indeterminate: %v", res.Indeterminate)
 	}
 }

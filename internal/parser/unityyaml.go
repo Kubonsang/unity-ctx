@@ -101,6 +101,100 @@ func Parse(data []byte) ([]Block, error) {
 	return blocks, nil
 }
 
+// ScanInlinePPtrs scans raw Unity YAML text for every balanced inline brace group
+// `{...}` that carries a top-level `fileID` key, reporting each fileID and the
+// group's optional guid via onPPtr. It reads the actual braces in the raw bytes,
+// so — unlike a walk of the parsed field tree — it is independent of how the
+// line/value parser happened to structure (or mangle) a PPtr. It is brace-depth
+// aware (a PPtr with a nested sub-mapping, or a PPtr nested inside another flow
+// map, is handled), spans newlines (multiline-flow list items), and unquotes
+// 'single'/"double" keys and values. Block-style PPtrs (no braces) have no brace
+// group and are NOT reported here; recover those from the parsed tree.
+//
+// It intentionally does NOT track quote state. YAML quoting is positional (a
+// quote opens a scalar only at a value start), but a plain unquoted scalar can
+// contain a literal apostrophe or quote (m_Name: Player's Gun) — tracking quote
+// state on every ' / " byte would flip into a phantom "inside a string" mode and
+// stop matching braces, silently dropping later PPtrs. Pure brace matching can
+// only OVER-detect (a `{fileID: N}` literally inside a quoted string — which Unity
+// never emits), never miss a real PPtr, so it is the safe choice for a scanner
+// whose job is to never silently report "no refs".
+func ScanInlinePPtrs(raw string, onPPtr func(fileID int64, guid string, hasGUID bool)) {
+	var stack []int // byte offsets of unmatched '{'
+	for i := 0; i < len(raw); i++ {
+		switch raw[i] {
+		case '{':
+			stack = append(stack, i)
+		case '}':
+			if n := len(stack); n > 0 {
+				open := stack[n-1]
+				stack = stack[:n-1]
+				fileIDs, guid, hasGUID := parseInlinePPtrBody(raw[open+1 : i])
+				for _, fileID := range fileIDs {
+					onPPtr(fileID, guid, hasGUID)
+				}
+			}
+		}
+	}
+}
+
+// parseInlinePPtrBody parses the inside of one brace group, splitting on
+// top-level commas, and returns every fileID it carries (so a malformed
+// duplicate-key group cannot silently drop one) plus the group's optional guid.
+func parseInlinePPtrBody(body string) (fileIDs []int64, guid string, hasGUID bool) {
+	for _, part := range splitTopLevelCommas(body) {
+		key, val, found := strings.Cut(part, ":")
+		if !found {
+			continue
+		}
+		switch unquoteToken(strings.TrimSpace(key)) {
+		case "fileID":
+			if n, err := strconv.ParseInt(unquoteToken(strings.TrimSpace(val)), 10, 64); err == nil {
+				fileIDs = append(fileIDs, n)
+			}
+		case "guid":
+			if g := unquoteToken(strings.TrimSpace(val)); g != "" {
+				guid, hasGUID = g, true
+			}
+		}
+	}
+	return fileIDs, guid, hasGUID
+}
+
+// splitTopLevelCommas splits s on commas that are not inside a nested {}/[] group.
+// (No quote tracking — a PPtr field value never contains a comma, and tracking
+// quotes here would inherit the same stray-apostrophe hazard as the scanner.)
+func splitTopLevelCommas(s string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '{', '[':
+			depth++
+		case '}', ']':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				parts = append(parts, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(parts, s[start:])
+}
+
+func unquoteToken(s string) string {
+	if len(s) >= 2 {
+		if (s[0] == '\'' && s[len(s)-1] == '\'') || (s[0] == '"' && s[len(s)-1] == '"') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
+}
+
 // AsInt64 coerces a parsed scalar value (as produced by Parse) to int64. Parse
 // yields integer scalars as int64 and floating scalars as float64; a plain int is
 // accepted defensively. Any other type yields ok=false.
