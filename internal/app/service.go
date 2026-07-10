@@ -322,7 +322,7 @@ func (s *Service) setAsset(path string, args SetArgs, result SetResult) (SetResu
 		result.Status = "BLOCKED"
 		result.Body = blockedBody(fmt.Sprintf(" file=%s field=%s", path, args.Field), preCheck)
 		result.Safety = newSafetyPayload([]phaseCheck{preCheck})
-		return result, 0
+		return result, ExitBlocked
 	}
 
 	plan, err := mutation.PlanAssetSet(loaded.data, loaded.blocks, mutation.AssetSetRequest{
@@ -344,7 +344,7 @@ func (s *Service) setAsset(path string, args SetArgs, result SetResult) (SetResu
 		result.Status = "BLOCKED"
 		result.Body = blockedBody(fmt.Sprintf(" file=%s field=%s", path, args.Field), tempCheck)
 		result.Safety = newSafetyPayload([]phaseCheck{preCheck, tempCheck})
-		return result, 0
+		return result, ExitBlocked
 	}
 	checks := []phaseCheck{preCheck, tempCheck}
 
@@ -501,7 +501,7 @@ func (s *Service) setPrefab(path string, jsonOut bool, args SetArgs, result SetR
 		result.Status = "BLOCKED"
 		result.Body = blockedBody(fmt.Sprintf(" file=%s id=%d field=%s", path, args.ID, args.Field), preCheck)
 		result.Safety = newSafetyPayload([]phaseCheck{preCheck})
-		return result, 0
+		return result, ExitBlocked
 	}
 
 	plan, err := mutation.PlanPrefabSet(loaded.data, loaded.blocks, mutation.PrefabSetRequest{
@@ -523,7 +523,7 @@ func (s *Service) setPrefab(path string, jsonOut bool, args SetArgs, result SetR
 		result.Status = "BLOCKED"
 		result.Body = blockedBody(fmt.Sprintf(" file=%s id=%d field=%s", path, args.ID, args.Field), tempCheck)
 		result.Safety = newSafetyPayload([]phaseCheck{preCheck, tempCheck})
-		return result, 0
+		return result, ExitBlocked
 	}
 	checks := []phaseCheck{preCheck, tempCheck}
 
@@ -710,7 +710,7 @@ func (s *Service) Reposition(namespace, path string, view core.View, jsonOut boo
 		result.Status = "BLOCKED"
 		result.Body = blockedBody(idField, preCheck)
 		result.Safety = newSafetyPayload([]phaseCheck{preCheck})
-		return result, 0
+		return result, ExitBlocked
 	}
 
 	plan, err := mutation.PlanSceneReposition(loaded.data, loaded.blocks, mutation.SceneRepositionRequest{
@@ -730,7 +730,7 @@ func (s *Service) Reposition(namespace, path string, view core.View, jsonOut boo
 		result.Status = "BLOCKED"
 		result.Body = blockedBody(idField, tempCheck)
 		result.Safety = newSafetyPayload([]phaseCheck{preCheck, tempCheck})
-		return result, 0
+		return result, ExitBlocked
 	}
 	checks := []phaseCheck{preCheck, tempCheck}
 
@@ -2115,7 +2115,7 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 		result.Safety = newSafetyPayload([]phaseCheck{preCheck})
 		planCopy := envelope.PatchPlan
 		result.PatchPlan = &planCopy
-		return result, 0
+		return result, ExitBlocked
 	}
 
 	plan, err := mutation.PlanSceneApply(loaded.data, mutation.SceneApplyRequest{
@@ -2137,7 +2137,7 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 		result.Safety = newSafetyPayload([]phaseCheck{preCheck, tempCheck})
 		planCopy := envelope.PatchPlan
 		result.PatchPlan = &planCopy
-		return result, 0
+		return result, ExitBlocked
 	}
 	checks := []phaseCheck{preCheck, tempCheck}
 
@@ -2271,7 +2271,7 @@ func (s *Service) applyReparent(path string, args ApplyArgs, envelope scenepatch
 		result.Status = "BLOCKED"
 		result.Body = blockedBody(idKV, preCheck)
 		result.Safety = newSafetyPayload([]phaseCheck{preCheck})
-		return result, 0
+		return result, ExitBlocked
 	}
 
 	plan, err := mutation.PlanSceneReparent(loaded.data, loaded.blocks, op)
@@ -2284,13 +2284,13 @@ func (s *Service) applyReparent(path string, args ApplyArgs, envelope scenepatch
 	if plan.EndpointBlocked {
 		result.Status = "BLOCKED"
 		result.Body = fmt.Sprintf("BLOCKED %s%s", plan.EndpointBody, idKV)
-		return result, 0
+		return result, ExitBlocked
 	}
 	// Policy 2: dry-run plan-phase pre-check.
 	if plan.PlanBlocked {
 		result.Status = "BLOCKED"
 		result.Body = fmt.Sprintf("BLOCKED phase=%s code=%s %s%s", safety.PhasePlan, plan.PlanCode, plan.PlanDetail, idKV)
-		return result, 0
+		return result, ExitBlocked
 	}
 
 	tempCheck := phaseCheck{phase: safety.PhaseTemp, report: safety.CheckBytes(plan.UpdatedData)}
@@ -2298,7 +2298,7 @@ func (s *Service) applyReparent(path string, args ApplyArgs, envelope scenepatch
 		result.Status = "BLOCKED"
 		result.Body = blockedBody(idKV, tempCheck)
 		result.Safety = newSafetyPayload([]phaseCheck{preCheck, tempCheck})
-		return result, 0
+		return result, ExitBlocked
 	}
 	checks := []phaseCheck{preCheck, tempCheck}
 
@@ -2467,7 +2467,7 @@ func (s *Service) applyDelete(path string, args ApplyArgs, envelope scenepatch.F
 		result.Status = "BLOCKED"
 		result.Body = blockedBody(idKV, preCheck)
 		result.Safety = newSafetyPayload([]phaseCheck{preCheck})
-		return result, 0
+		return result, ExitBlocked
 	}
 
 	// The scene's own guid lets the in-file dangling check catch a self-qualified
@@ -2484,13 +2484,13 @@ func (s *Service) applyDelete(path string, args ApplyArgs, envelope scenepatch.F
 	if plan.EndpointBlocked {
 		result.Status = "BLOCKED"
 		result.Body = fmt.Sprintf("BLOCKED %s%s", plan.EndpointBody, idKV)
-		return result, 0
+		return result, ExitBlocked
 	}
 	// Plan-phase guards: would-orphan / stripped-in-subtree / in-file-referenced.
 	if plan.PlanBlocked {
 		result.Status = "BLOCKED"
 		result.Body = fmt.Sprintf("BLOCKED phase=%s code=%s %s%s", safety.PhasePlan, plan.PlanCode, plan.PlanDetail, idKV)
-		return result, 0
+		return result, ExitBlocked
 	}
 
 	tempCheck := phaseCheck{phase: safety.PhaseTemp, report: safety.CheckBytes(plan.UpdatedData)}
@@ -2498,7 +2498,7 @@ func (s *Service) applyDelete(path string, args ApplyArgs, envelope scenepatch.F
 		result.Status = "BLOCKED"
 		result.Body = blockedBody(idKV, tempCheck)
 		result.Safety = newSafetyPayload([]phaseCheck{preCheck, tempCheck})
-		return result, 0
+		return result, ExitBlocked
 	}
 	checks := []phaseCheck{preCheck, tempCheck}
 
@@ -2534,13 +2534,13 @@ func (s *Service) applyDelete(path string, args ApplyArgs, envelope scenepatch.F
 		result.Status = "BLOCKED"
 		result.Body = fmt.Sprintf("BLOCKED code=CROSS_FILE_SCAN_FAILED %s%s%s", summary, xfSummary, idKV)
 		result.Safety = newSafetyPayload(checks)
-		return result, 0
+		return result, ExitBlocked
 	}
 	if xfBlocked {
 		result.Status = "BLOCKED"
 		result.Body = fmt.Sprintf("BLOCKED code=CROSS_FILE_REFERENCED %s%s%s%s", summary, xfSummary, idKV, xfDetail)
 		result.Safety = newSafetyPayload(checks)
-		return result, 0
+		return result, ExitBlocked
 	}
 	if !args.AckImpact {
 		result.Status = "ERROR"
