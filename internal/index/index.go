@@ -9,12 +9,16 @@ import (
 	"path/filepath"
 
 	"github.com/Kubonsang/unity-ctx/internal/parser"
+	"github.com/Kubonsang/unity-ctx/internal/version"
 )
 
-const (
-	schemaVersion = 1
-	generatedBy   = "unity-ctx 0.2.0"
-)
+const schemaVersion = 1
+
+// generatedBy is resolved at call time: version.Version is injected via
+// -ldflags on release builds and stays "dev" for plain source builds.
+func generatedBy() string {
+	return "unity-ctx " + version.Version
+}
 
 type Snapshot struct {
 	SchemaVersion int          `json:"schema_version"`
@@ -82,7 +86,7 @@ func buildSnapshot(kind, path, hash string, blocks []parser.Block) Snapshot {
 		Kind:          kind,
 		Path:          canonicalPath(path),
 		FileHash:      hash,
-		GeneratedBy:   generatedBy,
+		GeneratedBy:   generatedBy(),
 		Objects:       objects,
 	}
 }
