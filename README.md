@@ -52,7 +52,7 @@ No external runtime dependencies.
 
 > **Building from source (v0.6+):** unity-ctx depends on the
 > [unity-fileid-graph](https://github.com/Kubonsang/unity-fileid-graph) safety
-> kernel (`require ...unity-fileid-graph v0.9.0`), fetched automatically from
+> kernel (version pinned in `go.mod`), fetched automatically from
 > GitHub by the Go toolchain — no manual setup. The produced binary remains a
 > single static executable with no runtime dependencies.
 
@@ -102,8 +102,8 @@ kernel — a lossless Unity YAML block parser plus fileID graph integrity
 checker — at three points:
 
 ```text
-pre_check   target file before planning   → ERROR blocks (BLOCKED, exit 0)
-temp_check  candidate bytes before commit → ERROR blocks (BLOCKED, exit 0)
+pre_check   target file before planning   → ERROR blocks (BLOCKED, exit 3)
+temp_check  candidate bytes before commit → ERROR blocks (BLOCKED, exit 3)
    --write  atomic write with .bak backup
 final_check re-read file after commit     → ERROR reports WRITE_COMMITTED (exit 1) with the backup path
 ```
@@ -376,6 +376,72 @@ WRITE backup=Stage01.unity.bak patch=chair.patch.json op=place_prefab append_ops
 
 ---
 
+### `unity-ctx scene reposition`
+
+Moves an existing scene object: rewrites a Transform's `m_LocalPosition` in
+place. `--id` is the **Transform** fileID (class 4 or RectTransform 224), not
+the GameObject. Dry-run by default.
+
+```bash
+unity-ctx scene reposition Stage01.unity --id 1001 --position 1.5,2,-3.4
+unity-ctx scene reposition Stage01.unity --id 1001 --position 1.5,2,-3.4 --write
+```
+
+Output:
+```
+DRY_RUN id=1001 field=m_LocalPosition old=5,0,3 new=1.5,2,-3.4 changed=1 pre_check=OK temp_check=OK
+WRITE backup=Stage01.unity.bak id=1001 field=m_LocalPosition old=5,0,3 new=1.5,2,-3.4 changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK
+```
+
+Only the three axis numbers change — separators, comments, and every other byte
+survive. A non-transform target (`UNSUPPORTED_TARGET_CLASS`) or a field that is
+not exactly `{x, y, z}` of numbers (`FIELD_NOT_VECTOR3`) is refused rather than
+mangled.
+
+---
+
+### `unity-ctx scene reparent` (v2 patch)
+
+Moves a Transform under a new parent — updates the target's `m_Father` and both
+parents' `m_Children` atomically. Flows through the same patch → diff → apply
+pipeline using a v2 `ops[]` patch. `--new-parent 0` moves the target to the
+scene root.
+
+```bash
+unity-ctx scene patch Stage01.unity --op reparent --id 4001 --new-parent 4002 --json > reparent.patch.json
+unity-ctx scene diff  Stage01.unity --patch reparent.patch.json
+unity-ctx scene apply Stage01.unity --patch reparent.patch.json --write --ack-impact
+```
+
+A reparent that would create a cycle is refused before any write
+(`BLOCKED phase=plan code=WOULD_CREATE_CYCLE`). With `--project`, apply also
+reports inbound cross-file references (`WARN REPARENT_HAS_INBOUND_REFS`) —
+informational only, since the moved fileID stays valid.
+
+---
+
+### `unity-ctx scene delete` (v2 patch)
+
+Removes a GameObject and its components from a scene (whole subtree with
+`--cascade`), unlinking it from the parent's `m_Children` or the scene's
+`SceneRoots`. `--id` is the **GameObject** fileID.
+
+```bash
+unity-ctx scene patch Stage01.unity --op delete --id 1001 --cascade --json > delete.patch.json
+unity-ctx scene diff  Stage01.unity --patch delete.patch.json
+unity-ctx scene apply Stage01.unity --patch delete.patch.json --write --ack-impact --project /path/to/project
+```
+
+Deletes are guarded harder than reparent because removal dangles references:
+deleting an object with children requires `--cascade`
+(`BLOCKED WOULD_ORPHAN_CHILDREN`), prefab-instance content is never raw-deleted
+(`STRIPPED_IN_SUBTREE`), a surviving same-file reference blocks
+(`IN_FILE_REFERENCED`), and `--write` **requires `--project`** so every
+committed delete is cross-file-verified — any inbound or unaccountable
+reference blocks the write (`BLOCKED code=CROSS_FILE_REFERENCED`).
+
+---
+
 ### `unity-ctx asset set`
 
 Sets a field value in a `.asset` or `.mat` file. Dry-run by default.
@@ -587,7 +653,7 @@ Every command produces a single-prefix first line. Automated callers can branch 
 | `REF` | Reference evidence line from `refs` |
 | `NEED_PREFAB_GUID` | GUID could not be resolved from `.meta` |
 
-Exit codes: `0` = OK / WARN / UNKNOWN / BLOCKED / NEED_PREFAB_GUID, `1` = ERROR, `2` = tool execution error. `BLOCKED` and `NEED_PREFAB_GUID` exit `0` because the tool worked correctly — the result is a refusal, not a crash.
+Exit codes: `0` = OK / WARN / UNKNOWN / NEED_PREFAB_GUID, `1` = ERROR, `2` = tool execution / usage error, `3` = BLOCKED. `BLOCKED` exits `3` — a distinct code so an agent never mistakes a safety refusal (file untouched) for a completed write; `NEED_PREFAB_GUID` stays `0` as a missing precondition, not a refusal.
 
 ## Recommended Agent Flow
 
@@ -657,9 +723,19 @@ Standalone bounds generation without the Editor is not yet implemented.
 **Nested prefab traversal is capped at depth 3.**
 `prefab impact` and `prefab set` emit `WARN IMPACT_DEPTH_LIMIT` when the cap is reached. References beyond depth 3 may exist and are not reported.
 
+**`scene reposition` edits the raw Transform, not prefab-instance overrides.**
+For an object that is a prefab instance, the effective position lives in
+`PrefabInstance.m_Modifications`; repositioning the raw Transform may have no
+visual effect. Works as expected on plain (non-instance) scene objects.
+
+**Structural mutations are scene-only and one op per patch.**
+`reposition`/`reparent`/`delete` operate on `.unity` files only; a v2 patch
+carries exactly one op. Reparent endpoints must be plain `Transform` (class 4)
+blocks — RectTransform and prefab-instance (stripped) endpoints are refused.
+
 ## Status
 
-Currently at **[v0.6.0 — YAML Safety Integration](https://github.com/Kubonsang/unity-ctx/releases/tag/v0.6.0)**. Every write path is gated by the [unity-fileid-graph](https://github.com/Kubonsang/unity-fileid-graph) safety kernel. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full roadmap.
+Currently at **[v0.8.0 — Structural Scene Mutation](https://github.com/Kubonsang/unity-ctx/releases/tag/v0.8.0)**: `scene reposition` / `reparent` / `delete` join the safety-gated write paths, backed by a project-wide cross-file reference scanner, and `BLOCKED` now exits `3`. Every write path is gated by the [unity-fileid-graph](https://github.com/Kubonsang/unity-fileid-graph) safety kernel. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full roadmap.
 
 Next milestone: **v1.0 Agent Harness Release** — sample Unity project, CI examples, installer.
 

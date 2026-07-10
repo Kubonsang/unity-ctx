@@ -49,7 +49,7 @@ go build -o unity-ctx ./cmd/unity-ctx
 
 외부 런타임 의존성 없음.
 
-> **소스 빌드 (v0.6+):** unity-ctx는 [unity-fileid-graph](https://github.com/Kubonsang/unity-fileid-graph) 안전 커널(`require ...unity-fileid-graph v0.9.0`)에 의존하며, Go 툴체인이 GitHub에서 자동으로 받아옵니다 — 수동 설정 불필요. 산출물은 여전히 런타임 의존성 없는 단일 정적 바이너리입니다.
+> **소스 빌드 (v0.6+):** unity-ctx는 [unity-fileid-graph](https://github.com/Kubonsang/unity-fileid-graph) 안전 커널(버전은 `go.mod`에 고정)에 의존하며, Go 툴체인이 GitHub에서 자동으로 받아옵니다 — 수동 설정 불필요. 산출물은 여전히 런타임 의존성 없는 단일 정적 바이너리입니다.
 
 ## 지원 파일 타입
 
@@ -94,8 +94,8 @@ unity-ctx meta guid Assets/Prefabs/Chair.prefab --project /Users/me/MyUnityProje
 모든 write 경로는 [unity-fileid-graph](https://github.com/Kubonsang/unity-fileid-graph) 안전 커널 — 무손실 Unity YAML 블록 파서 + fileID graph 무결성 검사기 — 이 세 지점에서 검증합니다:
 
 ```text
-pre_check   계획 전 대상 파일        → ERROR면 차단 (BLOCKED, exit 0)
-temp_check  커밋 전 후보 바이트       → ERROR면 차단 (BLOCKED, exit 0)
+pre_check   계획 전 대상 파일        → ERROR면 차단 (BLOCKED, exit 3)
+temp_check  커밋 전 후보 바이트       → ERROR면 차단 (BLOCKED, exit 3)
    --write  .bak 백업과 함께 원자적 쓰기
 final_check 커밋 후 재독             → ERROR면 WRITE_COMMITTED 보고 (exit 1) + 백업 경로
 ```
@@ -265,6 +265,71 @@ unity-ctx scene apply Stage01.unity --patch chair.patch.json --write
 
 ---
 
+### `unity-ctx scene reposition`
+
+기존 씬 오브젝트를 이동합니다: Transform의 `m_LocalPosition`을 in-place로
+교체합니다. `--id`는 GameObject가 아니라 **Transform** fileID(class 4 또는
+RectTransform 224)입니다. 기본 dry-run.
+
+```bash
+unity-ctx scene reposition Stage01.unity --id 1001 --position 1.5,2,-3.4
+unity-ctx scene reposition Stage01.unity --id 1001 --position 1.5,2,-3.4 --write
+```
+
+출력:
+```
+DRY_RUN id=1001 field=m_LocalPosition old=5,0,3 new=1.5,2,-3.4 changed=1 pre_check=OK temp_check=OK
+WRITE backup=Stage01.unity.bak id=1001 field=m_LocalPosition old=5,0,3 new=1.5,2,-3.4 changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK
+```
+
+세 축 숫자만 바뀌고 구분자·주석 등 나머지 바이트는 전부 보존됩니다. 대상이
+transform 클래스가 아니거나(`UNSUPPORTED_TARGET_CLASS`) 값이 정확히
+`{x, y, z}` 숫자가 아니면(`FIELD_NOT_VECTOR3`) 훼손 대신 거부합니다.
+
+---
+
+### `unity-ctx scene reparent` (v2 patch)
+
+Transform을 새 부모 아래로 이동합니다 — 타깃의 `m_Father`와 양쪽 부모의
+`m_Children`을 원자적으로 갱신합니다. v2 `ops[]` patch로 동일한
+patch → diff → apply 파이프라인을 사용합니다. `--new-parent 0`은 씬 루트로
+이동합니다.
+
+```bash
+unity-ctx scene patch Stage01.unity --op reparent --id 4001 --new-parent 4002 --json > reparent.patch.json
+unity-ctx scene diff  Stage01.unity --patch reparent.patch.json
+unity-ctx scene apply Stage01.unity --patch reparent.patch.json --write --ack-impact
+```
+
+사이클을 만들 이동은 write 전에 거부됩니다
+(`BLOCKED phase=plan code=WOULD_CREATE_CYCLE`). `--project`를 주면 apply가
+교차 파일 inbound 참조를 보고합니다(`WARN REPARENT_HAS_INBOUND_REFS`) —
+이동은 fileID를 유효하게 유지하므로 정보 제공용이며 차단하지 않습니다.
+
+---
+
+### `unity-ctx scene delete` (v2 patch)
+
+GameObject와 그 컴포넌트를 씬에서 제거합니다(`--cascade`면 서브트리 전체).
+부모의 `m_Children` 또는 씬의 `SceneRoots`에서 unlink합니다. `--id`는
+**GameObject** fileID입니다.
+
+```bash
+unity-ctx scene patch Stage01.unity --op delete --id 1001 --cascade --json > delete.patch.json
+unity-ctx scene diff  Stage01.unity --patch delete.patch.json
+unity-ctx scene apply Stage01.unity --patch delete.patch.json --write --ack-impact --project /path/to/project
+```
+
+삭제는 참조를 dangling으로 만들 수 있어 reparent보다 강하게 가드됩니다:
+자식이 있는 오브젝트는 `--cascade` 필수(`BLOCKED WOULD_ORPHAN_CHILDREN`),
+프리팹 인스턴스 내용물은 raw 삭제 금지(`STRIPPED_IN_SUBTREE`), 살아남는
+같은 파일 참조는 차단(`IN_FILE_REFERENCED`), 그리고 `--write`는
+`--project`가 **필수**라 커밋되는 모든 삭제는 교차 파일 검증을 거칩니다 —
+inbound 또는 판정 불가 참조가 있으면 write가 차단됩니다
+(`BLOCKED code=CROSS_FILE_REFERENCED`).
+
+---
+
 ### `unity-ctx asset set`
 
 `.asset`/`.mat` 파일의 필드 값을 설정합니다. 기본 dry-run.
@@ -366,7 +431,7 @@ unity-ctx scene refs Assets/Scenes/Stage01.unity --json
 | `REF` | `refs`의 참조 근거 라인 |
 | `NEED_PREFAB_GUID` | `.meta`에서 GUID를 해석하지 못함 |
 
-종료 코드: `0` = OK / WARN / UNKNOWN / BLOCKED / NEED_PREFAB_GUID, `1` = ERROR, `2` = 도구 실행 오류. `BLOCKED`와 `NEED_PREFAB_GUID`가 `0`인 이유는 도구가 정상 동작했기 때문입니다 — 결과가 거부일 뿐 크래시가 아닙니다.
+종료 코드: `0` = OK / WARN / UNKNOWN / NEED_PREFAB_GUID, `1` = ERROR, `2` = 도구 실행/사용법 오류, `3` = BLOCKED. `BLOCKED`는 `3`을 반환합니다 — 안전 검사가 쓰기 전에 변형을 거부한 것(파일은 그대로)이며, 에이전트가 거부를 성공으로 오인하지 않도록 성공(`0`)·실패(`1`)와 구분된 코드입니다. `NEED_PREFAB_GUID`는 거부가 아니라 선행 조건 누락이므로 `0`을 유지합니다.
 
 ## 권장 에이전트 흐름
 
@@ -433,9 +498,13 @@ go run ./cmd/unity-ctx --help
 
 **중첩 프리팹 순회는 depth 3에서 제한됩니다.** `prefab impact`/`prefab set`은 제한 도달 시 `WARN IMPACT_DEPTH_LIMIT`를 냅니다. depth 3을 넘는 참조는 보고되지 않을 수 있습니다.
 
+**`scene reposition`은 raw Transform을 편집하며, 프리팹 인스턴스 오버라이드는 다루지 않습니다.** 프리팹 인스턴스인 오브젝트의 실제 위치는 `PrefabInstance.m_Modifications`에 있어 raw Transform 이동은 시각적 효과가 없을 수 있습니다. 일반(비인스턴스) 씬 오브젝트에서는 기대대로 동작합니다.
+
+**구조 변형은 씬 전용이며 patch당 1개 op입니다.** `reposition`/`reparent`/`delete`는 `.unity` 파일만 대상으로 하고, v2 patch는 정확히 하나의 op만 담습니다. reparent 엔드포인트는 순수 `Transform`(class 4)만 허용 — RectTransform과 프리팹 인스턴스(stripped) 엔드포인트는 거부됩니다.
+
 ## 상태
 
-현재 **[v0.6.0 — YAML Safety Integration](https://github.com/Kubonsang/unity-ctx/releases/tag/v0.6.0)**. 모든 write 경로가 [unity-fileid-graph](https://github.com/Kubonsang/unity-fileid-graph) 안전 커널로 게이트됩니다. 전체 로드맵은 [`docs/ROADMAP.md`](docs/ROADMAP.md) 참고.
+현재 **[v0.8.0 — Structural Scene Mutation](https://github.com/Kubonsang/unity-ctx/releases/tag/v0.8.0)**: `scene reposition` / `reparent` / `delete`가 안전 게이트 write 경로에 합류했고, 프로젝트 전역 교차 파일 참조 스캐너가 이를 뒷받침하며, `BLOCKED`는 이제 exit `3`을 반환합니다. 모든 write 경로가 [unity-fileid-graph](https://github.com/Kubonsang/unity-fileid-graph) 안전 커널로 게이트됩니다. 전체 로드맵은 [`docs/ROADMAP.md`](docs/ROADMAP.md) 참고.
 
 다음 마일스톤: **v1.0 Agent Harness Release** — 샘플 Unity 프로젝트, CI 예제, 설치 도구.
 

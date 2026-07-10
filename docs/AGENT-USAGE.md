@@ -29,6 +29,8 @@ cause, do not bypass it by touching the YAML.
 | Blast radius of a prefab | `prefab impact <prefab> --project .` | no |
 | Change an asset/prefab field | `<asset\|prefab> set ...` | no |
 | Move a scene object | `scene reposition <file> --id N --position x,y,z` | no |
+| Reparent a scene object | `scene patch --op reparent --id T --new-parent P` → `diff` → `apply` | no |
+| Delete a scene object | `scene patch --op delete --id G [--cascade]` → `diff` → `apply --project .` | no |
 | Place a prefab in a scene | `scene scan` → `suggest` → `diff` → `apply` | scan only |
 
 `<ns>` is `scene`, `prefab`, or `asset`. Only `scene scan` needs a running Unity
@@ -54,18 +56,22 @@ Branch on the first token of the first line.
 | `REF` | one reference evidence line from `refs` | parse as evidence |
 | `CANDIDATE` / `PLAN` / `PATCH_OUT` / `SCENES` / `PREFABS` | detail lines | parse per command |
 
-Exit codes: `0` = OK / WARN / UNKNOWN / BLOCKED / NEED_PREFAB_GUID, `1` = ERROR,
-`2` = tool execution error. `BLOCKED` and `NEED_PREFAB_GUID` exit 0 because the
-tool worked correctly — the result is a refusal, not a crash.
+Exit codes: `0` = OK / WARN / UNKNOWN / NEED_PREFAB_GUID, `1` = ERROR,
+`2` = tool execution / usage error, `3` = BLOCKED (a safety check refused the
+mutation before any write; the file is untouched). `BLOCKED` is kept distinct
+from both success (`0`) and failure (`1`) so an agent never reads a refusal as a
+completed write. `NEED_PREFAB_GUID` stays `0` — a missing precondition, not a
+refused mutation.
 
 ## Write safety contract
 
-`scene apply`, `prefab set`, and `asset set` each run the safety kernel three
-times and report the phase statuses on the summary line:
+`scene apply` (place_prefab / reparent / delete), `scene reposition`,
+`prefab set`, and `asset set` each run the safety kernel three times and report
+the phase statuses on the summary line:
 
 ```
-pre_check    target file before planning    → ERROR ⇒ BLOCKED (exit 0), file untouched
-temp_check   candidate bytes before commit  → ERROR ⇒ BLOCKED (exit 0), file untouched
+pre_check    target file before planning    → ERROR ⇒ BLOCKED (exit 3), file untouched
+temp_check   candidate bytes before commit  → ERROR ⇒ BLOCKED (exit 3), file untouched
    --write   atomic write + .bak backup
 final_check  re-read file after commit      → ERROR ⇒ ERROR WRITE_COMMITTED (exit 1) + backup= path
 ```
@@ -109,6 +115,31 @@ unity-ctx scene reposition Stage01.unity --id 1001 --position 1.5,2,-3.4 --write
 GameObject. Resolve it via `inspect ... --component Transform`. Topology is
 unchanged, so the same dry-run → `--write` → `.bak` safety contract applies.
 
+### Reparent a scene object
+```bash
+unity-ctx scene patch Stage01.unity --op reparent --id 4001 --new-parent 4002 --json > reparent.patch.json
+unity-ctx scene diff  Stage01.unity --patch reparent.patch.json
+unity-ctx scene apply Stage01.unity --patch reparent.patch.json                           # DRY_RUN
+unity-ctx scene apply Stage01.unity --patch reparent.patch.json --write --ack-impact
+```
+`--id` and `--new-parent` are **Transform** fileIDs (`--new-parent 0` = scene
+root); only plain `Transform` (class 4) endpoints are allowed. A cycle-creating
+move is refused at plan time (`WOULD_CREATE_CYCLE`). Add `--project .` to the
+apply to also get a cross-file inbound-reference report (WARN only — a moved
+fileID stays valid).
+
+### Delete a scene object
+```bash
+unity-ctx scene patch Stage01.unity --op delete --id 1001 --cascade --json > delete.patch.json
+unity-ctx scene diff  Stage01.unity --patch delete.patch.json
+unity-ctx scene apply Stage01.unity --patch delete.patch.json --project .                 # DRY_RUN (previews block_on_write)
+unity-ctx scene apply Stage01.unity --patch delete.patch.json --write --ack-impact --project .
+```
+`--id` is the **GameObject** fileID. `--cascade` removes the whole subtree;
+without it, an object with children is refused (`WOULD_ORPHAN_CHILDREN`).
+`--write` **requires `--project`** — a committed delete is always
+cross-file-verified, and any inbound or indeterminate reference blocks it.
+
 ### Place a prefab
 ```bash
 unity-ctx scene scan Stage01.unity --mode editor --project . --out /tmp/b.json   # Editor required
@@ -125,6 +156,10 @@ unity-ctx scene apply Stage01.unity --patch /tmp/chair.patch.json --write
 | `BLOCKED ... phase=pre_check` | Target file is already broken. Stop. Report the `CHECK`/`ERROR` lines. Never patch raw YAML. |
 | `BLOCKED ... phase=temp_check` | This change would corrupt the file. Discard the plan; go back to `inspect`/`query`. |
 | `ERROR WRITE_COMMITTED ... phase=final_check backup=<p>` | Write committed then failed verification. Recover with `unity-ctx <ns> restore <file>` (restores `<file>.bak`), then report. |
+| `BLOCKED phase=plan code=WOULD_CREATE_CYCLE` | The reparent would loop the hierarchy. Choose a parent outside the target's subtree. |
+| `BLOCKED phase=plan code=WOULD_ORPHAN_CHILDREN` | Delete target still has children. Re-run `patch --op delete` with `--cascade`, or reparent the children first. |
+| `BLOCKED code=CROSS_FILE_REFERENCED` | Other files still reference the object being deleted. Do not bypass — repoint or remove those references (the reported `files=` list, or `refs`/`impact`) and retry. |
+| `ERROR PATCH_STALE` | The scene changed after the patch was generated. Regenerate the patch from the current scene. |
 | `NEED_PREFAB_GUID` | Run `unity-ctx meta guid <prefab> --project .`. If `.meta` is absent, the asset must be imported in Unity. |
 | `UNKNOWN` (patch) | Do not `apply` until the GUID is resolved. |
 | `OMITTED` | Raise `--max-tokens` or narrow the query. |

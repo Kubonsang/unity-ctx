@@ -155,11 +155,13 @@ Rules:
 
 | Code | Meaning |
 |---:|---|
-| 0 | OK / WARN / UNKNOWN only |
-| 1 | ERROR condition |
-| 2 | tool execution error |
+| 0 | OK / WARN / UNKNOWN / NEED_PREFAB_GUID |
+| 1 | ERROR condition (incl. post-write graph corruption) |
+| 2 | tool execution / usage error |
+| 3 | BLOCKED — safety refused the mutation before any write; file untouched |
 
-`UNKNOWN` may return 0 but must not imply permission to write.
+`UNKNOWN` may return 0 but must not imply permission to write. `BLOCKED` is a
+distinct exit code (`3`) so a refused mutation is never mistaken for success.
 
 ## 12. testplay-runner Integration
 
