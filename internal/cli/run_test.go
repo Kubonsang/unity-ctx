@@ -1309,6 +1309,43 @@ func TestSetAssetWriteCreatesBackupAndVerifies(t *testing.T) {
 	}
 }
 
+// A safety-BLOCKED mutation must surface a non-zero, distinct exit code through
+// the whole CLI boundary so an agent never reads a refusal as success. The fixture
+// has a duplicate fileID, which the graph pre_check rejects before any write.
+func TestSetBlockedMutationReturnsExitBlocked(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "duplicate.asset")
+	content := "" +
+		"%YAML 1.1\n" +
+		"%TAG !u! tag:unity3d.com,2011:\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: A\n" +
+		"  maxHealth: 200\n" +
+		"--- !u!114 &11400000\n" +
+		"MonoBehaviour:\n" +
+		"  m_Name: B\n" +
+		"  maxHealth: 5\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	result := runCLI(t, "asset", "set", path, "--field", "maxHealth", "--value", "300", "--write")
+
+	if result.exitCode != 3 {
+		t.Fatalf("a safety-BLOCKED mutation must exit 3, got %d stdout=%q stderr=%q", result.exitCode, result.stdout, result.stderr)
+	}
+	if !strings.HasPrefix(result.stdout, "BLOCKED ") {
+		t.Fatalf("expected a BLOCKED body, got %q", result.stdout)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() after error = %v", err)
+	}
+	if string(after) != content {
+		t.Fatal("a BLOCKED mutation must leave the file untouched")
+	}
+}
+
 func TestSetAssetWriteNoOpDoesNotWriteOrCreateBackup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "enemy_config.asset")
 	content := "" +

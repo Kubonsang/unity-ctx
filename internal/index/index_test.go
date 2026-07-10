@@ -6,7 +6,27 @@ import (
 	"testing"
 
 	"github.com/Kubonsang/unity-ctx/internal/parser"
+	"github.com/Kubonsang/unity-ctx/internal/version"
 )
+
+func TestBuildSnapshotGeneratedByTracksBuildVersion(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+
+	blocks, err := parser.ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile() error = %v", err)
+	}
+
+	snapshot, err := BuildSnapshot("scene", path, blocks)
+	if err != nil {
+		t.Fatalf("BuildSnapshot() error = %v", err)
+	}
+
+	want := "unity-ctx " + version.Version
+	if snapshot.GeneratedBy != want {
+		t.Fatalf("GeneratedBy mismatch: got %q want %q", snapshot.GeneratedBy, want)
+	}
+}
 
 func TestBuildSnapshotIncludesFileHashAndObjects(t *testing.T) {
 	path := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")

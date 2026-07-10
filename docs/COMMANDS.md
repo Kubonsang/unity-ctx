@@ -47,12 +47,15 @@ unity-ctx scene summarize           → ERROR missing file argument
 
 ## Exit Codes
 
-- `0`: OK / WARN / UNKNOWN / BLOCKED / NEED_PREFAB_GUID
+- `0`: OK / WARN / UNKNOWN / NEED_PREFAB_GUID
 - `1`: ERROR condition
 - `2`: tool execution error (incl. usage errors: unknown/omitted namespace or command, missing file)
+- `3`: BLOCKED — a safety check refused the mutation before any write; the file is untouched
 
-`BLOCKED` and `NEED_PREFAB_GUID` exit 0 because the tool worked correctly:
-the result is a safety-policy refusal or a missing precondition, not a failure.
+`BLOCKED` exits `3` (not `0`) so an agent can never mistake a safety-policy
+refusal for a completed write. `NEED_PREFAB_GUID` stays `0` because it is a
+missing precondition, not a refused mutation. Post-write graph corruption is an
+`ERROR` (exit `1`): the file was already modified.
 
 ## Output Prefixes
 
@@ -147,7 +150,7 @@ Rules:
 - `set` runs the fileid-graph integrity check on the input (`pre_check`), the
   candidate bytes (`temp_check`), and the re-read file after a committed write
   (`final_check`). A blocking `ERROR` before the write returns `BLOCKED
-  code=GRAPH_CHECK_FAILED` (exit 0) without touching the file; after the write it
+  code=GRAPH_CHECK_FAILED` (exit 3) without touching the file; after the write it
   returns `ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED phase=final_check` with
   the backup path (exit 1). `WARN` does not block.
 - `final_check` is defense-in-depth: because `temp_check` already validated the
@@ -175,7 +178,7 @@ No-op write output:
 OK field=maxHealth old=200 new=200 type_hint=int changed=0 verified=1 pre_check=OK temp_check=OK
 ```
 
-Blocked output (exit 0, file untouched):
+Blocked output (exit 3, file untouched):
 
 ```text
 BLOCKED code=GRAPH_CHECK_FAILED phase=pre_check file=EnemyConfig.asset field=maxHealth
@@ -657,7 +660,7 @@ Rules:
 - `prefab set` runs the fileid-graph integrity check on the input (`pre_check`)
   and the candidate bytes (`temp_check`) before the `--ack-impact` gate, and on
   the re-read file after a committed write (`final_check`). A blocking `ERROR`
-  before the write returns `BLOCKED code=GRAPH_CHECK_FAILED` (exit 0); after the
+  before the write returns `BLOCKED code=GRAPH_CHECK_FAILED` (exit 3); after the
   write it returns `ERROR WRITE_COMMITTED code=GRAPH_CHECK_FAILED
   phase=final_check` with the backup path (exit 1). `WARN` does not block.
 
@@ -683,7 +686,7 @@ Write-gate failure:
 ERROR set requires --ack-impact for prefab writes
 ```
 
-Blocked output (exit 0, file untouched, judged before the ack gate):
+Blocked output (exit 3, file untouched, judged before the ack gate):
 
 ```text
 BLOCKED code=GRAPH_CHECK_FAILED phase=pre_check file=Assets/Prefabs/Enemy.prefab id=11400000 field=moveSpeed
@@ -823,7 +826,7 @@ Rules:
   (`pre_check`), on the candidate bytes before commit (`temp_check`), and on the
   re-read file after a committed write (`final_check`).
 - A blocking `ERROR` in `pre_check` or `temp_check` returns `BLOCKED
-  code=GRAPH_CHECK_FAILED` (exit 0) and never touches the file — including dry-run.
+  code=GRAPH_CHECK_FAILED` (exit 3) and never touches the file — including dry-run.
 - A blocking `ERROR` in `final_check` returns `ERROR WRITE_COMMITTED
   code=GRAPH_CHECK_FAILED phase=final_check backup=<path>` (exit 1). The write has
   already been committed; restore from the printed backup path.
@@ -837,7 +840,7 @@ DRY_RUN patch=patches/chair_place_ok.patch.json op=place_prefab append_ops=2 cha
 WRITE backup=Stage01.unity.bak patch=patches/chair_place_ok.patch.json op=place_prefab append_ops=2 changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK
 ```
 
-Blocked output (exit 0, file untouched, no backup created):
+Blocked output (exit 3, file untouched, no backup created):
 
 ```text
 BLOCKED code=GRAPH_CHECK_FAILED phase=pre_check patch=patches/chair_place_ok.patch.json file=Stage01.unity
@@ -1206,7 +1209,7 @@ No-op write output:
 OK id=1001 field=m_LocalPosition old=5,0,3 new=5,0,3 changed=0 verified=1 pre_check=OK temp_check=OK
 ```
 
-Blocked output (exit 0, file untouched):
+Blocked output (exit 3, file untouched):
 
 ```text
 BLOCKED code=GRAPH_CHECK_FAILED phase=pre_check file=Stage01.unity id=1001 field=m_LocalPosition
@@ -1240,7 +1243,7 @@ old and new parents' `m_Children` atomically (one file, one `.bak`). `--new-pare
   4 only. A `RectTransform` (224), a stripped (nested prefab-instance) endpoint, or
   any non-Transform endpoint is refused:
   `BLOCKED reason=UNSUPPORTED_ENDPOINT_CLASS endpoint=<role> id=<N> class=<C> is_stripped=<bool> allowed=4`
-  (exit 0, file untouched). Editing such an endpoint's hierarchy raw would be an
+  (exit 3, file untouched). Editing such an endpoint's hierarchy raw would be an
   unverifiable, silently-invalid write.
 - **Dry-run `plan` phase** (earliest phase): if the reparent would create a cycle
   (new parent is the target or a descendant), it is refused before any write —
@@ -1312,7 +1315,7 @@ Transform from the parent's `m_Children` (one file, one `.bak`). `--id` is the
 - **`--cascade` removes the whole Transform subtree.** Without it, deleting an
   object that still has children is refused
   (`BLOCKED phase=plan code=WOULD_ORPHAN_CHILDREN`).
-- **Plan-phase guards** (all `BLOCKED phase=plan`, exit 0, file untouched):
+- **Plan-phase guards** (all `BLOCKED phase=plan`, exit 3, file untouched):
   `STRIPPED_IN_SUBTREE` (a prefab-instance block is in the removed set — its
   overrides live elsewhere, raw removal would corrupt the link); `PARENT_STRIPPED`
   / `PARENT_NOT_FOUND` (the parent's `m_Children` cannot be edited); and

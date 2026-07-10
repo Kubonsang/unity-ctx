@@ -12,9 +12,10 @@ Namespaces: `scene` | `prefab` | `asset`
 
 | Code | Meaning |
 |------|---------|
-| `0` | OK / WARN / UNKNOWN / BLOCKED / NEED_PREFAB_GUID |
-| `1` | ERROR condition |
-| `2` | Tool execution error |
+| `0` | OK / WARN / UNKNOWN / NEED_PREFAB_GUID |
+| `1` | ERROR condition (incl. post-write graph corruption) |
+| `2` | Tool execution / usage error |
+| `3` | BLOCKED — 안전 검사가 쓰기 전에 변형을 거부 (파일 미변경); 성공(`0`)·실패(`1`)와 구분된 코드 |
 
 ## Output Prefix Meanings
 
@@ -340,6 +341,71 @@ SCENES Assets/Scenes/BossRoom.unity refs=1 fileIDs=4000 ...
 PREFABS Assets/Prefabs/EnemyElite.prefab refs=2 fileIDs=3000,3001
 ```
 
+## Structural Scene Mutation Commands (v0.8)
+
+### scene reposition
+
+Transform의 `m_LocalPosition`을 in-place 교체. `--id`는 GameObject가 아니라
+**Transform** fileID (class 4 또는 RectTransform 224).
+
+```bash
+# dry-run
+unity-ctx scene reposition Stage01.unity --id 1001 --position 1.5,2,-3.4
+
+# 실제 적용
+unity-ctx scene reposition Stage01.unity --id 1001 --position 1.5,2,-3.4 --write
+```
+
+Required: `--id`, `--position x,y,z`
+Optional: `--write`, `--json`
+
+- 세 축 숫자만 교체, 나머지 바이트 보존
+- transform 클래스가 아니면 `ERROR UNSUPPORTED_TARGET_CLASS ... allowed=4,224`
+- `{x,y,z}` 숫자가 아니면 `ERROR FIELD_NOT_VECTOR3` (Quaternion 오지정 방지)
+- 프리팹 인스턴스의 실제 위치는 `m_Modifications`에 있어 raw Transform 이동은
+  효과가 없을 수 있음 (비인스턴스 오브젝트에서 사용)
+
+Output:
+```
+DRY_RUN id=1001 field=m_LocalPosition old=5,0,3 new=1.5,2,-3.4 changed=1 pre_check=OK temp_check=OK
+WRITE backup=Stage01.unity.bak id=1001 field=m_LocalPosition old=5,0,3 new=1.5,2,-3.4 changed=1 verified=1 pre_check=OK temp_check=OK final_check=OK
+```
+
+### scene reparent (v2 patch)
+
+Transform을 새 부모 아래로 이동. patch → diff → apply 파이프라인 사용.
+
+```bash
+unity-ctx scene patch Stage01.unity --op reparent --id 4001 --new-parent 4002 --json > reparent.patch.json
+unity-ctx scene diff  Stage01.unity --patch reparent.patch.json
+unity-ctx scene apply Stage01.unity --patch reparent.patch.json --write --ack-impact
+```
+
+- `--id`/`--new-parent`는 **Transform** fileID, `--new-parent 0` = 씬 루트
+- 엔드포인트는 순수 Transform(class 4)만 — RectTransform/stripped는
+  `BLOCKED UNSUPPORTED_ENDPOINT_CLASS`
+- 사이클 생성 이동은 `BLOCKED phase=plan code=WOULD_CREATE_CYCLE`
+- apply에 `--project .` 추가 시 교차 파일 inbound 참조 보고
+  (`WARN REPARENT_HAS_INBOUND_REFS` — 정보 제공용, 차단 아님)
+- 씬이 patch 생성 후 바뀌었으면 `ERROR PATCH_STALE` → patch 재생성
+
+### scene delete (v2 patch)
+
+GameObject + 컴포넌트(+`--cascade` 시 서브트리) 제거. `--id`는 **GameObject** fileID.
+
+```bash
+unity-ctx scene patch Stage01.unity --op delete --id 1001 --cascade --json > delete.patch.json
+unity-ctx scene diff  Stage01.unity --patch delete.patch.json
+unity-ctx scene apply Stage01.unity --patch delete.patch.json --write --ack-impact --project .
+```
+
+- 자식 있는 오브젝트 + no `--cascade` → `BLOCKED WOULD_ORPHAN_CHILDREN`
+- 프리팹 인스턴스 블록 포함 → `BLOCKED STRIPPED_IN_SUBTREE` (raw 삭제 금지)
+- 같은 파일의 살아남는 참조 → `BLOCKED IN_FILE_REFERENCED`
+- **`--write`는 `--project` 필수** — 교차 파일 검증에서 inbound/판정불가
+  참조가 있으면 `BLOCKED code=CROSS_FILE_REFERENCED` (파일 미변경)
+- dry-run은 `block_on_write=1`로 write 시 차단될 것을 예고
+
 ## v0.6 Safety Integration Commands
 
 ### meta guid
@@ -377,10 +443,10 @@ REF block=3000 class=MonoBehaviour field=m_Script file_id=11500000 guid=a1b2... 
 
 ### write 커맨드 공통 safety check
 
-`asset set` / `prefab set` / `scene apply`는 fileid-graph 안전 검증을 3단계로 수행한다:
+`asset set` / `prefab set` / `scene reposition` / `scene apply`(place_prefab·reparent·delete)는 fileid-graph 안전 검증을 3단계로 수행한다:
 
-- `pre_check` — 대상 파일이 이미 깨져 있으면 `BLOCKED` (dry-run 포함, exit 0, 파일 미변경)
-- `temp_check` — 변경 결과 후보 바이트 검증, 실패 시 `BLOCKED`
+- `pre_check` — 대상 파일이 이미 깨져 있으면 `BLOCKED` (dry-run 포함, exit 3, 파일 미변경)
+- `temp_check` — 변경 결과 후보 바이트 검증, 실패 시 `BLOCKED` (exit 3)
 - `final_check` — write 후 재독 검증, 실패 시 `ERROR WRITE_COMMITTED ... backup=<경로>` (exit 1) → `.bak`으로 복원
 
 `WARN`은 차단하지 않으며 summary 라인(`pre_check=WARN`)과 `CHECK` 상세 라인으로 표시된다.

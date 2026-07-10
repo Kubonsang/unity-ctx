@@ -346,7 +346,7 @@ index schema 핵심 필드:
   "kind": "scene",
   "path": "Assets/Scenes/Stage01.unity",
   "file_hash": "sha256:...",
-  "generated_by": "unity-ctx 0.2.0",
+  "generated_by": "unity-ctx <build version>",
   "objects": []
 }
 ```
@@ -694,9 +694,10 @@ v1.0 이전에는 read-only impact 조회만 고려한다.
 
 | exit code | 의미 | 에이전트 행동 |
 |---:|---|---|
-| 0 | OK / WARN / UNKNOWN만 존재 | 진행 가능. 단 UNKNOWN은 사람 확인 필요 |
-| 1 | ERROR 존재 | 중단. 원인 출력 후 재시도 또는 에스컬레이션 |
-| 2 | 도구 실행 오류 | 재시도 무의미. 사람 확인 |
+| 0 | OK / WARN / UNKNOWN / NEED_PREFAB_GUID | 진행 가능. 단 UNKNOWN은 사람 확인 필요 |
+| 1 | ERROR 존재 (쓰기 후 그래프 손상 포함) | 중단. 원인 출력 후 재시도 또는 에스컬레이션 |
+| 2 | 도구 실행 / 사용법 오류 | 재시도 무의미. 사람 확인 |
+| 3 | BLOCKED — 안전 검사가 쓰기 전에 변형 거부 (파일 미변경) | 변형 중단. CHECK/ERROR 분석 후 다른 접근. 성공으로 오인 금지 |
 
 주의:
 

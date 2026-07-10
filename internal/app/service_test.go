@@ -1777,8 +1777,8 @@ func TestSetPrefabBlocksWhenPreCheckFails(t *testing.T) {
 		Write:     true,
 		AckImpact: true,
 	})
-	if code != 0 {
-		t.Fatalf("BLOCKED must exit 0, got %d body=%q", code, got.Body)
+	if code != 3 {
+		t.Fatalf("BLOCKED must exit 3, got %d body=%q", code, got.Body)
 	}
 	if got.Status != "BLOCKED" {
 		t.Fatalf("status mismatch: got %q want %q", got.Status, "BLOCKED")
@@ -2452,8 +2452,8 @@ func TestApplyBlocksWhenPreCheckFails(t *testing.T) {
 		Patch: patchPath,
 		Write: true,
 	})
-	if code != 0 {
-		t.Fatalf("BLOCKED must exit 0, got %d body=%q", code, got.Body)
+	if code != 3 {
+		t.Fatalf("BLOCKED must exit 3, got %d body=%q", code, got.Body)
 	}
 	if got.Status != "BLOCKED" {
 		t.Fatalf("status mismatch: got %q want %q", got.Status, "BLOCKED")
@@ -2537,8 +2537,8 @@ func TestSetAssetBlocksWhenPreCheckFails(t *testing.T) {
 		Value: "300",
 		Write: true,
 	})
-	if code != 0 {
-		t.Fatalf("BLOCKED must exit 0, got %d body=%q", code, got.Body)
+	if code != 3 {
+		t.Fatalf("BLOCKED must exit 3, got %d body=%q", code, got.Body)
 	}
 	if got.Status != "BLOCKED" {
 		t.Fatalf("status mismatch: got %q want %q", got.Status, "BLOCKED")
@@ -3470,8 +3470,8 @@ func TestRepositionBlocksWhenPreCheckFails(t *testing.T) {
 	got, code := app.New().Reposition("scene", path, core.ViewCompact, false, app.RepositionArgs{
 		HasID: true, ID: 1001, Position: [3]float64{1, 2, 3}, Write: true,
 	})
-	if code != 0 {
-		t.Fatalf("BLOCKED must exit 0, got code=%d body=%q", code, got.Body)
+	if code != 3 {
+		t.Fatalf("BLOCKED must exit 3, got code=%d body=%q", code, got.Body)
 	}
 	if !strings.HasPrefix(got.Body, "BLOCKED code=GRAPH_CHECK_FAILED phase=pre_check") {
 		t.Fatalf("expected pre_check BLOCKED, got %q", got.Body)
@@ -3620,8 +3620,8 @@ func TestApplyReparentPolicy1BlocksNonTransform(t *testing.T) {
 	patchPath := writeReparentPatch(t, scenePath, 4001, 1002, 4000) // new parent is GameObject 1002
 
 	got, code := app.New().Apply("scene", scenePath, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Write: true, AckImpact: true})
-	if code != 0 {
-		t.Fatalf("BLOCKED must exit 0, code=%d body=%q", code, got.Body)
+	if code != 3 {
+		t.Fatalf("BLOCKED must exit 3, code=%d body=%q", code, got.Body)
 	}
 	if !strings.HasPrefix(got.Body, "BLOCKED reason=UNSUPPORTED_ENDPOINT_CLASS endpoint=new_parent id=1002 class=1") {
 		t.Fatalf("unexpected policy-1 body: %q", got.Body)
@@ -3637,8 +3637,8 @@ func TestApplyReparentPolicy2BlocksCycle(t *testing.T) {
 	patchPath := writeReparentPatch(t, scenePath, 4000, 4001, 0) // move A under its descendant
 
 	got, code := app.New().Apply("scene", scenePath, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Write: true, AckImpact: true})
-	if code != 0 {
-		t.Fatalf("BLOCKED must exit 0, code=%d body=%q", code, got.Body)
+	if code != 3 {
+		t.Fatalf("BLOCKED must exit 3, code=%d body=%q", code, got.Body)
 	}
 	if !strings.HasPrefix(got.Body, "BLOCKED phase=plan code=WOULD_CREATE_CYCLE chain=4000->4001->4000") {
 		t.Fatalf("unexpected policy-2 body: %q", got.Body)
@@ -3975,8 +3975,8 @@ func TestApplyDeleteBlocksCrossFileInbound(t *testing.T) {
 	patchPath := writeDeletePatch(t, scene, 1001, false)
 
 	got, code := app.New().Apply("scene", scene, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Write: true, AckImpact: true, Project: root})
-	if code != 0 {
-		t.Fatalf("a cross-file-referenced delete must BLOCK (exit 0, untouched): code=%d body=%q", code, got.Body)
+	if code != 3 {
+		t.Fatalf("a cross-file-referenced delete must BLOCK (exit 3, untouched): code=%d body=%q", code, got.Body)
 	}
 	if !strings.Contains(got.Body, "BLOCKED code=CROSS_FILE_REFERENCED") ||
 		!strings.Contains(got.Body, "inbound_refs=1") ||
@@ -4026,8 +4026,8 @@ func TestApplyDeleteBlocksCrossFileFlowSequenceRef(t *testing.T) {
 	patchPath := writeDeletePatch(t, scene, 1001, false)
 
 	got, code := app.New().Apply("scene", scene, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Write: true, AckImpact: true, Project: root})
-	if code != 0 {
-		t.Fatalf("a flow-list cross-file ref must BLOCK (exit 0, untouched): code=%d body=%q", code, got.Body)
+	if code != 3 {
+		t.Fatalf("a flow-list cross-file ref must BLOCK (exit 3, untouched): code=%d body=%q", code, got.Body)
 	}
 	if !strings.Contains(got.Body, "BLOCKED code=CROSS_FILE_REFERENCED") || !strings.Contains(got.Body, "inbound_refs=1") {
 		t.Fatalf("flow-list cross-file ref not blocked: %q", got.Body)

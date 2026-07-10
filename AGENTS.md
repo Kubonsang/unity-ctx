@@ -12,7 +12,7 @@ agents a safe, compact interface to read and mutate Unity serialized files
 
 Every write path is gated by the
 [unity-fileid-graph](https://github.com/Kubonsang/unity-fileid-graph) safety
-kernel (`require ...v0.9.0`), which validates Unity fileID-graph integrity before
+kernel (version pinned in `go.mod`), which validates Unity fileID-graph integrity before
 and after each mutation.
 
 ## Architecture
@@ -47,7 +47,7 @@ fails the build if any other package imports the kernel. Keep this seam intact.
 
 - Mutation commands are **dry-run-first**; actual writes require `--write`.
 - Every write path runs the safety kernel: `pre_check` → `temp_check` → write →
-  `final_check`. A blocking `ERROR` before the write returns `BLOCKED` (exit 0)
+  `final_check`. A blocking `ERROR` before the write returns `BLOCKED` (exit 3)
   and must not touch the file; `WARN` is surfaced but does not block.
 - Use `UNKNOWN` / `NEED_PREFAB_GUID` / `WARN` / `BLOCKED` instead of guessing.
   Never invent a GUID, fileID, or field value.
@@ -91,8 +91,10 @@ go run ./cmd/unity-ctx asset get testdata/assets/enemy_config.asset --field maxH
 
 ## Status
 
-**v0.6.0 — YAML Safety Integration (released).** All write paths are gated by the
-safety kernel; `meta guid`, `refs`, and prefab GUID auto-resolve are in.
+**v0.8.0 — Structural Scene Mutation (released).** All write paths are gated by
+the safety kernel; structural scene ops (`reposition`, `reparent`, `delete` via
+v2 `ops[]` patches) and the project-wide cross-file reference scanner
+(`internal/xref`) are in; `BLOCKED` exits `3`.
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for what is next.
 
 ## Reference Docs

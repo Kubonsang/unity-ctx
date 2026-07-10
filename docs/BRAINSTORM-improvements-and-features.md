@@ -8,6 +8,18 @@
 
 ---
 
+## 진행 현황 (2026-07-10 갱신)
+
+**v0.8 구조 변형 슬라이스로 완료 (S1~S5, PR #34~#39, 태그 v0.8.0)**
+- C14 — Transform reparent ✅ (S4a, v2 ops[] patch)
+- C13 일부 — GameObject **삭제** ✅ (S5, cascade + SceneRoots unlink); **생성**은 미착수
+- 신규(카탈로그 외) — `scene reposition` ✅, `internal/xref` 교차파일 역참조 스캐너 ✅ (reparent=WARN, delete=BLOCK)
+- 커널 v0.9.1(대칭 gap)/v0.9.2(사이클 검출) 선행 완료 — "커널 선행" 원칙대로 진행됨
+- BLOCKED exit 계약 수정 ✅ — exit 0 → **3** (+ `EnforceBlockedExit` 백스톱)
+- `index` generated_by 하드코딩 제거 ✅ (build version 연동)
+- 남은 구조 변형: C12 component add/remove, C13 GameObject 생성 — 커널 블록-생성 검증 선행 필요
+- 후속 방향성 문서: `docs/PROJECT-ANALYSIS-2026-07.md` (트랙 0~4, F-01~F-25)
+
 ## 진행 현황 (2026-06-15 갱신)
 
 **완료 (머지됨)**
@@ -46,7 +58,7 @@
 | meta | `guid` |
 
 - 모든 write 경로(`scene apply`, `prefab set`, `asset set`)는 safety kernel의 pre/temp/final graph check를 통과해야 함.
-- 출력 contract: 첫 줄 단일 prefix(OK/WARN/ERROR/UNKNOWN/BLOCKED/NEED_PREFAB_GUID/FOUND/DRY_RUN/WRITE/CHECK/REF/…), exit 0/1/2.
+- 출력 contract: 첫 줄 단일 prefix(OK/WARN/ERROR/UNKNOWN/BLOCKED/NEED_PREFAB_GUID/FOUND/DRY_RUN/WRITE/CHECK/REF/…), exit 0/1/2/3 (BLOCKED=3).
 - 외부 런타임 의존성 1개(safety kernel). 단일 정적 바이너리.
 
 ### 코드 규모 (대략)

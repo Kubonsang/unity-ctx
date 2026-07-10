@@ -27,7 +27,7 @@ Unity 씬/프리팹/에셋을 다룰 때 raw YAML 직접 접근 대신 **unity-c
 7. **`BLOCKED`는 우회하지 않는다.** 모든 write 커맨드는 fileid-graph 안전 검증(`pre_check`/`temp_check`/`final_check`)을 통과해야 한다. `BLOCKED code=GRAPH_CHECK_FAILED`가 나오면 파일이 구조적으로 깨진 것이므로, raw YAML 편집으로 우회하지 말고 원인을 보고한다.
 8. Editor 의존성은 커맨드별로 다르다:
    - **Editor 필요**: `scene scan`
-   - **Editor 불필요**: 나머지 전부 (`summarize`, `query`, `inspect`, `get`, `set`, `patch`, `diff`, `apply`, `impact`, `refs`, `meta guid`, `suggest`)
+   - **Editor 불필요**: 나머지 전부 (`summarize`, `query`, `inspect`, `get`, `set`, `reposition`, `patch`, `diff`, `apply`, `impact`, `refs`, `meta guid`, `suggest`)
 
 ## 빠른 작업 패턴
 
@@ -94,6 +94,27 @@ unity-ctx scene diff Stage01.unity --patch /tmp/chair.patch.json
 unity-ctx scene apply Stage01.unity --patch /tmp/chair.patch.json --write
 ```
 
+### 씬 오브젝트 이동 / 재부모화 / 삭제 (구조 변형, v0.8)
+
+```bash
+# 이동 — --id는 Transform fileID (inspect --component Transform으로 확보)
+unity-ctx scene reposition Stage01.unity --id 1001 --position 1.5,2,-3.4          # dry-run
+unity-ctx scene reposition Stage01.unity --id 1001 --position 1.5,2,-3.4 --write
+
+# 재부모화 — patch → diff → apply, --new-parent 0 = 씬 루트
+unity-ctx scene patch Stage01.unity --op reparent --id 4001 --new-parent 4002 --json > /tmp/rp.patch.json
+unity-ctx scene diff  Stage01.unity --patch /tmp/rp.patch.json
+unity-ctx scene apply Stage01.unity --patch /tmp/rp.patch.json --write --ack-impact
+
+# 삭제 — --id는 GameObject fileID, --write는 --project 필수(교차 파일 검증)
+unity-ctx scene patch Stage01.unity --op delete --id 1001 --cascade --json > /tmp/del.patch.json
+unity-ctx scene diff  Stage01.unity --patch /tmp/del.patch.json
+unity-ctx scene apply Stage01.unity --patch /tmp/del.patch.json --write --ack-impact --project <프로젝트 루트>
+```
+
+- 사이클/고아/프리팹-인스턴스/교차파일 참조는 write 전에 `BLOCKED`로 거부된다 — 우회 금지.
+- 자세한 가드 목록: `references/commands.md`의 "Structural Scene Mutation Commands".
+
 ### 참조 추적
 
 ```bash
@@ -109,6 +130,10 @@ unity-ctx scene refs Assets/Scenes/Stage01.unity --json
 | `ERROR AMBIGUOUS_NAME` | 이름으로 오브젝트를 특정할 수 없음 | `query`로 fileID 확보 후 재시도 |
 | `NEED_PREFAB_GUID` | GUID를 `.meta`에서 찾지 못함 | `unity-ctx meta guid` 실행, `.meta` 파일 존재 확인. 추측 금지 |
 | `BLOCKED code=GRAPH_CHECK_FAILED` | 파일 구조 손상으로 write 거부 | raw YAML 우회 금지. `CHECK`/`ERROR` 라인을 사용자에게 보고 |
+| `BLOCKED code=WOULD_CREATE_CYCLE` | reparent가 계층 사이클을 만듦 | 타깃 서브트리 밖의 부모를 선택 |
+| `BLOCKED code=WOULD_ORPHAN_CHILDREN` | 자식 있는 오브젝트 삭제 시도 | `--cascade` 추가 또는 자식 먼저 reparent |
+| `BLOCKED code=CROSS_FILE_REFERENCED` | 다른 파일이 삭제 대상을 참조 | 우회 금지. 보고된 `files=` 목록의 참조를 먼저 제거/재지정 |
+| `ERROR PATCH_STALE` | patch 생성 후 씬이 변경됨 | 현재 씬 기준으로 patch 재생성 |
 | `ERROR WRITE_COMMITTED ... phase=final_check` | write 후 검증 실패 | 출력된 `backup=` 경로의 `.bak`으로 복원 |
 | `WARN` (check) | 비차단 경고 (unknown class 등) | 진행 가능. write 전 관련 블록 inspect 권장 |
 | `ERROR SCAN_EDITOR_FAILED` | Editor 미실행/통신 실패 | Unity Editor를 실행하고 재시도 |

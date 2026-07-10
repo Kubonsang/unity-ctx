@@ -87,11 +87,37 @@ Deferred this cycle (low ROI / out of scope): full CLI flag-gating rewrite,
 status/prefix const enum, watch mode. See
 `docs/BRAINSTORM-improvements-and-features.md`.
 
+## v0.8 — Structural Scene Mutation
+
+Status: complete (tag `v0.8.0`)
+
+- safety kernel bumped to `v0.9.2` (transform parent/child symmetry gap closed
+  in `v0.9.1`, transform cycle detection added in `v0.9.2`)
+- `scene reposition` — in-place `m_LocalPosition` edit (Transform/RectTransform,
+  byte-preserving, topology-invariant)
+- v2 `ops[]` patch schema — `scene patch --op reparent|delete` → `diff` →
+  `apply`, coexisting with v1 `place_prefab`
+- `scene reparent` — atomic 3-block `m_Father`/`m_Children` update; plan-phase
+  cycle pre-check (`WOULD_CREATE_CYCLE`); Transform (class 4) endpoints only
+- `scene delete` (`--cascade`) — GameObject + component (+ subtree) removal with
+  parent `m_Children` / `SceneRoots.m_Roots` unlink; orphan/stripped/in-file
+  dangling guards
+- `internal/xref` — per-mutation project-wide reverse-reference scanner
+  (`Assets/` + `Packages/`, brace-aware inline-PPtr scan, indeterminate
+  reporting): reparent surfaces inbound refs as WARN, delete hard-BLOCKS on them
+- exit-code contract fix: `BLOCKED` now exits `3` (was `0`) with an
+  `EnforceBlockedExit` CLI backstop, so a safety refusal is never mistaken for
+  success
+- `index` snapshots stamp the real build version in `generated_by`
+
 ## v1.0 — Agent Harness Release
 
 - batch / transaction patch (multi-op atomic apply)
 - project-wide index & cross-scene search
-- structural mutation (component add/remove, GameObject create/delete, Transform
-  reparent) — requires structural-mutation support in the safety kernel first
+- remaining structural mutation (component add/remove, GameObject create) —
+  requires block-creation support in the safety kernel first
 - installers
 - testplay-runner integration
+
+See `docs/PROJECT-ANALYSIS-2026-07.md` for the full feature/direction analysis
+behind this roadmap.

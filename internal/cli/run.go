@@ -686,6 +686,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			Position: parsedPosition,
 			Write:    *writeFlag,
 		})
+		repositionExitCode = app.EnforceBlockedExit(repositionResult.Status, repositionExitCode)
 
 		if *jsonOutput {
 			encoder := json.NewEncoder(stdout)
@@ -715,6 +716,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			NewParent:    *newParent,
 			Cascade:      *cascade,
 		})
+		patchExitCode = app.EnforceBlockedExit(patchResult.Status, patchExitCode)
 
 		if *jsonOutput {
 			encoder := json.NewEncoder(stdout)
@@ -733,6 +735,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		diffResult, diffExitCode := service.Diff(namespace, file, selectedView, *jsonOutput, app.DiffArgs{
 			Patch: *patchPath,
 		})
+		diffExitCode = app.EnforceBlockedExit(diffResult.Status, diffExitCode)
 
 		if *jsonOutput {
 			encoder := json.NewEncoder(stdout)
@@ -754,6 +757,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			AckImpact: *ackImpact,
 			Project:   *project,
 		})
+		applyExitCode = app.EnforceBlockedExit(applyResult.Status, applyExitCode)
 
 		if *jsonOutput {
 			encoder := json.NewEncoder(stdout)
@@ -955,6 +959,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			AckImpact: *ackImpact,
 			Write:     *writeFlag,
 		})
+		setExitCode = app.EnforceBlockedExit(setResult.Status, setExitCode)
 		if *jsonOutput {
 			encoder := json.NewEncoder(stdout)
 			encoder.SetEscapeHTML(false)
