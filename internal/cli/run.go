@@ -92,12 +92,28 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	newParent := flagSet.Int64("new-parent", 0, "")
 	cascade := flagSet.Bool("cascade", false, "")
 	patchPath := flagSet.String("patch", "", "")
+	rotation := flagSet.String("rotation", "", "")
+	surfaceID := flagSet.String("surface-id", "", "")
+	contact := flagSet.String("contact", "", "")
+	geometry := flagSet.String("geometry", "", "")
 
 	if err := flagSet.Parse(args[3:]); err != nil {
 		_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
 		return 2
 	}
 	seenFlags := visitedFlags(flagSet)
+	if command != "check" && anyFlagVisited(seenFlags, "rotation", "contact") {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --rotation, --surface-id, or --contact\n", command)
+		return 2
+	}
+	if command != "check" && command != "suggest" && seenFlags["surface-id"] {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --surface-id\n", command)
+		return 2
+	}
+	if command != "scan" && seenFlags["geometry"] {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --geometry\n", command)
+		return 2
+	}
 
 	if flagSet.NArg() > 0 {
 		_, _ = fmt.Fprintf(stderr, "ERROR unexpected trailing arguments: %s\n", strings.Join(flagSet.Args(), " "))
@@ -344,6 +360,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	parsedPosition := [3]float64{}
+	parsedRotation := [4]float64{0, 0, 0, 1}
 	if command == "check" {
 		if namespace != "scene" {
 			_, _ = fmt.Fprintf(stderr, "ERROR check not implemented for namespace=%s\n", namespace)
@@ -378,6 +395,21 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 		if !positionIsFinite(parsedPosition) {
 			_, _ = io.WriteString(stderr, "ERROR check requires finite --position values\n")
+			return 2
+		}
+		if seenFlags["rotation"] {
+			parsedRotation, err = parseQuaternion(*rotation)
+			if err != nil {
+				_, _ = io.WriteString(stderr, "ERROR check requires --rotation as normalized x,y,z,w\n")
+				return 2
+			}
+		}
+		if (seenFlags["surface-id"] || seenFlags["contact"]) && (!seenFlags["surface-id"] || !seenFlags["contact"]) {
+			_, _ = io.WriteString(stderr, "ERROR check requires --surface-id and --contact together\n")
+			return 2
+		}
+		if seenFlags["contact"] && *contact != "wall-backed" && *contact != "wall-mounted" && *contact != "floor-supported" && *contact != "ceiling-mounted" {
+			_, _ = io.WriteString(stderr, "ERROR check supports --contact wall-backed|wall-mounted|floor-supported|ceiling-mounted\n")
 			return 2
 		}
 	}
@@ -630,7 +662,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			_, _ = io.WriteString(stderr, "ERROR suggest requires --prefab\n")
 			return 2
 		}
-		if strings.TrimSpace(*near) == "" {
+		if strings.TrimSpace(*near) == "" && *align != "wall" {
 			_, _ = io.WriteString(stderr, "ERROR suggest requires --near\n")
 			return 2
 		}
@@ -638,8 +670,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			_, _ = io.WriteString(stderr, "ERROR suggest requires --count >= 1\n")
 			return 2
 		}
-		if *align != "floor" && *align != "grid" {
-			_, _ = io.WriteString(stderr, "ERROR suggest supports only --align floor|grid\n")
+		if *align != "floor" && *align != "grid" && *align != "wall" {
+			_, _ = io.WriteString(stderr, "ERROR suggest supports only --align floor|grid|wall\n")
+			return 2
+		}
+		if *align == "wall" && strings.TrimSpace(*surfaceID) == "" {
+			_, _ = io.WriteString(stderr, "ERROR suggest --align wall requires --surface-id\n")
 			return 2
 		}
 		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "value", "write", "scenes", "prefabs", "position", "op", "task", "focus", "max-tokens", "patch", "ack-impact", "mode") {
@@ -885,6 +921,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			Pick:       *pick,
 			PrefabGUID: *prefabGUID,
 			Project:    *project,
+			SurfaceID:  *surfaceID,
 		})
 
 		if *jsonOutput {
@@ -987,13 +1024,18 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			Prefab:      *prefab,
 			HasPosition: seenFlags["position"],
 			Position:    parsedPosition,
+			HasRotation: seenFlags["rotation"],
+			Rotation:    parsedRotation,
+			SurfaceID:   *surfaceID,
+			Contact:     *contact,
 		})
 	case "scan":
 		result, exitCode = service.Scan(namespace, file, selectedView, *jsonOutput, app.ScanArgs{
-			Mode:    *mode,
-			Project: *project,
-			Out:     *out,
-			Prefabs: *prefabs,
+			Mode:     *mode,
+			Project:  *project,
+			Out:      *out,
+			Prefabs:  *prefabs,
+			Geometry: *geometry,
 		})
 	default:
 		result.Status = "ERROR"
@@ -1049,6 +1091,27 @@ func parsePosition(raw string) ([3]float64, error) {
 	}
 
 	return [3]float64(position), nil
+}
+
+func parseQuaternion(raw string) ([4]float64, error) {
+	parts := strings.Split(raw, ",")
+	if len(parts) != 4 {
+		return [4]float64{}, fmt.Errorf("rotation must contain exactly 4 comma-separated floats")
+	}
+	var result [4]float64
+	length := 0.0
+	for i, part := range parts {
+		value, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
+		if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+			return [4]float64{}, fmt.Errorf("invalid rotation")
+		}
+		result[i] = value
+		length += value * value
+	}
+	if math.Abs(length-1) > 0.002 {
+		return [4]float64{}, fmt.Errorf("rotation must be normalized")
+	}
+	return result, nil
 }
 
 func positionIsFinite(position [3]float64) bool {

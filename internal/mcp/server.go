@@ -142,6 +142,22 @@ func int64Arg(args map[string]any, key string) (int64, bool) {
 	return 0, false
 }
 
+func floatArrayArg(args map[string]any, key string, count int) ([]float64, bool) {
+	v, ok := args[key].([]any)
+	if !ok || len(v) != count {
+		return nil, false
+	}
+	result := make([]float64, count)
+	for i, item := range v {
+		number, ok := item.(float64)
+		if !ok {
+			return nil, false
+		}
+		result[i] = number
+	}
+	return result, true
+}
+
 func buildTools() []tool {
 	return []tool{
 		{
@@ -218,6 +234,49 @@ func buildTools() []tool {
 			InputSchema: schema(`{"type":"object","properties":{"file":{"type":"string"},"project":{"type":"string"}},"required":["file","project"]}`),
 			handler: func(svc *app.Service, a map[string]any) (string, bool) {
 				r, code := svc.Impact("prefab", strArg(a, "file"), core.ViewCompact, false, app.ImpactArgs{Project: strArg(a, "project")})
+				return r.Body, code != 0
+			},
+		},
+		{
+			Name:        "unity_spatial_check",
+			Description: "Prove compound-OBB overlap and reviewed surface contact for a proposed prefab transform. Manifest v1 returns UNKNOWN NEED_GEOMETRY_V2.",
+			InputSchema: schema(`{"type":"object","properties":{"file":{"type":"string"},"manifest":{"type":"string"},"prefab":{"type":"string"},"position":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3},"rotation":{"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4},"surface_id":{"type":"string"},"contact":{"type":"string","enum":["floor-supported","wall-backed","wall-mounted","ceiling-mounted"]}},"required":["file","manifest","prefab","position","rotation","surface_id","contact"]}`),
+			handler: func(svc *app.Service, a map[string]any) (string, bool) {
+				position, positionOK := floatArrayArg(a, "position", 3)
+				rotation, rotationOK := floatArrayArg(a, "rotation", 4)
+				if !positionOK || !rotationOK {
+					return "ERROR INVALID_ARGUMENT position must have 3 numbers and rotation must have 4 numbers", true
+				}
+				args := app.CheckArgs{
+					Manifest:    strArg(a, "manifest"),
+					Prefab:      strArg(a, "prefab"),
+					HasPosition: true,
+					Position:    [3]float64{position[0], position[1], position[2]},
+					HasRotation: true,
+					Rotation:    [4]float64{rotation[0], rotation[1], rotation[2], rotation[3]},
+					SurfaceID:   strArg(a, "surface_id"),
+					Contact:     strArg(a, "contact"),
+				}
+				r, code := svc.Check("scene", strArg(a, "file"), core.ViewCompact, false, args)
+				return r.Body, code != 0
+			},
+		},
+		{
+			Name:        "unity_suggest_wall",
+			Description: "Return deterministic read-only wall-aligned candidate transforms from a reviewed Spatial Manifest v2 surface.",
+			InputSchema: schema(`{"type":"object","properties":{"file":{"type":"string"},"manifest":{"type":"string"},"prefab":{"type":"string"},"surface_id":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":20}},"required":["file","manifest","prefab","surface_id"]}`),
+			handler: func(svc *app.Service, a map[string]any) (string, bool) {
+				count := 4
+				if value, ok := int64Arg(a, "count"); ok {
+					count = int(value)
+				}
+				r, code := svc.Suggest("scene", strArg(a, "file"), core.ViewCompact, false, app.SuggestArgs{
+					Manifest:  strArg(a, "manifest"),
+					Prefab:    strArg(a, "prefab"),
+					SurfaceID: strArg(a, "surface_id"),
+					Align:     "wall",
+					Count:     count,
+				})
 				return r.Body, code != 0
 			},
 		},

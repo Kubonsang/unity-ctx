@@ -23,6 +23,10 @@ type Runner interface {
 	RunEditorScan(projectPath, sceneAssetPath string, prefabPaths []string) ([]byte, error)
 }
 
+type DetailedRunner interface {
+	RunDetailedEditorScan(projectPath, sceneAssetPath string, prefabPaths []string) ([]byte, error)
+}
+
 type UnityCLIRunner struct{}
 
 var unityCLIExec = func(name string, args ...string) ([]byte, error) {
@@ -69,14 +73,18 @@ type rawEditorPrefab struct {
 }
 
 func (r UnityCLIRunner) RunEditorScan(projectPath, sceneAssetPath string, prefabPaths []string) ([]byte, error) {
-	projectPath = filepath.Clean(projectPath)
-	sceneAssetPath = filepath.ToSlash(strings.TrimSpace(sceneAssetPath))
-	prefabPaths = append([]string(nil), prefabPaths...)
-	sort.Strings(prefabPaths)
+	return runEditorSnippet(projectPath, buildEditorScanSnippet(sceneAssetPath, prefabPaths))
+}
 
+func (r UnityCLIRunner) RunDetailedEditorScan(projectPath, sceneAssetPath string, prefabPaths []string) ([]byte, error) {
+	return runEditorSnippet(projectPath, buildDetailedEditorScanSnippet(sceneAssetPath, prefabPaths))
+}
+
+func runEditorSnippet(projectPath, snippet string) ([]byte, error) {
+	projectPath = filepath.Clean(projectPath)
 	args := []string{
 		"exec",
-		buildEditorScanSnippet(sceneAssetPath, prefabPaths),
+		snippet,
 		"--project",
 		projectPath,
 		"--usings",
@@ -430,6 +438,9 @@ func validateEditorPrefabPath(path string, index int) error {
 }
 
 func buildEditorScanSnippet(sceneAssetPath string, prefabPaths []string) string {
+	sceneAssetPath = filepath.ToSlash(strings.TrimSpace(sceneAssetPath))
+	prefabPaths = append([]string(nil), prefabPaths...)
+	sort.Strings(prefabPaths)
 	return fmt.Sprintf(
 		`var scenePath = %s;
 var prefabPaths = new [] { %s };
@@ -477,6 +488,45 @@ return new {
 		strconv.Quote(sceneAssetPath),
 		joinQuotedCSharpStrings(prefabPaths),
 	)
+}
+
+func buildDetailedEditorScanSnippet(sceneAssetPath string, prefabPaths []string) string {
+	sceneAssetPath = filepath.ToSlash(strings.TrimSpace(sceneAssetPath))
+	prefabPaths = append([]string(nil), prefabPaths...)
+	sort.Strings(prefabPaths)
+	return fmt.Sprintf(
+		`var scenePath = %s;
+var prefabPaths = new [] { %s };
+var openedScene = EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Single);
+System.Func<Vector3,double[]> vec = value => new [] { (double)value.x, (double)value.y, (double)value.z };
+System.Func<Quaternion,double[]> quat = value => new [] { (double)value.x, (double)value.y, (double)value.z, (double)value.w };
+System.Func<Renderer,object> rendererObb = renderer => {
+	var local = renderer.localBounds;
+	var scale = renderer.transform.lossyScale;
+	return new { id = renderer.gameObject.name, center = vec(renderer.transform.TransformPoint(local.center)), size = vec(Vector3.Scale(local.size, new Vector3(Mathf.Abs(scale.x), Mathf.Abs(scale.y), Mathf.Abs(scale.z)))), rotation = quat(renderer.transform.rotation) };
+};
+var sceneObjects = UnityEngine.Object.FindObjectsByType<Renderer>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+	.Where(renderer => renderer != null && renderer.gameObject.scene.path == openedScene.path)
+	.GroupBy(renderer => Unsupported.GetLocalIdentifierInFileForPersistentObject(renderer.gameObject))
+	.Where(group => group.Key > 0)
+	.Select(group => {
+		var renderers = group.ToArray(); var aggregate = renderers[0].bounds;
+		for (var i = 1; i < renderers.Length; i++) aggregate.Encapsulate(renderers[i].bounds);
+		return new { fileID = group.Key, name = renderers[0].gameObject.name, bounds = new { center = vec(aggregate.center), size = vec(aggregate.size) }, spatial = new { obbs = renderers.Select(rendererObb).ToArray(), forward = vec(Vector3.forward), up = vec(Vector3.up), pivot_offset = vec(Vector3.zero), source = "renderer-bounds", confidence = 0.6, reviewed = false } };
+	}).OrderBy(item => item.fileID).ToArray();
+var prefabObjects = prefabPaths.Select(path => {
+	var root = AssetDatabase.LoadAssetAtPath<GameObject>(path); if (root == null) throw new Exception("prefab not found: " + path);
+	var renderers = root.GetComponentsInChildren<Renderer>(true); if (renderers.Length == 0) throw new Exception("prefab has no renderer bounds: " + path);
+	var aggregate = renderers[0].bounds; for (var i = 1; i < renderers.Length; i++) aggregate.Encapsulate(renderers[i].bounds);
+	var bottom = new { id = "bottom", point = vec(new Vector3(aggregate.center.x, aggregate.min.y, aggregate.center.z)), normal = vec(Vector3.down), tangent = vec(Vector3.right), size = new [] { (double)aggregate.size.x, (double)aggregate.size.z } };
+	var back = new { id = "back", point = vec(new Vector3(aggregate.center.x, aggregate.center.y, aggregate.min.z)), normal = vec(Vector3.back), tangent = vec(Vector3.right), size = new [] { (double)aggregate.size.x, (double)aggregate.size.y } };
+	return new { path = path, guid = AssetDatabase.AssetPathToGUID(path), bounds = new { center = vec(aggregate.center), size = vec(aggregate.size) }, spatial = new { obbs = renderers.Select(rendererObb).ToArray(), forward = vec(Vector3.forward), up = vec(Vector3.up), pivot_offset = vec(aggregate.center), bottom_contact = bottom, back_contact = back, source = "renderer-bounds", confidence = 0.6, reviewed = false, dependency_hash = AssetDatabase.GetAssetDependencyHash(path).ToString() } };
+}).OrderBy(item => item.path).ToArray();
+var surfaces = UnityEngine.Object.FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+	.Where(item => item != null && item.gameObject.scene.path == openedScene.path && item.GetType().FullName == "UnityDecoScene.DungeonDecorator.RoomSurface")
+	.Select(item => { var type = item.GetType(); var origin = (Vector3)type.GetProperty("Origin").GetValue(item); var normal = (Vector3)type.GetProperty("Normal").GetValue(item); var tangent = (Vector3)type.GetProperty("Tangent").GetValue(item); var dimensions = (Vector2)type.GetProperty("Size").GetValue(item); return new { id = (string)type.GetProperty("SurfaceId").GetValue(item), type = type.GetProperty("SurfaceType").GetValue(item).ToString().ToLowerInvariant(), origin = vec(origin), normal = vec(normal), tangent = vec(tangent), size = new [] { (double)dimensions.x, (double)dimensions.y }, reviewed = (bool)type.GetProperty("Reviewed").GetValue(item), supported = (bool)type.GetProperty("Supported").GetValue(item), reason = (string)type.GetProperty("UnsupportedReason").GetValue(item) }; }).OrderBy(item => item.id).ToArray();
+return new { scene = scenePath, source = "editor", version = 2, objects = sceneObjects, prefabs = prefabObjects, capabilities = new [] { "aabb", "contact-frames", "obb", "surfaces" }, surfaces = surfaces };`,
+		strconv.Quote(sceneAssetPath), joinQuotedCSharpStrings(prefabPaths))
 }
 
 func joinQuotedCSharpStrings(values []string) string {

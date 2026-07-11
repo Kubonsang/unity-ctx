@@ -1,11 +1,31 @@
 package suggest
 
 import (
+	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/Kubonsang/unity-ctx/internal/bounds"
 )
+
+func TestPlanWallUsesReviewedSurfaceAndRotation(t *testing.T) {
+	manifest, err := bounds.Load(filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Plan(Request{Manifest: manifest, Prefab: "Assets/Prefabs/Bookcase.prefab", Count: 4, Align: AlignWall, SurfaceID: "wall-north"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Align != AlignWall || len(result.Candidates) != 4 {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	for _, candidate := range result.Candidates {
+		if candidate.Rotation == (bounds.Quat{}) {
+			t.Fatal("wall candidate has no rotation")
+		}
+	}
+}
 
 func TestPlanReturnsFourDirectionalCandidates(t *testing.T) {
 	manifest := testManifest()

@@ -57,6 +57,20 @@ func TestLoadValidManifest(t *testing.T) {
 	}
 }
 
+func TestLoadSpatialManifestV2(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json")
+	manifest, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Version != ManifestVersion2 {
+		t.Fatalf("version=%d", manifest.Version)
+	}
+	if len(manifest.Surfaces) != 1 || len(manifest.Prefabs) != 1 || manifest.Prefabs[0].Spatial == nil {
+		t.Fatalf("spatial manifest not decoded: %#v", manifest)
+	}
+}
+
 func TestLoadRejectsMissingObjectBounds(t *testing.T) {
 	path := filepath.Join("..", "..", "testdata", "manifests", "invalid_missing_bounds.json")
 

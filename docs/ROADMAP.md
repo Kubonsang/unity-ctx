@@ -110,6 +110,22 @@ Status: complete (tag `v0.8.0`)
   success
 - `index` snapshots stamp the real build version in `generated_by`
 
+## v0.9 — Reviewed Spatial Geometry
+
+Status: implemented on the Concept Room Decorator integration branch.
+
+- Spatial Manifest v2 with v1 read compatibility and strict stable JSON output
+- compound local OBB proxies, semantic axes, pivot offsets, and bottom/back contact frames
+- reviewed planar `SurfacePatch` floor, wall, and ceiling records
+- `scene scan --mode editor --geometry detailed` using Unity-imported Collider data first and Renderer bounds as fallback
+- rotated compound OBB SAT and reviewed contact checks in `scene check`
+- `scene suggest --align wall --surface-id ...` read-only deterministic candidates
+- `UNKNOWN NEED_GEOMETRY_V2` instead of estimating contact from manifest v1
+- read-only MCP tools `unity_spatial_check` and `unity_suggest_wall`
+- shared Go/C# geometry verdict fixtures
+
+Unity remains the final authority for preview and Apply. unity-ctx does not parse raw FBX geometry and its MCP server does not expose mutation tools.
+
 ## v1.0 — Agent Harness Release
 
 - batch / transaction patch (multi-op atomic apply)

@@ -16,6 +16,7 @@ type Align string
 const (
 	AlignFloor Align = "floor"
 	AlignGrid  Align = "grid"
+	AlignWall  Align = "wall"
 )
 
 type Anchor struct {
@@ -29,14 +30,16 @@ type Candidate struct {
 	Direction  string
 	Position   bounds.Vec3
 	OverlapIDs []int64
+	Rotation   bounds.Quat
 }
 
 type Request struct {
-	Manifest bounds.Manifest
-	Prefab   string
-	Near     string
-	Count    int
-	Align    Align
+	Manifest  bounds.Manifest
+	Prefab    string
+	Near      string
+	Count     int
+	Align     Align
+	SurfaceID string
 }
 
 type Result struct {
@@ -68,6 +71,9 @@ func Plan(req Request) (Result, error) {
 	align := req.Align
 	if align == "" {
 		align = AlignFloor
+	}
+	if align == AlignWall {
+		return planWall(req)
 	}
 
 	anchorObject, err := resolveAnchor(req.Manifest, req.Near)
@@ -159,6 +165,111 @@ func Plan(req Request) (Result, error) {
 	}
 
 	return result, nil
+}
+
+func planWall(req Request) (Result, error) {
+	if req.Manifest.Version != bounds.ManifestVersion2 {
+		return Result{}, check.ErrNeedGeometryV2
+	}
+	var surface *bounds.SurfacePatch
+	for i := range req.Manifest.Surfaces {
+		if req.Manifest.Surfaces[i].ID == req.SurfaceID {
+			surface = &req.Manifest.Surfaces[i]
+			break
+		}
+	}
+	if surface == nil {
+		return Result{}, fmt.Errorf("missing surface id=%q", req.SurfaceID)
+	}
+	if !surface.Supported || !surface.Reviewed {
+		return Result{}, fmt.Errorf("SURFACE_UNREVIEWED id=%q", req.SurfaceID)
+	}
+	prefab, ok := findPrefabEntry(req.Manifest.Prefabs, req.Prefab)
+	if !ok || prefab.Spatial == nil || prefab.Spatial.BackContact == nil {
+		return Result{}, check.ErrNeedGeometryV2
+	}
+	rotation := lookRotation(surface.Normal, cross(surface.Normal, surface.Tangent))
+	gap := 0.0075
+	offsets := []float64{-0.3, -0.1, 0.1, 0.3}
+	candidates := make([]Candidate, 0, 4)
+	for index, factor := range offsets {
+		point := add(surface.Origin, mul(normalize(surface.Tangent), surface.Size[0]*factor))
+		point = add(point, mul(normalize(surface.Normal), gap))
+		contactOffset := rotate(rotation, prefab.Spatial.BackContact.Point)
+		position := sub(point, contactOffset)
+		checked, err := check.CheckSpatialPlacement(check.SpatialRequest{Manifest: req.Manifest, Prefab: req.Prefab, Position: position, Rotation: rotation, SurfaceID: req.SurfaceID, Contact: "wall-mounted"})
+		if err != nil {
+			return Result{}, err
+		}
+		status := "OK"
+		if !checked.Clear {
+			status = "WARN"
+		}
+		candidates = append(candidates, Candidate{Rank: index + 1, Status: status, Direction: fmt.Sprintf("wall-%d", index+1), Position: position, Rotation: rotation, OverlapIDs: checked.OverlapIDs})
+	}
+	limit := req.Count
+	if limit < 1 || limit > 4 {
+		limit = 4
+	}
+	candidates = candidates[:limit]
+	status := "WARN"
+	for _, candidate := range candidates {
+		if candidate.Status == "OK" {
+			status = "OK"
+			break
+		}
+	}
+	return Result{Status: status, Manifest: req.Manifest.Scene, PrefabPath: req.Prefab, Near: Anchor{Name: req.SurfaceID}, Align: AlignWall, Count: len(candidates), Candidates: candidates}, nil
+}
+
+func findPrefabEntry(items []bounds.PrefabBounds, path string) (bounds.PrefabBounds, bool) {
+	for _, item := range items {
+		if item.Path == path {
+			return item, true
+		}
+	}
+	return bounds.PrefabBounds{}, false
+}
+func add(a, b bounds.Vec3) bounds.Vec3         { return bounds.Vec3{a[0] + b[0], a[1] + b[1], a[2] + b[2]} }
+func sub(a, b bounds.Vec3) bounds.Vec3         { return bounds.Vec3{a[0] - b[0], a[1] - b[1], a[2] - b[2]} }
+func mul(a bounds.Vec3, s float64) bounds.Vec3 { return bounds.Vec3{a[0] * s, a[1] * s, a[2] * s} }
+func dot(a, b bounds.Vec3) float64             { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2] }
+func cross(a, b bounds.Vec3) bounds.Vec3 {
+	return bounds.Vec3{a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0]}
+}
+func normalize(v bounds.Vec3) bounds.Vec3 {
+	length := math.Sqrt(dot(v, v))
+	if length < 1e-12 {
+		return bounds.Vec3{}
+	}
+	return mul(v, 1/length)
+}
+func rotate(q bounds.Quat, v bounds.Vec3) bounds.Vec3 {
+	u := bounds.Vec3{q[0], q[1], q[2]}
+	s := q[3]
+	return add(add(mul(u, 2*dot(u, v)), mul(v, s*s-dot(u, u))), mul(cross(u, v), 2*s))
+}
+func lookRotation(forward, up bounds.Vec3) bounds.Quat {
+	f := normalize(forward)
+	r := normalize(cross(up, f))
+	u := cross(f, r)
+	m00, m11, m22 := r[0], u[1], f[2]
+	trace := m00 + m11 + m22
+	var q bounds.Quat
+	if trace > 0 {
+		s := math.Sqrt(trace+1) * 2
+		q = bounds.Quat{(u[2] - f[1]) / s, (f[0] - r[2]) / s, (r[1] - u[0]) / s, s / 4}
+	} else if m00 > m11 && m00 > m22 {
+		s := math.Sqrt(1+m00-m11-m22) * 2
+		q = bounds.Quat{s / 4, (r[1] + u[0]) / s, (f[0] + r[2]) / s, (u[2] - f[1]) / s}
+	} else if m11 > m22 {
+		s := math.Sqrt(1+m11-m00-m22) * 2
+		q = bounds.Quat{(r[1] + u[0]) / s, s / 4, (u[2] + f[1]) / s, (f[0] - r[2]) / s}
+	} else {
+		s := math.Sqrt(1+m22-m00-m11) * 2
+		q = bounds.Quat{(f[0] + r[2]) / s, (u[2] + f[1]) / s, s / 4, (r[1] - u[0]) / s}
+	}
+	return q
 }
 
 func resolveAnchor(manifest bounds.Manifest, near string) (bounds.ObjectBounds, error) {

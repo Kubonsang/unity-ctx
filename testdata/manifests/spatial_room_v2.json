@@ -1,0 +1,35 @@
+{
+  "scene": "Assets/Scenes/SpatialRoom.unity",
+  "source": "editor",
+  "version": 2,
+  "objects": [
+    {
+      "fileID": 1000,
+      "name": "ExistingCrate",
+      "bounds": { "center": [2.5, 0.5, 0.0], "size": [1.0, 1.0, 1.0] },
+      "spatial": {
+        "obbs": [{ "id": "crate", "center": [2.5, 0.5, 0.0], "size": [1.0, 1.0, 1.0], "rotation": [0.0, 0.0, 0.0, 1.0] }],
+        "forward": [0.0, 0.0, 1.0], "up": [0.0, 1.0, 0.0], "pivot_offset": [0.0, 0.0, 0.0],
+        "source": "collider", "confidence": 1.0, "reviewed": true
+      }
+    }
+  ],
+  "prefabs": [
+    {
+      "path": "Assets/Prefabs/Bookcase.prefab",
+      "guid": "11111111111111111111111111111111",
+      "bounds": { "center": [0.0, 1.0, 0.0], "size": [1.0, 2.0, 0.2] },
+      "spatial": {
+        "obbs": [{ "id": "body", "center": [0.0, 1.0, 0.0], "size": [1.0, 2.0, 0.2], "rotation": [0.0, 0.0, 0.0, 1.0] }],
+        "forward": [0.0, 0.0, 1.0], "up": [0.0, 1.0, 0.0], "pivot_offset": [0.0, 1.0, 0.0],
+        "bottom_contact": { "id": "bottom", "point": [0.0, 0.0, 0.0], "normal": [0.0, -1.0, 0.0], "tangent": [1.0, 0.0, 0.0], "size": [1.0, 0.2] },
+        "back_contact": { "id": "back", "point": [0.0, 1.0, -0.1], "normal": [0.0, 0.0, -1.0], "tangent": [1.0, 0.0, 0.0], "size": [1.0, 2.0] },
+        "source": "collider", "confidence": 1.0, "reviewed": true, "dependency_hash": "fixture-v2"
+      }
+    }
+  ],
+  "capabilities": ["aabb", "contact-frames", "obb", "surfaces"],
+  "surfaces": [
+    { "id": "wall-north", "type": "wall", "origin": [0.0, 2.0, 4.0], "normal": [0.0, 0.0, -1.0], "tangent": [-1.0, 0.0, 0.0], "size": [8.0, 4.0], "reviewed": true, "supported": true }
+  ]
+}

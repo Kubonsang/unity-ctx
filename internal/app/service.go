@@ -1485,7 +1485,7 @@ func (s *Service) Suggest(namespace, path string, view core.View, jsonOut bool, 
 		result.Body = "ERROR suggest requires --prefab"
 		return result, 1
 	}
-	if strings.TrimSpace(args.Near) == "" {
+	if strings.TrimSpace(args.Near) == "" && strings.TrimSpace(args.Align) != string(suggestplan.AlignWall) {
 		result.Status = "ERROR"
 		result.Body = "ERROR suggest requires --near"
 		return result, 1
@@ -1499,9 +1499,9 @@ func (s *Service) Suggest(namespace, path string, view core.View, jsonOut bool, 
 	if align == "" {
 		align = string(suggestplan.AlignFloor)
 	}
-	if align != string(suggestplan.AlignFloor) && align != string(suggestplan.AlignGrid) {
+	if align != string(suggestplan.AlignFloor) && align != string(suggestplan.AlignGrid) && align != string(suggestplan.AlignWall) {
 		result.Status = "ERROR"
-		result.Body = "ERROR suggest supports only --align floor|grid"
+		result.Body = "ERROR suggest supports only --align floor|grid|wall"
 		return result, 1
 	}
 
@@ -1513,13 +1513,19 @@ func (s *Service) Suggest(namespace, path string, view core.View, jsonOut bool, 
 	}
 
 	plan, err := suggestplan.Plan(suggestplan.Request{
-		Manifest: manifest,
-		Prefab:   args.Prefab,
-		Near:     args.Near,
-		Count:    count,
-		Align:    suggestplan.Align(align),
+		Manifest:  manifest,
+		Prefab:    args.Prefab,
+		Near:      args.Near,
+		Count:     count,
+		Align:     suggestplan.Align(align),
+		SurfaceID: args.SurfaceID,
 	})
 	if err != nil {
+		if errors.Is(err, check.ErrNeedGeometryV2) {
+			result.Status = "UNKNOWN"
+			result.Body = "UNKNOWN reason=NEED_GEOMETRY_V2"
+			return result, 0
+		}
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR %v", err)
 		return result, 1
@@ -1532,6 +1538,11 @@ func (s *Service) Suggest(namespace, path string, view core.View, jsonOut bool, 
 	}
 
 	if args.PatchOut != "" {
+		if align == string(suggestplan.AlignWall) {
+			result.Status = "UNKNOWN"
+			result.Body = "UNKNOWN reason=ROTATION_PATCH_UNSUPPORTED align=wall; use the Unity Editor preview/apply path"
+			return result, 0
+		}
 		pick := args.Pick
 		if pick < 1 {
 			pick = 1
@@ -1623,6 +1634,12 @@ func (s *Service) Scan(namespace, path string, view core.View, jsonOut bool, arg
 		result.Body = "ERROR scan requires --out"
 		return result, 1
 	}
+	geometry := strings.TrimSpace(args.Geometry)
+	if geometry != "" && geometry != "detailed" {
+		result.Status = "ERROR"
+		result.Body = "ERROR scan supports only --geometry detailed"
+		return result, 1
+	}
 
 	sceneAssetPath, err := scan.ResolveSceneAssetPath(project, path)
 	if err != nil {
@@ -1632,30 +1649,56 @@ func (s *Service) Scan(namespace, path string, view core.View, jsonOut bool, arg
 	}
 
 	prefabs := scan.NormalizePrefabList(args.Prefabs)
-	payloadBytes, err := s.scanRunner.RunEditorScan(project, sceneAssetPath, prefabs)
+	var payloadBytes []byte
+	if geometry == "detailed" {
+		detailed, ok := s.scanRunner.(scan.DetailedRunner)
+		if !ok {
+			result.Status = "ERROR"
+			result.Body = "ERROR SCAN_DETAILED_UNAVAILABLE runner does not support detailed geometry"
+			return result, 1
+		}
+		payloadBytes, err = detailed.RunDetailedEditorScan(project, sceneAssetPath, prefabs)
+	} else {
+		payloadBytes, err = s.scanRunner.RunEditorScan(project, sceneAssetPath, prefabs)
+	}
 	if err != nil {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR SCAN_EDITOR_FAILED project=%s scene=%s err=%v", project, sceneAssetPath, err)
 		return result, 1
 	}
 
-	payload, err := scan.DecodeEditorPayload(payloadBytes)
-	if err != nil {
-		result.Status = "ERROR"
-		result.Body = fmt.Sprintf("ERROR %v", err)
-		return result, 1
-	}
-	if payload.Scene != sceneAssetPath {
-		result.Status = "ERROR"
-		result.Body = fmt.Sprintf("ERROR scan payload scene mismatch requested=%s payload=%s", sceneAssetPath, payload.Scene)
-		return result, 1
-	}
-
-	manifest, err := scan.BuildManifestFromPayload(payload)
-	if err != nil {
-		result.Status = "ERROR"
-		result.Body = fmt.Sprintf("ERROR %v", err)
-		return result, 1
+	var manifest bounds.Manifest
+	if geometry == "detailed" {
+		manifest, err = bounds.Decode(payloadBytes)
+		if err != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR %v", err)
+			return result, 1
+		}
+		if manifest.Scene != sceneAssetPath {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR scan payload scene mismatch requested=%s payload=%s", sceneAssetPath, manifest.Scene)
+			return result, 1
+		}
+	} else {
+		var payload scan.EditorPayload
+		payload, err = scan.DecodeEditorPayload(payloadBytes)
+		if err != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR %v", err)
+			return result, 1
+		}
+		if payload.Scene != sceneAssetPath {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR scan payload scene mismatch requested=%s payload=%s", sceneAssetPath, payload.Scene)
+			return result, 1
+		}
+		manifest, err = scan.BuildManifestFromPayload(payload)
+		if err != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR %v", err)
+			return result, 1
+		}
 	}
 	if err := bounds.Save(outPath, manifest); err != nil {
 		result.Status = "ERROR"
@@ -1664,15 +1707,11 @@ func (s *Service) Scan(namespace, path string, view core.View, jsonOut bool, arg
 	}
 
 	result.Status = "OK"
-	result.Body = fmt.Sprintf(
-		"OK mode=editor project=%s scene=%s out=%s objects=%d prefabs=%d source=%s",
-		project,
-		sceneAssetPath,
-		outPath,
-		len(manifest.Objects),
-		len(manifest.Prefabs),
-		manifest.Source,
-	)
+	if geometry == "detailed" {
+		result.Body = fmt.Sprintf("OK mode=editor geometry=detailed project=%s scene=%s out=%s objects=%d prefabs=%d surfaces=%d source=%s version=%d", project, sceneAssetPath, outPath, len(manifest.Objects), len(manifest.Prefabs), len(manifest.Surfaces), manifest.Source, manifest.Version)
+	} else {
+		result.Body = fmt.Sprintf("OK mode=editor project=%s scene=%s out=%s objects=%d prefabs=%d source=%s", project, sceneAssetPath, outPath, len(manifest.Objects), len(manifest.Prefabs), manifest.Source)
+	}
 	return result, 0
 }
 
@@ -1733,6 +1772,31 @@ func (s *Service) Check(namespace, path string, view core.View, jsonOut bool, ar
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR manifest scene mismatch file=%s manifest_scene=%s", path, manifest.Scene)
 		return result, 1
+	}
+
+	if args.HasRotation || strings.TrimSpace(args.SurfaceID) != "" || strings.TrimSpace(args.Contact) != "" {
+		rotation := bounds.Quat{0, 0, 0, 1}
+		if args.HasRotation {
+			rotation = bounds.Quat(args.Rotation)
+		}
+		spatial, spatialErr := check.CheckSpatialPlacement(check.SpatialRequest{Manifest: manifest, Prefab: args.Prefab, Position: bounds.Vec3(args.Position), Rotation: rotation, SurfaceID: strings.TrimSpace(args.SurfaceID), Contact: strings.TrimSpace(args.Contact)})
+		if errors.Is(spatialErr, check.ErrNeedGeometryV2) {
+			result.Status = "UNKNOWN"
+			result.Body = fmt.Sprintf("UNKNOWN reason=NEED_GEOMETRY_V2 manifest=%s prefab=%s", args.Manifest, args.Prefab)
+			return result, 0
+		}
+		if spatialErr != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR %v", spatialErr)
+			return result, 1
+		}
+		status := "OK"
+		if !spatial.Clear {
+			status = "WARN"
+		}
+		result.Status = status
+		result.Body = fmt.Sprintf("%s manifest=%s prefab=%s position=%g,%g,%g rotation=%g,%g,%g,%g surface_id=%s contact=%s codes=%s overlap_ids=%s gap=%g penetration=%g alignment=%g", status, args.Manifest, args.Prefab, args.Position[0], args.Position[1], args.Position[2], rotation[0], rotation[1], rotation[2], rotation[3], args.SurfaceID, args.Contact, joinStringsOrNone(spatial.Codes), joinIDsOrNone(spatial.OverlapIDs), spatial.Gap, spatial.Penetration, spatial.Alignment)
+		return result, 0
 	}
 
 	checkResult, err := check.CheckPlacement(manifest, args.Prefab, bounds.Vec3(args.Position))

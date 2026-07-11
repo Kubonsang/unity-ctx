@@ -10,7 +10,10 @@ import (
 	"strings"
 )
 
-const manifestVersion = 1
+const (
+	ManifestVersion1 = 1
+	ManifestVersion2 = 2
+)
 
 type Vec3 [3]float64
 
@@ -19,23 +22,70 @@ type AABB struct {
 	Size   Vec3 `json:"size"`
 }
 
+type Quat [4]float64
+
+type OBB struct {
+	ID       string `json:"id"`
+	Center   Vec3   `json:"center"`
+	Size     Vec3   `json:"size"`
+	Rotation Quat   `json:"rotation"`
+}
+
+type ContactFrame struct {
+	ID      string     `json:"id"`
+	Point   Vec3       `json:"point"`
+	Normal  Vec3       `json:"normal"`
+	Tangent Vec3       `json:"tangent"`
+	Size    [2]float64 `json:"size"`
+}
+
+type SpatialProfile struct {
+	OBBs           []OBB         `json:"obbs"`
+	Forward        Vec3          `json:"forward"`
+	Up             Vec3          `json:"up"`
+	PivotOffset    Vec3          `json:"pivot_offset"`
+	BottomContact  *ContactFrame `json:"bottom_contact,omitempty"`
+	BackContact    *ContactFrame `json:"back_contact,omitempty"`
+	Source         string        `json:"source"`
+	Confidence     float64       `json:"confidence"`
+	Reviewed       bool          `json:"reviewed"`
+	DependencyHash string        `json:"dependency_hash,omitempty"`
+}
+
+type SurfacePatch struct {
+	ID        string     `json:"id"`
+	Type      string     `json:"type"`
+	Origin    Vec3       `json:"origin"`
+	Normal    Vec3       `json:"normal"`
+	Tangent   Vec3       `json:"tangent"`
+	Size      [2]float64 `json:"size"`
+	Reviewed  bool       `json:"reviewed"`
+	Supported bool       `json:"supported"`
+	Reason    string     `json:"reason,omitempty"`
+}
+
 type ObjectBounds struct {
-	FileID int64  `json:"fileID"`
-	Name   string `json:"name"`
-	Bounds AABB   `json:"bounds"`
+	FileID  int64           `json:"fileID"`
+	Name    string          `json:"name"`
+	Bounds  AABB            `json:"bounds"`
+	Spatial *SpatialProfile `json:"spatial,omitempty"`
 }
 
 type PrefabBounds struct {
-	Path   string `json:"path"`
-	Bounds AABB   `json:"bounds"`
+	Path    string          `json:"path"`
+	Bounds  AABB            `json:"bounds"`
+	GUID    string          `json:"guid,omitempty"`
+	Spatial *SpatialProfile `json:"spatial,omitempty"`
 }
 
 type Manifest struct {
-	Scene   string         `json:"scene"`
-	Source  string         `json:"source"`
-	Version int            `json:"version"`
-	Objects []ObjectBounds `json:"objects"`
-	Prefabs []PrefabBounds `json:"prefabs"`
+	Scene        string         `json:"scene"`
+	Source       string         `json:"source"`
+	Version      int            `json:"version"`
+	Objects      []ObjectBounds `json:"objects"`
+	Prefabs      []PrefabBounds `json:"prefabs"`
+	Capabilities []string       `json:"capabilities,omitempty"`
+	Surfaces     []SurfacePatch `json:"surfaces,omitempty"`
 }
 
 type rawManifest struct {
@@ -82,11 +132,13 @@ func Save(path string, manifest Manifest) error {
 	}
 
 	normalized := Manifest{
-		Scene:   manifest.Scene,
-		Source:  manifest.Source,
-		Version: manifest.Version,
-		Objects: append([]ObjectBounds(nil), manifest.Objects...),
-		Prefabs: append([]PrefabBounds(nil), manifest.Prefabs...),
+		Scene:        manifest.Scene,
+		Source:       manifest.Source,
+		Version:      manifest.Version,
+		Objects:      append([]ObjectBounds(nil), manifest.Objects...),
+		Prefabs:      append([]PrefabBounds(nil), manifest.Prefabs...),
+		Capabilities: append([]string(nil), manifest.Capabilities...),
+		Surfaces:     append([]SurfacePatch(nil), manifest.Surfaces...),
 	}
 
 	sort.Slice(normalized.Objects, func(i, j int) bool {
@@ -95,6 +147,22 @@ func Save(path string, manifest Manifest) error {
 	sort.Slice(normalized.Prefabs, func(i, j int) bool {
 		return normalized.Prefabs[i].Path < normalized.Prefabs[j].Path
 	})
+	sort.Strings(normalized.Capabilities)
+	sort.Slice(normalized.Surfaces, func(i, j int) bool { return normalized.Surfaces[i].ID < normalized.Surfaces[j].ID })
+	for i := range normalized.Objects {
+		if normalized.Objects[i].Spatial != nil {
+			sort.Slice(normalized.Objects[i].Spatial.OBBs, func(a, b int) bool {
+				return normalized.Objects[i].Spatial.OBBs[a].ID < normalized.Objects[i].Spatial.OBBs[b].ID
+			})
+		}
+	}
+	for i := range normalized.Prefabs {
+		if normalized.Prefabs[i].Spatial != nil {
+			sort.Slice(normalized.Prefabs[i].Spatial.OBBs, func(a, b int) bool {
+				return normalized.Prefabs[i].Spatial.OBBs[a].ID < normalized.Prefabs[i].Spatial.OBBs[b].ID
+			})
+		}
+	}
 
 	data, err := json.MarshalIndent(normalized, "", "  ")
 	if err != nil {
@@ -106,6 +174,27 @@ func Save(path string, manifest Manifest) error {
 }
 
 func decodeManifest(data []byte) (Manifest, error) {
+	var header struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return Manifest{}, fmt.Errorf("invalid manifest: %w", err)
+	}
+	if header.Version == ManifestVersion2 {
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.DisallowUnknownFields()
+		var manifest Manifest
+		if err := decoder.Decode(&manifest); err != nil {
+			return Manifest{}, fmt.Errorf("invalid manifest: %w", err)
+		}
+		if err := ensureEOF(decoder); err != nil {
+			return Manifest{}, fmt.Errorf("invalid manifest: %w", err)
+		}
+		if err := validateManifest(manifest); err != nil {
+			return Manifest{}, err
+		}
+		return manifest, nil
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 
@@ -286,8 +375,8 @@ func validateManifest(manifest Manifest) error {
 		return fmt.Errorf("invalid manifest: missing scene")
 	case manifest.Source == "":
 		return fmt.Errorf("invalid manifest: missing source")
-	case manifest.Version != manifestVersion:
-		return fmt.Errorf("invalid manifest: version must be %d", manifestVersion)
+	case manifest.Version != ManifestVersion1 && manifest.Version != ManifestVersion2:
+		return fmt.Errorf("invalid manifest: version must be %d or %d", ManifestVersion1, ManifestVersion2)
 	}
 	if err := validateSceneAssetPath(manifest.Scene); err != nil {
 		return err
@@ -323,6 +412,59 @@ func validateManifest(manifest Manifest) error {
 		}
 	}
 
+	if manifest.Version == ManifestVersion2 {
+		if len(manifest.Capabilities) == 0 {
+			return fmt.Errorf("invalid manifest: version 2 requires capabilities")
+		}
+		for i, prefab := range manifest.Prefabs {
+			if prefab.Spatial == nil || len(prefab.Spatial.OBBs) == 0 {
+				return fmt.Errorf("invalid manifest: prefabs[%d].spatial.obbs is required for version 2", i)
+			}
+			if err := validateSpatial(prefab.Spatial, fmt.Sprintf("prefabs[%d].spatial", i)); err != nil {
+				return err
+			}
+		}
+		for i, object := range manifest.Objects {
+			if object.Spatial != nil {
+				if err := validateSpatial(object.Spatial, fmt.Sprintf("objects[%d].spatial", i)); err != nil {
+					return err
+				}
+			}
+		}
+		for i, surface := range manifest.Surfaces {
+			if strings.TrimSpace(surface.ID) == "" {
+				return fmt.Errorf("invalid manifest: surfaces[%d].id is required", i)
+			}
+			if surface.Type != "floor" && surface.Type != "wall" && surface.Type != "ceiling" {
+				return fmt.Errorf("invalid manifest: surfaces[%d].type must be floor|wall|ceiling", i)
+			}
+			if surface.Size[0] <= 0 || surface.Size[1] <= 0 {
+				return fmt.Errorf("invalid manifest: surfaces[%d].size values must be > 0", i)
+			}
+		}
+	}
+
+	return nil
+}
+
+func Decode(data []byte) (Manifest, error) { return decodeManifest(data) }
+
+func validateSpatial(profile *SpatialProfile, path string) error {
+	if profile.Confidence < 0 || profile.Confidence > 1 {
+		return fmt.Errorf("invalid manifest: %s.confidence must be between 0 and 1", path)
+	}
+	for i, box := range profile.OBBs {
+		if strings.TrimSpace(box.ID) == "" {
+			return fmt.Errorf("invalid manifest: %s.obbs[%d].id is required", path, i)
+		}
+		if err := validateSize(box.Size, fmt.Sprintf("%s.obbs[%d].size", path, i)); err != nil {
+			return err
+		}
+		length := box.Rotation[0]*box.Rotation[0] + box.Rotation[1]*box.Rotation[1] + box.Rotation[2]*box.Rotation[2] + box.Rotation[3]*box.Rotation[3]
+		if length < 0.999 || length > 1.001 {
+			return fmt.Errorf("invalid manifest: %s.obbs[%d].rotation must be normalized", path, i)
+		}
+	}
 	return nil
 }
 

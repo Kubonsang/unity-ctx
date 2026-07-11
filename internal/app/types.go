@@ -69,6 +69,10 @@ type CheckArgs struct {
 	Prefab      string
 	HasPosition bool
 	Position    [3]float64
+	HasRotation bool
+	Rotation    [4]float64
+	SurfaceID   string
+	Contact     string
 }
 
 type PatchArgs struct {
@@ -100,10 +104,11 @@ type ApplyArgs struct {
 }
 
 type ScanArgs struct {
-	Mode    string
-	Project string
-	Out     string
-	Prefabs string
+	Mode     string
+	Project  string
+	Out      string
+	Prefabs  string
+	Geometry string
 }
 
 type ImpactArgs struct {
@@ -121,6 +126,7 @@ type SuggestArgs struct {
 	Pick       int
 	PrefabGUID string
 	Project    string
+	SurfaceID  string
 }
 
 type ImpactFileHit struct {
@@ -145,11 +151,12 @@ type SuggestAnchorPayload struct {
 }
 
 type SuggestCandidatePayload struct {
-	Rank       int         `json:"rank"`
-	Direction  string      `json:"direction"`
-	Position   bounds.Vec3 `json:"position"`
-	Status     string      `json:"status"`
-	OverlapIDs []int64     `json:"overlap_ids"`
+	Rank       int          `json:"rank"`
+	Direction  string       `json:"direction"`
+	Position   bounds.Vec3  `json:"position"`
+	Status     string       `json:"status"`
+	OverlapIDs []int64      `json:"overlap_ids"`
+	Rotation   *bounds.Quat `json:"rotation,omitempty"`
 }
 
 type SuggestPayload struct {
@@ -160,6 +167,7 @@ type SuggestPayload struct {
 	Align      string                    `json:"align"`
 	Count      int                       `json:"count"`
 	Candidates []SuggestCandidatePayload `json:"candidates"`
+	SurfaceID  string                    `json:"surface_id,omitempty"`
 }
 
 type BenchMetricPayload struct {

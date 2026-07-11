@@ -1352,6 +1352,30 @@ Transform from the parent's `m_Children` (one file, one `.bak`). `--id` is the
   assertion**: every removed fileID is gone and the parent no longer lists the
   target.
 
+## v0.9 Spatial Geometry
+
+Create a detailed manifest only when reviewed contact geometry is needed:
+
+```bash
+unity-ctx scene scan Assets/Scenes/Room.unity --mode editor --geometry detailed --project C:/Project --out Room.spatial.json
+```
+
+Prove one rotated transform against compound OBBs and a reviewed surface:
+
+```bash
+unity-ctx scene check Assets/Scenes/Room.unity --manifest Room.spatial.json --prefab Assets/Props/Bookcase.prefab --position 0,0,3.9 --rotation 0,1,0,0 --surface-id wall-north --contact wall-backed
+```
+
+Request read-only wall candidates:
+
+```bash
+unity-ctx scene suggest Assets/Scenes/Room.unity --manifest Room.spatial.json --prefab Assets/Props/Banner.prefab --align wall --surface-id wall-north --count 4
+```
+
+Manifest v1 stays readable for legacy bounds work. A rotated/contact request against v1 returns `UNKNOWN NEED_GEOMETRY_V2`; it never estimates a contact frame. JSON fields, floating-point formatting, and ordering remain deterministic.
+
+The MCP server exposes `unity_spatial_check` and `unity_suggest_wall`. Both are read-only. Apply and other mutation commands remain CLI-only and dry-run-first.
+
 ## Output Stability Rules
 
 - No timestamps in default output.

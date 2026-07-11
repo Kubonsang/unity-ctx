@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {
+      "id": "parallel-rotated-separated",
+      "left": { "center": [0.0, 0.0, 0.0], "size": [4.0, 0.2, 0.2], "rotation": [0.0, 0.38268343, 0.0, 0.92387953] },
+      "right": { "center": [0.5, 0.0, 0.5], "size": [4.0, 0.2, 0.2], "rotation": [0.0, 0.38268343, 0.0, 0.92387953] },
+      "overlap": false
+    },
+    {
+      "id": "parallel-rotated-overlap",
+      "left": { "center": [0.0, 0.0, 0.0], "size": [4.0, 0.2, 0.2], "rotation": [0.0, 0.38268343, 0.0, 0.92387953] },
+      "right": { "center": [0.05, 0.0, 0.05], "size": [4.0, 0.2, 0.2], "rotation": [0.0, 0.38268343, 0.0, 0.92387953] },
+      "overlap": true
+    }
+  ]
+}

@@ -140,6 +140,12 @@ unity-ctx scene apply Assets/Scenes/GameLevel.unity --patch /tmp/chair.patch.jso
 
 > Paths passed to unity-ctx can be absolute or relative to your current working directory. Running commands from the project root (`cd /Users/me/MyUnityProject`) lets you use short `Assets/...` paths throughout.
 
+## Spatial geometry v0.9
+
+`scene scan --mode editor --geometry detailed` asks the Unity Editor to emit Spatial Manifest v2: compound local OBBs, semantic contact frames, and reviewed planar surfaces. `scene check` then proves rotated overlap and contact gap/penetration/support, and `scene suggest --align wall --surface-id ...` returns deterministic wall candidates. Manifest v1 remains supported for existing AABB workflows; contact requests against it return `UNKNOWN NEED_GEOMETRY_V2`.
+
+The MCP server adds read-only `unity_spatial_check` and `unity_suggest_wall` tools. Unity remains the final scene authority, raw FBX files are not parsed by Go, and no mutation tool is added to MCP.
+
 ## Commands
 
 ### `unity-ctx scene summarize`
