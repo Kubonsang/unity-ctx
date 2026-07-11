@@ -46,6 +46,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	if len(args) >= 1 && args[0] == "spatial" {
+		return runSpatial(args[1:], stdout, stderr)
+	}
+
 	if msg, code, stop := diagnoseShape(args); stop {
 		_, _ = io.WriteString(stderr, msg+"\n")
 		return code
@@ -96,6 +100,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	surfaceID := flagSet.String("surface-id", "", "")
 	contact := flagSet.String("contact", "", "")
 	geometry := flagSet.String("geometry", "", "")
+	contracts := flagSet.String("contracts", "", "")
 
 	if err := flagSet.Parse(args[3:]); err != nil {
 		_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
@@ -112,6 +117,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	if command != "scan" && seenFlags["geometry"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --geometry\n", command)
+		return 2
+	}
+	if command != "scan" && seenFlags["contracts"] {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --contracts\n", command)
 		return 2
 	}
 
@@ -1031,11 +1040,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		})
 	case "scan":
 		result, exitCode = service.Scan(namespace, file, selectedView, *jsonOutput, app.ScanArgs{
-			Mode:     *mode,
-			Project:  *project,
-			Out:      *out,
-			Prefabs:  *prefabs,
-			Geometry: *geometry,
+			Mode:      *mode,
+			Project:   *project,
+			Out:       *out,
+			Prefabs:   *prefabs,
+			Geometry:  *geometry,
+			Contracts: *contracts,
 		})
 	default:
 		result.Status = "ERROR"

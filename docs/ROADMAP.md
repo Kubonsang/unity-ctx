@@ -126,6 +126,18 @@ Status: implemented on the Concept Room Decorator integration branch.
 
 Unity remains the final authority for preview and Apply. unity-ctx does not parse raw FBX geometry and its MCP server does not expose mutation tools.
 
+## v0.9.1 — Human-reviewed Spatial Contracts
+
+Status: implemented on the Agent Spatial Contract Studio branch.
+
+- strict `AssetSpatialContract` and `InteractionContract` load/save with stable normalized hashes
+- Draft, technical, human-review, revision-request, unable-to-judge, approved, and stale states
+- `spatial validate`, `spatial review`, `spatial diff`, and dry-run-first `spatial apply`
+- approval invalidation through contract, dependency, geometry, interaction, and capture hashes
+- approved contract overlay for `scene scan --geometry detailed --contracts ...`
+- CLI-only human-authority writes; MCP remains read-only/proposal-only
+- lifecycle tests covering technical-error approval refusal and verified apply
+
 ## v1.0 — Agent Harness Release
 
 - batch / transaction patch (multi-op atomic apply)

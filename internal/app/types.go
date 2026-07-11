@@ -104,11 +104,12 @@ type ApplyArgs struct {
 }
 
 type ScanArgs struct {
-	Mode     string
-	Project  string
-	Out      string
-	Prefabs  string
-	Geometry string
+	Mode      string
+	Project   string
+	Out       string
+	Prefabs   string
+	Geometry  string
+	Contracts string
 }
 
 type ImpactArgs struct {

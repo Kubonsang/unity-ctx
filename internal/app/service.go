@@ -24,6 +24,7 @@ import (
 	scenepatch "github.com/Kubonsang/unity-ctx/internal/patch"
 	"github.com/Kubonsang/unity-ctx/internal/safety"
 	"github.com/Kubonsang/unity-ctx/internal/scan"
+	"github.com/Kubonsang/unity-ctx/internal/spatialcontract"
 	suggestplan "github.com/Kubonsang/unity-ctx/internal/suggest"
 	"github.com/Kubonsang/unity-ctx/internal/xref"
 )
@@ -1640,6 +1641,12 @@ func (s *Service) Scan(namespace, path string, view core.View, jsonOut bool, arg
 		result.Body = "ERROR scan supports only --geometry detailed"
 		return result, 1
 	}
+	contractsPath := strings.TrimSpace(args.Contracts)
+	if contractsPath != "" && geometry != "detailed" {
+		result.Status = "ERROR"
+		result.Body = "ERROR scan --contracts requires --geometry detailed"
+		return result, 1
+	}
 
 	sceneAssetPath, err := scan.ResolveSceneAssetPath(project, path)
 	if err != nil {
@@ -1700,6 +1707,18 @@ func (s *Service) Scan(namespace, path string, view core.View, jsonOut bool, arg
 			return result, 1
 		}
 	}
+	appliedContracts := 0
+	if contractsPath != "" {
+		if !filepath.IsAbs(contractsPath) {
+			contractsPath = filepath.Join(project, filepath.FromSlash(contractsPath))
+		}
+		appliedContracts, err = spatialcontract.OverlayApprovedAssets(&manifest, contractsPath)
+		if err != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR spatial contracts: %v", err)
+			return result, 1
+		}
+	}
 	if err := bounds.Save(outPath, manifest); err != nil {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR %v", err)
@@ -1708,7 +1727,7 @@ func (s *Service) Scan(namespace, path string, view core.View, jsonOut bool, arg
 
 	result.Status = "OK"
 	if geometry == "detailed" {
-		result.Body = fmt.Sprintf("OK mode=editor geometry=detailed project=%s scene=%s out=%s objects=%d prefabs=%d surfaces=%d source=%s version=%d", project, sceneAssetPath, outPath, len(manifest.Objects), len(manifest.Prefabs), len(manifest.Surfaces), manifest.Source, manifest.Version)
+		result.Body = fmt.Sprintf("OK mode=editor geometry=detailed project=%s scene=%s out=%s objects=%d prefabs=%d surfaces=%d contracts=%d source=%s version=%d", project, sceneAssetPath, outPath, len(manifest.Objects), len(manifest.Prefabs), len(manifest.Surfaces), appliedContracts, manifest.Source, manifest.Version)
 	} else {
 		result.Body = fmt.Sprintf("OK mode=editor project=%s scene=%s out=%s objects=%d prefabs=%d source=%s", project, sceneAssetPath, outPath, len(manifest.Objects), len(manifest.Prefabs), manifest.Source)
 	}

@@ -1376,6 +1376,38 @@ Manifest v1 stays readable for legacy bounds work. A rotated/contact request aga
 
 The MCP server exposes `unity_spatial_check` and `unity_suggest_wall`. Both are read-only. Apply and other mutation commands remain CLI-only and dry-run-first.
 
+## Spatial Contracts
+
+Validate a strict asset or interaction contract. Unknown JSON fields, invalid axes/quaternions, unsupported relationships, bad tolerances, and stale embedded hashes are rejected:
+
+```bash
+unity-ctx spatial validate --json Library/DungeonDecorator/SpatialDrafts/banner.spatial.json
+```
+
+Record one of the three human decisions. Approval additionally requires deterministic technical evidence with zero errors and a capture hash:
+
+```bash
+unity-ctx spatial review \
+  --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json \
+  --decision Approved \
+  --reviewer student-01 \
+  --issues "contact-frame,gap" \
+  --comment "Looks naturally mounted in all four views" \
+  --write --json
+```
+
+`RevisionRequested` and `UnableToJudge` are valid human decisions but cannot be applied to tracked contract storage.
+
+Compare and apply an approved draft. Both operations are stable and `apply` remains dry-run-first:
+
+```bash
+unity-ctx spatial diff --current Assets/SpatialContracts/Assets/<guid>.spatial.json --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json --json
+unity-ctx spatial apply --current Assets/SpatialContracts/Assets/<guid>.spatial.json --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json --json
+unity-ctx spatial apply --current Assets/SpatialContracts/Assets/<guid>.spatial.json --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json --write --json
+```
+
+On write, the destination is normalized, written through a temporary file, reloaded, and hash-verified. Existing destinations receive a `.bak` file. `scene scan --contracts Assets/SpatialContracts` overlays only approved asset contracts whose dependency hash still matches.
+
 ## Output Stability Rules
 
 - No timestamps in default output.

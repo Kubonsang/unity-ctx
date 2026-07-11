@@ -146,6 +146,19 @@ unity-ctx scene apply Assets/Scenes/GameLevel.unity --patch /tmp/chair.patch.jso
 
 The MCP server adds read-only `unity_spatial_check` and `unity_suggest_wall` tools. Unity remains the final scene authority, raw FBX files are not parsed by Go, and no mutation tool is added to MCP.
 
+## Human-reviewed Spatial Contracts
+
+Reusable asset and `SupportedBy` interaction contracts are separate from scene snapshot manifests. They store normalized compound OBBs, named contact frames, simultaneous contact requirements, revisions, dependency hashes, capture hashes, deterministic evidence, and the local human review.
+
+```bash
+unity-ctx spatial validate Library/DungeonDecorator/SpatialDrafts/banner.spatial.json
+unity-ctx spatial review --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json --decision Approved --reviewer student-01 --write
+unity-ctx spatial diff --current Assets/SpatialContracts/Assets/<guid>.spatial.json --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json
+unity-ctx spatial apply --current Assets/SpatialContracts/Assets/<guid>.spatial.json --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json --write
+```
+
+`apply` is dry-run unless `--write` is explicit. It accepts only an `Approved` draft whose technical evidence has zero errors and whose human review matches the latest contract and capture hashes. Contract or capture changes therefore make old approvals stale by construction. These mutation commands are CLI-only and are not exposed by `unity-ctx mcp`.
+
 ## Commands
 
 ### `unity-ctx scene summarize`
