@@ -270,7 +270,7 @@ func (ledger *Ledger) ConsumeApprovalGrant(value spatialcontract.ApprovalVerific
 	if err := os.MkdirAll(approvalDir, 0o700); err != nil {
 		return err
 	}
-	approvalPath := filepath.Join(approvalDir, approvalRecordKey(record)+".json")
+	approvalPath := filepath.Join(approvalDir, approvalReceiptFilename(record))
 	approvalExists, err := approvalRecordMatches(approvalPath, record)
 	if err != nil {
 		return err
@@ -336,47 +336,64 @@ func (ledger *Ledger) VerifyApprovedContractReceipt(value spatialcontract.Approv
 		ContractHash: strings.ToLower(value.ContractHash), CaptureSetHash: value.CaptureSetHash,
 		Reviewer: value.Reviewer, ContractPath: signingDestination(value.ContractPath),
 	}
-	path := filepath.Join(ledger.Root, "approvals", approvalRecordKey(expected)+".json")
-	data, err := os.ReadFile(path)
+	paths, err := approvalCandidatePaths(filepath.Join(ledger.Root, "approvals"), expected)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return ApprovalReceipt{}, errors.New("approval ledger has no record for this contract hash")
-		}
 		return ApprovalReceipt{}, err
 	}
-	var record approvalRecord
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&record); err != nil {
-		return ApprovalReceipt{}, fmt.Errorf("approval ledger record is invalid: %w", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return ApprovalReceipt{}, errors.New("approval ledger record is invalid: trailing JSON content")
-	}
-	if record.Version != ledgerVersion || record.Action != spatialcontract.ApprovalActionApproveApply || !authorityPattern.MatchString(record.Authority) ||
-		!strings.EqualFold(record.ContractHash, value.ContractHash) || record.CaptureSetHash != value.CaptureSetHash ||
-		record.Reviewer != value.Reviewer || !samePath(record.ContractPath, value.ContractPath) {
-		return ApprovalReceipt{}, errors.New("approval ledger record does not match the contract evidence")
-	}
-	if value.ContractType == spatialcontract.TypeAsset && (record.SubjectGeometryHash != "" || record.TargetGeometryHash != "") {
-		return ApprovalReceipt{}, errors.New("approval ledger asset receipt contains unexpected interaction geometry bindings")
-	}
-	if value.ContractType == spatialcontract.TypeInteraction &&
-		(!strings.EqualFold(record.SubjectGeometryHash, value.SubjectGeometryHash) || !strings.EqualFold(record.TargetGeometryHash, value.TargetGeometryHash)) {
-		return ApprovalReceipt{}, errors.New("SUPPORT_CONTRACT_STALE: approval ledger geometry bindings do not match current approved assets")
+	if len(paths) == 0 {
+		return ApprovalReceipt{}, errors.New("approval ledger has no record for this contract hash")
 	}
 	authorityRoot, err := ledger.authorityRoot()
 	if err != nil {
 		return ApprovalReceipt{}, err
 	}
-	// The grant is necessarily expired when many approved contracts are later
-	// consumed. Verify every signed binding, but deliberately do not re-apply
-	// the short-lived freshness window that was enforced when it was recorded.
-	if err := (Verifier{AuthorityRoot: authorityRoot}).verifyApproval(record.approvalVerification(), false); err != nil {
-		return ApprovalReceipt{}, fmt.Errorf("approval ledger receipt signature is invalid: %w", err)
+	var firstErr error
+	geometryMismatch := false
+	for _, path := range paths {
+		record, readErr := readApprovalRecord(path)
+		if readErr != nil {
+			if firstErr == nil {
+				firstErr = readErr
+			}
+			continue
+		}
+		if record.Version != ledgerVersion || record.Action != spatialcontract.ApprovalActionApproveApply || !authorityPattern.MatchString(record.Authority) ||
+			!strings.EqualFold(record.ContractHash, value.ContractHash) || record.CaptureSetHash != value.CaptureSetHash ||
+			record.Reviewer != value.Reviewer || !samePath(record.ContractPath, value.ContractPath) {
+			if firstErr == nil {
+				firstErr = errors.New("approval ledger record does not match the contract evidence")
+			}
+			continue
+		}
+		if value.ContractType == spatialcontract.TypeAsset && (record.SubjectGeometryHash != "" || record.TargetGeometryHash != "") {
+			if firstErr == nil {
+				firstErr = errors.New("approval ledger asset receipt contains unexpected interaction geometry bindings")
+			}
+			continue
+		}
+		if value.ContractType == spatialcontract.TypeInteraction &&
+			(!strings.EqualFold(record.SubjectGeometryHash, value.SubjectGeometryHash) || !strings.EqualFold(record.TargetGeometryHash, value.TargetGeometryHash)) {
+			geometryMismatch = true
+			continue
+		}
+		// The grant is necessarily expired when many approved contracts are later
+		// consumed. Verify every signed binding, but deliberately do not re-apply
+		// the short-lived freshness window that was enforced when it was recorded.
+		if verifyErr := (Verifier{AuthorityRoot: authorityRoot}).verifyApproval(record.approvalVerification(), false); verifyErr != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("approval ledger receipt signature is invalid: %w", verifyErr)
+			}
+			continue
+		}
+		return record.receipt(), nil
 	}
-	return record.receipt(), nil
+	if geometryMismatch {
+		return ApprovalReceipt{}, errors.New("SUPPORT_CONTRACT_STALE: approval ledger geometry bindings do not match current approved assets")
+	}
+	if firstErr != nil {
+		return ApprovalReceipt{}, firstErr
+	}
+	return ApprovalReceipt{}, errors.New("approval ledger has no valid record for this contract hash")
 }
 
 func (ledger *Ledger) authorityRoot() (string, error) {
@@ -704,6 +721,98 @@ func approvalRecordMatches(path string, record approvalRecord) (bool, error) {
 
 func approvalRecordKey(record approvalRecord) string {
 	return digest(strings.Join([]string{strconv.Itoa(record.Version), record.ContractHash, record.CaptureSetHash, record.Reviewer, canonicalPathKey(record.ContractPath)}, "\x00"))
+}
+
+func approvalReceiptFilename(record approvalRecord) string {
+	binding := approvalRecordKey(record)
+	receiptID := digest(strings.Join([]string{
+		record.Authority,
+		record.Nonce,
+		record.Proof,
+		strings.ToLower(record.SubjectGeometryHash),
+		strings.ToLower(record.TargetGeometryHash),
+	}, "\x00"))
+	return binding + "." + receiptID + ".json"
+}
+
+func approvalCandidatePaths(directory string, expected approvalRecord) ([]string, error) {
+	entries, err := os.ReadDir(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	binding := approvalRecordKey(expected)
+	legacyName := binding + ".json"
+	prefix := binding + "."
+	paths := make([]string, 0, 2)
+	for _, entry := range entries {
+		name := entry.Name()
+		candidate := name == legacyName
+		if !candidate && strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".json") {
+			receiptID := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ".json")
+			candidate = hashPattern(receiptID)
+		}
+		if !candidate {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		paths = append(paths, filepath.Join(directory, name))
+		if len(paths) > 1024 {
+			return nil, errors.New("approval ledger contains too many receipts for one contract binding")
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func readApprovalRecord(path string) (approvalRecord, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return approvalRecord{}, err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > 64*1024 {
+		return approvalRecord{}, errors.New("approval ledger record must be a regular JSON file no larger than 64 KiB")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return approvalRecord{}, err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		_ = file.Close()
+		return approvalRecord{}, errors.New("approval ledger record changed before it was opened")
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, 64*1024+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return approvalRecord{}, readErr
+	}
+	if closeErr != nil {
+		return approvalRecord{}, closeErr
+	}
+	if len(data) > 64*1024 {
+		return approvalRecord{}, errors.New("approval ledger record exceeds 64 KiB")
+	}
+	after, err := os.Lstat(path)
+	if err != nil || !after.Mode().IsRegular() || !os.SameFile(openedInfo, after) {
+		return approvalRecord{}, errors.New("approval ledger record changed while it was read")
+	}
+	var record approvalRecord
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&record); err != nil {
+		return approvalRecord{}, fmt.Errorf("approval ledger record is invalid: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return approvalRecord{}, errors.New("approval ledger record is invalid: trailing JSON content")
+	}
+	return record, nil
 }
 
 func signingDestination(value string) string {

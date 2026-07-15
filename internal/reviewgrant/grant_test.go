@@ -105,7 +105,7 @@ func TestLedgerRejectsForgedAndTamperedApprovalReceipts(t *testing.T) {
 		ContractHash: verification.ContractHash, CaptureSetHash: verification.CaptureSetHash,
 		Reviewer: verification.Reviewer, ContractPath: verification.Destination,
 	}
-	recordPath := filepath.Join(ledger.Root, "approvals", approvalRecordKey(approvalRecordFromVerification(verification))+".json")
+	recordPath := filepath.Join(ledger.Root, "approvals", approvalReceiptFilename(approvalRecordFromVerification(verification)))
 	original, err := os.ReadFile(recordPath)
 	if err != nil {
 		t.Fatal(err)
@@ -225,6 +225,96 @@ func TestLedgerReceiptSurvivesRestartAndRejectsAuthorityKeyMismatch(t *testing.T
 	}
 	if err := restarted.VerifyApprovedContract(lookup); err == nil || !strings.Contains(err.Error(), "signature is invalid") {
 		t.Fatalf("receipt signed by a different authority key was accepted: %v", err)
+	}
+}
+
+func TestLedgerAllowsSameBindingAfterAuthorityKeyRotation(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ledger, firstPrivateKey := signedTestLedger(t, now)
+	first := signedVerification(t, firstPrivateKey, now)
+	if err := ledger.ConsumeApprovalGrant(first, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+
+	secondPublicKey, secondPrivateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ledger.AuthorityRoot, "local-review.pub"), []byte(base64.RawURLEncoding.EncodeToString(secondPublicKey)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.Evidence.Nonce = "fedcba9876543210fedcba9876543210"
+	second.Evidence.Proof = base64.RawURLEncoding.EncodeToString(ed25519.Sign(secondPrivateKey, SigningPayload(second)))
+	if err := ledger.ConsumeApprovalGrant(second, func() error { return nil }); err != nil {
+		t.Fatalf("reapproval after authority key rotation failed: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(ledger.Root, "approvals"))
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("rotated receipts did not coexist: entries=%d err=%v", len(entries), err)
+	}
+	lookup := spatialcontract.ApprovedContractVerification{
+		ContractType: spatialcontract.TypeAsset,
+		ContractHash: second.ContractHash, CaptureSetHash: second.CaptureSetHash,
+		Reviewer: second.Reviewer, ContractPath: second.Destination,
+	}
+	receipt, err := ledger.VerifyApprovedContractReceipt(lookup)
+	if err != nil || receipt.Authority != second.Evidence.Authority {
+		t.Fatalf("rotated receipt lookup failed: receipt=%+v err=%v", receipt, err)
+	}
+}
+
+func TestLedgerSkipsInvalidSiblingWhenValidReceiptExists(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ledger, privateKey := signedTestLedger(t, now)
+	verification := signedVerification(t, privateKey, now)
+	if err := ledger.ConsumeApprovalGrant(verification, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	record := approvalRecordFromVerification(verification)
+	malformed := filepath.Join(ledger.Root, "approvals", approvalRecordKey(record)+"."+strings.Repeat("0", 64)+".json")
+	if err := os.WriteFile(malformed, []byte("{not-json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lookup := spatialcontract.ApprovedContractVerification{
+		ContractType: spatialcontract.TypeAsset,
+		ContractHash: verification.ContractHash, CaptureSetHash: verification.CaptureSetHash,
+		Reviewer: verification.Reviewer, ContractPath: verification.Destination,
+	}
+	if err := ledger.VerifyApprovedContract(lookup); err != nil {
+		t.Fatalf("malformed sibling denied a valid receipt: %v", err)
+	}
+}
+
+func TestInteractionCanBeReapprovedAfterGeometryChanges(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ledger, privateKey := signedTestLedger(t, now)
+	first := signedVerification(t, privateKey, now)
+	first.SubjectGeometryHash = strings.Repeat("b", 64)
+	first.TargetGeometryHash = strings.Repeat("c", 64)
+	first.DependencyDestinations = []string{filepath.Join(t.TempDir(), "subject.json"), filepath.Join(t.TempDir(), "target.json")}
+	first.Evidence.Proof = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, SigningPayload(first)))
+	if err := ledger.ConsumeApprovalGrant(first, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.SubjectGeometryHash = strings.Repeat("d", 64)
+	second.TargetGeometryHash = strings.Repeat("e", 64)
+	second.Evidence.Nonce = "abcdef0123456789abcdef0123456789"
+	second.Evidence.Proof = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, SigningPayload(second)))
+	if err := ledger.ConsumeApprovalGrant(second, func() error { return nil }); err != nil {
+		t.Fatalf("geometry-bound reapproval failed: %v", err)
+	}
+	lookup := spatialcontract.ApprovedContractVerification{
+		ContractType: spatialcontract.TypeInteraction,
+		ContractHash: second.ContractHash, CaptureSetHash: second.CaptureSetHash,
+		Reviewer: second.Reviewer, ContractPath: second.Destination,
+		SubjectGeometryHash: second.SubjectGeometryHash, TargetGeometryHash: second.TargetGeometryHash,
+	}
+	receipt, err := ledger.VerifyApprovedContractReceipt(lookup)
+	if err != nil || receipt.SubjectGeometryHash != second.SubjectGeometryHash || receipt.TargetGeometryHash != second.TargetGeometryHash {
+		t.Fatalf("latest geometry receipt=%+v err=%v", receipt, err)
 	}
 }
 
