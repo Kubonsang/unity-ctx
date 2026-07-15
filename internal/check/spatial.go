@@ -9,7 +9,11 @@ import (
 	"github.com/Kubonsang/unity-ctx/internal/bounds"
 )
 
-var ErrNeedGeometryV2 = errors.New("NEED_GEOMETRY_V2")
+var (
+	ErrNeedGeometryV2         = errors.New("NEED_GEOMETRY_V2")
+	ErrGeometryUnreviewed     = errors.New("GEOMETRY_UNREVIEWED")
+	ErrRoomGeometryUnreviewed = errors.New("ROOM_GEOMETRY_UNREVIEWED")
+)
 
 type SpatialRequest struct {
 	Manifest  bounds.Manifest
@@ -27,6 +31,7 @@ type SpatialResult struct {
 	Gap         float64
 	Penetration float64
 	Alignment   float64
+	Support     float64
 }
 
 type worldOBB struct {
@@ -46,6 +51,9 @@ func CheckSpatialPlacement(req SpatialRequest) (SpatialResult, error) {
 	if prefab.Spatial == nil || len(prefab.Spatial.OBBs) == 0 {
 		return SpatialResult{}, ErrNeedGeometryV2
 	}
+	if !prefab.Spatial.Reviewed {
+		return SpatialResult{}, ErrGeometryUnreviewed
+	}
 	rotation, err := normalizedQuat(req.Rotation)
 	if err != nil {
 		return SpatialResult{}, err
@@ -53,12 +61,13 @@ func CheckSpatialPlacement(req SpatialRequest) (SpatialResult, error) {
 	placed := transformProfile(prefab.Spatial, req.Position, rotation)
 	result := SpatialResult{Clear: true}
 	for _, object := range req.Manifest.Objects {
-		var objectBoxes []worldOBB
-		if object.Spatial != nil && len(object.Spatial.OBBs) > 0 {
-			objectBoxes = transformProfile(object.Spatial, bounds.Vec3{}, bounds.Quat{0, 0, 0, 1})
-		} else {
-			objectBoxes = []worldOBB{aabbOBB(object.Bounds)}
+		if object.Spatial == nil || len(object.Spatial.OBBs) == 0 {
+			return SpatialResult{}, ErrRoomGeometryUnreviewed
 		}
+		if !object.Spatial.Reviewed {
+			return SpatialResult{}, ErrRoomGeometryUnreviewed
+		}
+		objectBoxes := transformProfile(object.Spatial, bounds.Vec3{}, bounds.Quat{0, 0, 0, 1})
 		if intersectsAny(placed, objectBoxes) {
 			result.OverlapIDs = append(result.OverlapIDs, object.FileID)
 		}
@@ -96,21 +105,18 @@ func evaluateContact(req SpatialRequest, prefab bounds.PrefabBounds, rotation bo
 	if !surface.Reviewed {
 		result.Codes = append(result.Codes, "SURFACE_UNREVIEWED")
 	}
-	var frame *bounds.ContactFrame
-	minGap, maxGap := 0.0, 0.01
-	switch req.Contact {
-	case "wall-backed":
-		frame = prefab.Spatial.BackContact
-		minGap, maxGap = 0.01, 0.05
-	case "wall-mounted":
-		frame = prefab.Spatial.BackContact
-		minGap, maxGap = 0.005, 0.01
-	case "floor-supported", "ceiling-mounted":
-		frame = prefab.Spatial.BottomContact
-	default:
+	contact := canonicalContactKind(req.Contact)
+	wantSurfaceType := surfaceTypeForContact(contact)
+	if wantSurfaceType == "" || surface.Type != wantSurfaceType {
 		result.Codes = append(result.Codes, "CONTACT_DIRECTION")
 		return
 	}
+	requirement := findContactRequirement(prefab.Spatial.Contacts, contact)
+	if requirement == nil {
+		result.Codes = append(result.Codes, "SUPPORT_CONTRACT_MISSING")
+		return
+	}
+	frame := findContactFrame(prefab.Spatial, requirement.FrameID)
 	if frame == nil {
 		result.Codes = append(result.Codes, "GEOMETRY_UNREVIEWED")
 		return
@@ -122,15 +128,149 @@ func evaluateContact(req SpatialRequest, prefab bounds.PrefabBounds, rotation bo
 	result.Gap = math.Max(0, signed)
 	result.Penetration = math.Max(0, -signed)
 	result.Alignment = dot(normal, mul(surfaceNormal, -1))
-	if result.Penetration > 1e-6 {
+	if result.Penetration > requirement.MaximumPenetration+1e-6 {
 		result.Codes = append(result.Codes, "SURFACE_PENETRATION")
 	}
-	if result.Gap < minGap-1e-6 || result.Gap > maxGap+1e-6 {
+	if result.Gap < requirement.MinimumGap-1e-6 || result.Gap > requirement.MaximumGap+1e-6 {
 		result.Codes = append(result.Codes, "CONTACT_GAP")
 	}
-	if result.Alignment < 0.95 {
+	if result.Alignment < requirement.DirectionAlignment {
 		result.Codes = append(result.Codes, "CONTACT_DIRECTION")
 	}
+	result.Support = contactSupport(*surface, *frame, req.Position, rotation)
+	if result.Support+1e-6 < requirement.MinimumSupport {
+		result.Codes = append(result.Codes, "INSUFFICIENT_SUPPORT")
+	}
+}
+
+func canonicalContactKind(value string) string {
+	switch value {
+	case "wall-backed", "WallBacked":
+		return "wall-backed"
+	case "wall-mounted", "WallMounted":
+		return "wall-mounted"
+	case "floor-supported", "FloorSupported":
+		return "floor-supported"
+	case "ceiling-mounted", "CeilingMounted":
+		return "ceiling-mounted"
+	default:
+		return ""
+	}
+}
+
+func surfaceTypeForContact(contact string) string {
+	switch contact {
+	case "wall-backed", "wall-mounted":
+		return "wall"
+	case "floor-supported":
+		return "floor"
+	case "ceiling-mounted":
+		return "ceiling"
+	default:
+		return ""
+	}
+}
+
+func findContactRequirement(items []bounds.ContactRequirement, contact string) *bounds.ContactRequirement {
+	for index := range items {
+		if canonicalContactKind(items[index].Kind) == contact {
+			return &items[index]
+		}
+	}
+	return nil
+}
+
+func findContactFrame(profile *bounds.SpatialProfile, id string) *bounds.ContactFrame {
+	if profile.BottomContact != nil && profile.BottomContact.ID == id {
+		return profile.BottomContact
+	}
+	if profile.BackContact != nil && profile.BackContact.ID == id {
+		return profile.BackContact
+	}
+	if profile.TopContact != nil && profile.TopContact.ID == id {
+		return profile.TopContact
+	}
+	return nil
+}
+
+type point2 struct{ x, y float64 }
+
+func contactSupport(surface bounds.SurfacePatch, frame bounds.ContactFrame, position bounds.Vec3, rotation bounds.Quat) float64 {
+	surfaceTangent := normalize(surface.Tangent)
+	surfaceBitangent := normalize(cross(surface.Normal, surfaceTangent))
+	framePoint := add(position, rotate(rotation, frame.Point))
+	frameNormal := normalize(rotate(rotation, frame.Normal))
+	frameTangent := normalize(rotate(rotation, frame.Tangent))
+	frameBitangent := normalize(cross(frameNormal, frameTangent))
+	halfX, halfY := frame.Size[0]*0.5, frame.Size[1]*0.5
+	polygon := make([]point2, 0, 4)
+	for _, signs := range [][2]float64{{-1, -1}, {1, -1}, {1, 1}, {-1, 1}} {
+		corner := add(framePoint, add(mul(frameTangent, signs[0]*halfX), mul(frameBitangent, signs[1]*halfY)))
+		delta := sub(corner, surface.Origin)
+		polygon = append(polygon, point2{dot(delta, surfaceTangent), dot(delta, surfaceBitangent)})
+	}
+	area := polygonArea(polygon)
+	if area <= 1e-12 {
+		return 0
+	}
+	clipped := clipAxis(polygon, 0, -surface.Size[0]*0.5, true)
+	clipped = clipAxis(clipped, 0, surface.Size[0]*0.5, false)
+	clipped = clipAxis(clipped, 1, -surface.Size[1]*0.5, true)
+	clipped = clipAxis(clipped, 1, surface.Size[1]*0.5, false)
+	ratio := polygonArea(clipped) / area
+	return math.Max(0, math.Min(1, ratio))
+}
+
+func clipAxis(points []point2, axis int, limit float64, keepGreater bool) []point2 {
+	if len(points) == 0 {
+		return nil
+	}
+	inside := func(point point2) bool {
+		value := point.x
+		if axis == 1 {
+			value = point.y
+		}
+		if keepGreater {
+			return value >= limit-1e-12
+		}
+		return value <= limit+1e-12
+	}
+	valueAt := func(point point2) float64 {
+		if axis == 1 {
+			return point.y
+		}
+		return point.x
+	}
+	result := make([]point2, 0, len(points)+2)
+	previous := points[len(points)-1]
+	previousInside := inside(previous)
+	for _, current := range points {
+		currentInside := inside(current)
+		if currentInside != previousInside {
+			denominator := valueAt(current) - valueAt(previous)
+			if math.Abs(denominator) > 1e-12 {
+				t := (limit - valueAt(previous)) / denominator
+				result = append(result, point2{previous.x + (current.x-previous.x)*t, previous.y + (current.y-previous.y)*t})
+			}
+		}
+		if currentInside {
+			result = append(result, current)
+		}
+		previous, previousInside = current, currentInside
+	}
+	return result
+}
+
+func polygonArea(points []point2) float64 {
+	if len(points) < 3 {
+		return 0
+	}
+	area := 0.0
+	for index, point := range points {
+		next := points[(index+1)%len(points)]
+		area += point.x*next.y - next.x*point.y
+	}
+	return math.Abs(area) * 0.5
 }
 
 func findPrefab(items []bounds.PrefabBounds, path string) (bounds.PrefabBounds, bool) {

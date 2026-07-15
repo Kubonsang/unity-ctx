@@ -1037,6 +1037,31 @@ func TestCheckSceneOKAndJSONMatches(t *testing.T) {
 	}
 }
 
+func TestCheckSceneV2UsesCompoundOBBWhenRotationFlagIsOmitted(t *testing.T) {
+	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	manifestPath := filepath.Join(t.TempDir(), "spatial.bounds.json")
+	manifest, err := bounds.Load(filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Scene = "Assets/Scenes/SimpleScene.unity"
+	// Deliberately separate the legacy AABB from the reviewed OBB. The v2
+	// result must follow the OBB even when identity rotation is implicit.
+	manifest.Objects[0].Bounds.Center = bounds.Vec3{100, 100, 100}
+	if err := bounds.Save(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := app.New()
+	got, code := svc.Check("scene", scenePath, core.ViewCompact, false, app.CheckArgs{
+		Manifest: manifestPath, Prefab: "Assets/Prefabs/Bookcase.prefab",
+		HasPosition: true, Position: [3]float64{2.5, -0.5, 0},
+	})
+	if code != 0 || got.Status != "WARN" || !strings.Contains(got.Body, "codes=OBB_OVERLAP") {
+		t.Fatalf("expected v2 OBB overlap without --rotation, code=%d result=%#v", code, got)
+	}
+}
+
 func TestSuggestRejectsUnsupportedNamespace(t *testing.T) {
 	path := filepath.Join("..", "..", "testdata", "prefabs", "enemy.prefab")
 	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")

@@ -128,6 +128,7 @@ type SuggestArgs struct {
 	PrefabGUID string
 	Project    string
 	SurfaceID  string
+	Contact    string
 }
 
 type ImpactFileHit struct {
@@ -169,6 +170,7 @@ type SuggestPayload struct {
 	Count      int                       `json:"count"`
 	Candidates []SuggestCandidatePayload `json:"candidates"`
 	SurfaceID  string                    `json:"surface_id,omitempty"`
+	Contact    string                    `json:"contact,omitempty"`
 }
 
 type BenchMetricPayload struct {

@@ -111,8 +111,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	seenFlags := visitedFlags(flagSet)
-	if command != "check" && anyFlagVisited(seenFlags, "rotation", "contact") {
-		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --rotation, --surface-id, or --contact\n", command)
+	if command != "check" && command != "suggest" && anyFlagVisited(seenFlags, "rotation", "contact") {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --rotation or --contact\n", command)
 		return 2
 	}
 	if command != "check" && command != "suggest" && seenFlags["surface-id"] {
@@ -426,6 +426,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
+	if command == "suggest" && seenFlags["contact"] && *contact != "wall-backed" && *contact != "wall-mounted" {
+		_, _ = io.WriteString(stderr, "ERROR suggest supports --contact wall-backed|wall-mounted\n")
+		return 2
+	}
 	if command == "patch" {
 		if namespace != "scene" {
 			_, _ = fmt.Fprintf(stderr, "ERROR patch not implemented for namespace=%s\n", namespace)
@@ -691,6 +695,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			_, _ = io.WriteString(stderr, "ERROR suggest --align wall requires --surface-id\n")
 			return 2
 		}
+		if seenFlags["contact"] && *align != "wall" {
+			_, _ = io.WriteString(stderr, "ERROR suggest --contact requires --align wall\n")
+			return 2
+		}
 		if anyFlagVisited(seenFlags, "id", "name", "type", "component", "field", "value", "write", "scenes", "prefabs", "position", "op", "task", "focus", "max-tokens", "patch", "ack-impact", "mode") {
 			_, _ = io.WriteString(stderr, "ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --scenes, --prefabs, --position, --op, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode\n")
 			return 2
@@ -935,6 +943,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			PrefabGUID: *prefabGUID,
 			Project:    *project,
 			SurfaceID:  *surfaceID,
+			Contact:    *contact,
 		})
 
 		if *jsonOutput {

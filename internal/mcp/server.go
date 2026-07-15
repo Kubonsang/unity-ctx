@@ -264,7 +264,7 @@ func buildTools() []tool {
 		{
 			Name:        "unity_suggest_wall",
 			Description: "Return deterministic read-only wall-aligned candidate transforms from a reviewed Spatial Manifest v2 surface.",
-			InputSchema: schema(`{"type":"object","properties":{"file":{"type":"string"},"manifest":{"type":"string"},"prefab":{"type":"string"},"surface_id":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":20}},"required":["file","manifest","prefab","surface_id"]}`),
+			InputSchema: schema(`{"type":"object","properties":{"file":{"type":"string"},"manifest":{"type":"string"},"prefab":{"type":"string"},"surface_id":{"type":"string"},"contact":{"type":"string","enum":["wall-backed","wall-mounted"]},"count":{"type":"integer","minimum":1,"maximum":20}},"required":["file","manifest","prefab","surface_id"]}`),
 			handler: func(svc *app.Service, a map[string]any) (string, bool) {
 				count := 4
 				if value, ok := int64Arg(a, "count"); ok {
@@ -274,6 +274,7 @@ func buildTools() []tool {
 					Manifest:  strArg(a, "manifest"),
 					Prefab:    strArg(a, "prefab"),
 					SurfaceID: strArg(a, "surface_id"),
+					Contact:   strArg(a, "contact"),
 					Align:     "wall",
 					Count:     count,
 				})

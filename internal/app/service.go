@@ -1520,11 +1520,22 @@ func (s *Service) Suggest(namespace, path string, view core.View, jsonOut bool, 
 		Count:     count,
 		Align:     suggestplan.Align(align),
 		SurfaceID: args.SurfaceID,
+		Contact:   args.Contact,
 	})
 	if err != nil {
 		if errors.Is(err, check.ErrNeedGeometryV2) {
 			result.Status = "UNKNOWN"
 			result.Body = "UNKNOWN reason=NEED_GEOMETRY_V2"
+			return result, 0
+		}
+		if errors.Is(err, check.ErrGeometryUnreviewed) || errors.Is(err, check.ErrRoomGeometryUnreviewed) {
+			result.Status = "UNKNOWN"
+			result.Body = fmt.Sprintf("UNKNOWN reason=%s", err)
+			return result, 0
+		}
+		if strings.HasPrefix(err.Error(), "SUPPORT_CONTRACT_MISSING") || strings.HasPrefix(err.Error(), "SUPPORT_REGION_INVALID") {
+			result.Status = "UNKNOWN"
+			result.Body = "UNKNOWN reason=" + err.Error()
 			return result, 0
 		}
 		result.Status = "ERROR"
@@ -1793,7 +1804,7 @@ func (s *Service) Check(namespace, path string, view core.View, jsonOut bool, ar
 		return result, 1
 	}
 
-	if args.HasRotation || strings.TrimSpace(args.SurfaceID) != "" || strings.TrimSpace(args.Contact) != "" {
+	if manifest.Version == bounds.ManifestVersion2 || args.HasRotation || strings.TrimSpace(args.SurfaceID) != "" || strings.TrimSpace(args.Contact) != "" {
 		rotation := bounds.Quat{0, 0, 0, 1}
 		if args.HasRotation {
 			rotation = bounds.Quat(args.Rotation)
@@ -1802,6 +1813,11 @@ func (s *Service) Check(namespace, path string, view core.View, jsonOut bool, ar
 		if errors.Is(spatialErr, check.ErrNeedGeometryV2) {
 			result.Status = "UNKNOWN"
 			result.Body = fmt.Sprintf("UNKNOWN reason=NEED_GEOMETRY_V2 manifest=%s prefab=%s", args.Manifest, args.Prefab)
+			return result, 0
+		}
+		if errors.Is(spatialErr, check.ErrGeometryUnreviewed) || errors.Is(spatialErr, check.ErrRoomGeometryUnreviewed) {
+			result.Status = "UNKNOWN"
+			result.Body = fmt.Sprintf("UNKNOWN reason=%s manifest=%s prefab=%s", spatialErr, args.Manifest, args.Prefab)
 			return result, 0
 		}
 		if spatialErr != nil {
@@ -1814,7 +1830,7 @@ func (s *Service) Check(namespace, path string, view core.View, jsonOut bool, ar
 			status = "WARN"
 		}
 		result.Status = status
-		result.Body = fmt.Sprintf("%s manifest=%s prefab=%s position=%g,%g,%g rotation=%g,%g,%g,%g surface_id=%s contact=%s codes=%s overlap_ids=%s gap=%g penetration=%g alignment=%g", status, args.Manifest, args.Prefab, args.Position[0], args.Position[1], args.Position[2], rotation[0], rotation[1], rotation[2], rotation[3], args.SurfaceID, args.Contact, joinStringsOrNone(spatial.Codes), joinIDsOrNone(spatial.OverlapIDs), spatial.Gap, spatial.Penetration, spatial.Alignment)
+		result.Body = fmt.Sprintf("%s manifest=%s prefab=%s position=%g,%g,%g rotation=%g,%g,%g,%g surface_id=%s contact=%s codes=%s overlap_ids=%s gap=%g penetration=%g alignment=%g support=%g", status, args.Manifest, args.Prefab, args.Position[0], args.Position[1], args.Position[2], rotation[0], rotation[1], rotation[2], rotation[3], args.SurfaceID, args.Contact, joinStringsOrNone(spatial.Codes), joinIDsOrNone(spatial.OverlapIDs), spatial.Gap, spatial.Penetration, spatial.Alignment, spatial.Support)
 		return result, 0
 	}
 

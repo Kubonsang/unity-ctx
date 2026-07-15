@@ -1,11 +1,14 @@
 package suggest
 
 import (
+	"errors"
+	"math"
 	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/Kubonsang/unity-ctx/internal/bounds"
+	"github.com/Kubonsang/unity-ctx/internal/check"
 )
 
 func TestPlanWallUsesReviewedSurfaceAndRotation(t *testing.T) {
@@ -20,11 +23,84 @@ func TestPlanWallUsesReviewedSurfaceAndRotation(t *testing.T) {
 	if result.Align != AlignWall || len(result.Candidates) != 4 {
 		t.Fatalf("unexpected result: %#v", result)
 	}
+	if result.Contact != "wall-backed" {
+		t.Fatalf("contact=%q, want wall-backed", result.Contact)
+	}
 	for _, candidate := range result.Candidates {
 		if candidate.Rotation == (bounds.Quat{}) {
 			t.Fatal("wall candidate has no rotation")
 		}
+		if math.Abs(candidate.Position[1]-0.005) > 1e-6 {
+			t.Fatalf("bookcase must be floor supported, y=%g", candidate.Position[1])
+		}
+		wall, err := checkWallCandidate(manifest, candidate, "wall-backed", "wall-north")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if math.Abs(wall.Gap-0.03) > 1e-6 || wall.Support < 0.999999 {
+			t.Fatalf("unexpected wall evidence: %#v", wall)
+		}
+		floor, err := checkWallCandidate(manifest, candidate, "floor-supported", "floor-main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if math.Abs(floor.Gap-0.005) > 1e-6 || floor.Support < 0.6 {
+			t.Fatalf("unexpected floor evidence: %#v", floor)
+		}
 	}
+}
+
+func TestPlanWallUsesWallMountedPolicyWithoutFloorProjection(t *testing.T) {
+	manifest, err := bounds.Load(filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Prefabs[0].Spatial.Contacts = []bounds.ContactRequirement{{
+		ID: "mount", Kind: "WallMounted", FrameID: "back", Target: "surface:wall",
+		MinimumGap: .005, MaximumGap: .01, MinimumSupport: 1, DirectionAlignment: .95,
+	}}
+	result, err := Plan(Request{Manifest: manifest, Prefab: "Assets/Prefabs/Bookcase.prefab", Count: 1, Align: AlignWall, SurfaceID: "wall-north"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := checkWallCandidate(manifest, result.Candidates[0], "wall-mounted", "wall-north")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if math.Abs(evidence.Gap-.0075) > 1e-6 {
+		t.Fatalf("gap=%g, want .0075", evidence.Gap)
+	}
+}
+
+func TestPlanWallRejectsMissingReviewedContactPolicy(t *testing.T) {
+	manifest, err := bounds.Load(filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Prefabs[0].Spatial.Contacts = nil
+	_, err = Plan(Request{Manifest: manifest, Prefab: "Assets/Prefabs/Bookcase.prefab", Count: 1, Align: AlignWall, SurfaceID: "wall-north"})
+	if err == nil || err.Error() != `SUPPORT_CONTRACT_MISSING contact=""` {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestPlanWallRejectsUnreviewedGeometry(t *testing.T) {
+	manifest, err := bounds.Load(filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Prefabs[0].Spatial.Reviewed = false
+	_, err = Plan(Request{Manifest: manifest, Prefab: "Assets/Prefabs/Bookcase.prefab", Count: 1, Align: AlignWall, SurfaceID: "wall-north"})
+	if !errors.Is(err, check.ErrGeometryUnreviewed) {
+		t.Fatalf("got %v, want GEOMETRY_UNREVIEWED", err)
+	}
+}
+
+func checkWallCandidate(manifest bounds.Manifest, candidate Candidate, contact, surfaceID string) (check.SpatialResult, error) {
+	return check.CheckSpatialPlacement(check.SpatialRequest{
+		Manifest: manifest, Prefab: "Assets/Prefabs/Bookcase.prefab", Position: candidate.Position,
+		Rotation: candidate.Rotation, SurfaceID: surfaceID, Contact: contact,
+	})
 }
 
 func TestPlanReturnsFourDirectionalCandidates(t *testing.T) {

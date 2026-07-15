@@ -110,6 +110,9 @@ func formatSuggestBody(manifestPath, prefabPath string, plan suggestplan.Result)
 			len(plan.Candidates)-clearCount,
 		),
 	}
+	if plan.Align == suggestplan.AlignWall {
+		lines[0] += fmt.Sprintf(" surface_id=%s contact=%s", plan.Near.Name, plan.Contact)
+	}
 
 	for _, candidate := range plan.Candidates {
 		if plan.Align == suggestplan.AlignWall {
@@ -251,6 +254,7 @@ func suggestPayloadFromPlan(manifestPath string, plan suggestplan.Result) *Sugge
 		Count:      plan.Count,
 		Candidates: candidates,
 		SurfaceID:  surfaceID,
+		Contact:    plan.Contact,
 	}
 }
 
