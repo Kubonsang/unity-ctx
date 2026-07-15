@@ -142,7 +142,7 @@ unity-ctx scene apply Assets/Scenes/GameLevel.unity --patch /tmp/chair.patch.jso
 
 ## Spatial geometry v0.9
 
-`scene scan --mode editor --geometry detailed` asks the Unity Editor to emit Spatial Manifest v2: compound local OBBs, semantic contact frames, and reviewed planar surfaces. `scene check` then proves rotated overlap and contact gap/penetration/support, and `scene suggest --align wall --surface-id ...` returns deterministic wall candidates. Manifest v1 remains supported for existing AABB workflows; contact requests against it return `UNKNOWN NEED_GEOMETRY_V2`.
+`scene scan --mode editor --geometry detailed` asks the Unity Editor to emit Spatial Manifest v2: Collider-first compound local OBB drafts, semantic contact frames, and planar surface candidates. Scanned geometry is unreviewed until the Unity workflow or an approved matching contract verifies it. `scene check` then proves rotated overlap and finite-surface contact gap/penetration/support, and `scene suggest --align wall --surface-id ...` returns deterministic candidates from approved contact requirements. Manifest v1 remains supported for existing AABB workflows; contact requests against it return `UNKNOWN NEED_GEOMETRY_V2`.
 
 The MCP server adds read-only `unity_spatial_check` and `unity_suggest_wall` tools. Unity remains the final scene authority, raw FBX files are not parsed by Go, and no mutation tool is added to MCP.
 
@@ -152,12 +152,15 @@ Reusable asset and `SupportedBy` interaction contracts are separate from scene s
 
 ```bash
 unity-ctx spatial validate Library/DungeonDecorator/SpatialDrafts/banner.spatial.json
-unity-ctx spatial review --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json --decision Approved --reviewer student-01 --write
 unity-ctx spatial diff --current Assets/SpatialContracts/Assets/<guid>.spatial.json --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json
-unity-ctx spatial apply --current Assets/SpatialContracts/Assets/<guid>.spatial.json --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json --write
+unity-ctx spatial apply --current Assets/SpatialContracts/Assets/<guid>.spatial.json --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json
 ```
 
-`apply` is dry-run unless `--write` is explicit. It accepts only an `Approved` draft whose technical evidence has zero errors and whose human review matches the latest contract and capture hashes. Contract or capture changes therefore make old approvals stale by construction. These mutation commands are CLI-only and are not exposed by `unity-ctx mcp`.
+The public CLI can validate, diff, record non-approval feedback, and dry-run an apply. It cannot create `Approved` evidence or execute `spatial apply --write`. Only the local human-review bridge can call the authorized approval/write APIs after verifying its one-time evidence. Geometry, interaction, or capture changes invalidate technical and human evidence. MCP exposes neither approval nor mutation.
+
+## Surface Arrangement contracts
+
+`unity-ctx arrangement validate <file>` strictly validates the stored `spec_hash`. `unity-ctx arrangement hash <file>` instead recomputes the normalized replacement when an edited draft still contains its old hash. Arrangement IDs are portable ASCII identifiers up to 128 characters and `edge_margin` is limited to 0–100 meters, keeping Go and Unity canonical hashes identical without exponent or Unicode ordering ambiguity.
 
 ## Commands
 
@@ -309,10 +312,17 @@ unity-ctx scene suggest Stage01.unity \
   --prefab-guid abc-guid-123 \
   --out chair.patch.json \
   --pick 1
+
+# Wall-backed furniture uses its approved wall and floor requirements
+unity-ctx scene suggest Stage01.unity \
+  --manifest Stage01.spatial.json \
+  --prefab Assets/Props/Bookcase.fbx \
+  --align wall --surface-id wall-north \
+  --contact wall-backed --count 4
 ```
 
-Required: `--manifest`, `--prefab`, `--near`
-Optional: `--count` (default 4, max 4), `--align floor|grid` (default `floor`), `--out`, `--pick` (default 1), `--prefab-guid`
+Required: `--manifest`, `--prefab`, and either `--near` or `--align wall --surface-id ID`.
+Optional: `--count` (default 4, max 4), `--align floor|grid|wall` (default `floor`), wall-only `--contact wall-backed|wall-mounted`, `--out`, `--pick` (default 1), `--prefab-guid`.
 
 `--pick` and `--prefab-guid` require `--out`.
 
@@ -730,8 +740,8 @@ These are current gaps, documented honestly.
 **`scene scan` requires Unity Editor.**
 `scan` is the only command that requires a running Unity Editor instance. All other commands — including `suggest`, `patch`, `diff`, `apply`, `impact`, and all read commands — work without the Editor. If the Editor is not running, `scan` fails with `ERROR SCAN_EDITOR_FAILED`.
 
-**`--align wall` is not implemented.**
-`scene suggest` supports `--align floor` and `--align grid`. Wall alignment is excluded from v0.5 and returns an error if specified.
+**Wall suggestions require reviewed v2 evidence.**
+`--align wall` requires a reviewed `SurfacePatch` and an approved, GUID/dependency-hash-matched Spatial Contract. Missing or stale evidence returns `UNKNOWN`; it never falls back to AABB or an invented contact policy.
 
 **`prefab set` does not support `--name` or `--component` targeting.**
 Only `--id` (fileID) is accepted. Use `prefab inspect` to find the fileID first.

@@ -36,12 +36,12 @@ var commandSpecs = map[string]commandSpec{
 	"impact":       {"scenes/prefabs that reference a prefab (prefab namespace)", "--project DIR [--scenes a,b] [--json]"},
 	"set":          {"set a field; dry-run first, --write to commit", "--field F --value V [--id N] [--write]  (prefab: --project DIR --id N --ack-impact) [--json]"},
 	"reposition":   {"set a Transform's m_LocalPosition; dry-run first, --write to commit (scene)", "--id N --position x,y,z [--write] [--json]"},
-	"scan":         {"generate a bounds manifest via the Unity Editor (scene)", "--mode editor --project DIR --out FILE [--prefabs a,b] [--json]"},
-	"check":        {"placement overlap check against a manifest (scene)", "--manifest FILE --prefab P --position x,y,z [--json]"},
+	"scan":         {"generate a bounds manifest via the Unity Editor (scene)", "--mode editor --project DIR --out FILE [--prefabs a,b] [--geometry detailed] [--contracts DIR] [--json]"},
+	"check":        {"placement overlap/contact check against a manifest (scene)", "--manifest FILE --prefab P --position x,y,z [--rotation x,y,z,w --surface-id ID --contact KIND] [--json]"},
 	"patch":        {"build a patch plan (scene): place_prefab (v1), reparent or delete (v2 ops[])", "--op place_prefab --manifest FILE --prefab P --position x,y,z [--prefab-guid G] [--project DIR] | --op reparent --id N --new-parent M | --op delete --id N [--cascade]  [--json]"},
 	"diff":         {"summarize a persisted patch plan (scene; v1 or v2)", "--patch FILE [--json]"},
 	"apply":        {"apply a patch plan; dry-run first, --write to commit (scene)", "--patch FILE [--write] (reparent/delete: --ack-impact; delete --write requires --project; [--project DIR for cross-file report]) [--json]"},
-	"suggest":      {"rank prefab placement candidates near an anchor (scene)", "--manifest FILE --prefab P --near A [--count N] [--align floor|grid] [--out FILE] [--pick N] [--prefab-guid G] [--project DIR] [--json]"},
+	"suggest":      {"rank prefab placement candidates near an anchor or reviewed wall (scene)", "--manifest FILE --prefab P (--near A [--align floor|grid] | --align wall --surface-id ID [--contact wall-backed|wall-mounted]) [--count N] [--json]"},
 }
 
 func knownCommand(name string) bool {

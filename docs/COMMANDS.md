@@ -365,18 +365,20 @@ ERROR manifest scene mismatch file=Stage01.unity manifest_scene=OtherScene.unity
 unity-ctx scene suggest Stage01.unity --manifest Stage01.bounds.json --prefab Assets/Prefabs/Chair.prefab --near 1000
 unity-ctx scene suggest Stage01.unity --manifest Stage01.bounds.json --prefab Assets/Prefabs/Chair.prefab --near Table_01 --align grid --count 2
 unity-ctx scene suggest Stage01.unity --manifest Stage01.bounds.json --prefab Assets/Prefabs/Chair.prefab --near 1000 --json
+unity-ctx scene suggest Stage01.unity --manifest Stage01.spatial.json --prefab Assets/Props/Bookcase.fbx --align wall --surface-id wall-north --contact wall-backed
 ```
 
 Required flags:
 
 - `--manifest`
 - `--prefab`
-- `--near`
+- `--near`, unless `--align wall` is selected
 
 Optional flags:
 
 - `--count`
 - `--align`
+- `--surface-id` and `--contact wall-backed|wall-mounted` for wall alignment
 - `--json`
 - `--project` (with `--out`: auto-resolve the prefab GUID from `.meta`; see v0.5d below)
 
@@ -390,8 +392,9 @@ Rules:
 - Exact-name anchor matches must resolve to a single object. Ambiguous names return `ERROR AMBIGUOUS_NAME ...`.
 - `--count` defaults to `4` when omitted. If provided, it must be `>= 1`. The planner emits at most `4` ranked candidates.
 - `--align` defaults to `floor`.
-- `suggest` supports only `--align floor|grid`.
-- `--align wall` is excluded from v0.5c and is rejected.
+- `suggest` supports `--align floor|grid|wall`.
+- `--align wall` requires `--surface-id`, Spatial Manifest v2, reviewed geometry/surface evidence, and an approved contact policy. If exactly one wall policy exists it is inferred; otherwise pass `--contact` explicitly.
+- A simultaneous approved `FloorSupported` requirement is projected and validated with the wall requirement. Missing or stale evidence returns `UNKNOWN` instead of inventing a placement.
 - Compact output starts with one summary line, followed by one `CANDIDATE` line per returned suggestion.
 - `--json` returns the normal envelope plus a nested `suggest` payload with `manifest`, `prefab`, `anchor`, `align`, `count`, and `candidates`.
 
@@ -458,7 +461,8 @@ ERROR suggest requires --manifest
 ERROR suggest requires --prefab
 ERROR suggest requires --near
 ERROR suggest requires --count >= 1
-ERROR suggest supports only --align floor|grid
+ERROR suggest supports only --align floor|grid|wall
+ERROR suggest supports --contact wall-backed|wall-mounted
 ERROR suggest supports only --view compact
 ERROR suggest does not accept --id, --name, --type, --component, --field, --value, --write, --scenes, --prefabs, --position, --op, --task, --focus, --max-tokens, --patch, --ack-impact, or --mode
 ERROR missing anchor near="Missing"
@@ -1369,12 +1373,12 @@ unity-ctx scene check Assets/Scenes/Room.unity --manifest Room.spatial.json --pr
 Request read-only wall candidates:
 
 ```bash
-unity-ctx scene suggest Assets/Scenes/Room.unity --manifest Room.spatial.json --prefab Assets/Props/Banner.prefab --align wall --surface-id wall-north --count 4
+unity-ctx scene suggest Assets/Scenes/Room.unity --manifest Room.spatial.json --prefab Assets/Props/Banner.prefab --align wall --surface-id wall-north --contact wall-mounted --count 4
 ```
 
 Manifest v1 stays readable for legacy bounds work. A rotated/contact request against v1 returns `UNKNOWN NEED_GEOMETRY_V2`; it never estimates a contact frame. JSON fields, floating-point formatting, and ordering remain deterministic.
 
-The MCP server exposes `unity_spatial_check` and `unity_suggest_wall`. Both are read-only. Apply and other mutation commands remain CLI-only and dry-run-first.
+The MCP server exposes `unity_spatial_check` and `unity_suggest_wall`. Both are read-only, and no approval or mutation tool is exposed.
 
 ## Spatial Contracts
 
@@ -1384,29 +1388,37 @@ Validate a strict asset or interaction contract. Unknown JSON fields, invalid ax
 unity-ctx spatial validate --json Library/DungeonDecorator/SpatialDrafts/banner.spatial.json
 ```
 
-Record one of the three human decisions. Approval additionally requires deterministic technical evidence with zero errors and a capture hash:
+The public CLI can record non-approval feedback such as `RevisionRequested` or `UnableToJudge`:
 
 ```bash
 unity-ctx spatial review \
   --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json \
-  --decision Approved \
+  --decision RevisionRequested \
   --reviewer student-01 \
   --issues "contact-frame,gap" \
-  --comment "Looks naturally mounted in all four views" \
+  --comment "Back face appears detached in the side view" \
   --write --json
 ```
 
-`RevisionRequested` and `UnableToJudge` are valid human decisions but cannot be applied to tracked contract storage.
+`Approved` cannot be created by the public CLI. The local human-review bridge must verify one-time approval evidence bound to the contract hash, capture hash, and reviewer. `RevisionRequested` and `UnableToJudge` cannot be applied to tracked contract storage.
 
-Compare and apply an approved draft. Both operations are stable and `apply` remains dry-run-first:
+Compare and dry-run an approved draft from the public CLI:
 
 ```bash
 unity-ctx spatial diff --current Assets/SpatialContracts/Assets/<guid>.spatial.json --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json --json
 unity-ctx spatial apply --current Assets/SpatialContracts/Assets/<guid>.spatial.json --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json --json
-unity-ctx spatial apply --current Assets/SpatialContracts/Assets/<guid>.spatial.json --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json --write --json
 ```
 
-On write, the destination is normalized, written through a temporary file, reloaded, and hash-verified. Existing destinations receive a `.bak` file. `scene scan --contracts Assets/SpatialContracts` overlays only approved asset contracts whose dependency hash still matches.
+Public `spatial apply --write` is rejected. The authorized local bridge re-verifies approval evidence before atomically writing, reloading, and hash-verifying the canonical destination; existing destinations receive a `.bak` file. `scene scan --contracts Assets/SpatialContracts` overlays only approved asset contracts whose path, GUID, and non-empty dependency hash all match, and carries their reviewed contact policies into the manifest.
+
+## Surface Arrangement v1
+
+```bash
+unity-ctx arrangement validate Assets/SpatialContracts/Arrangements/reading-table.arrangement.json --json
+unity-ctx arrangement hash Assets/SpatialContracts/Arrangements/reading-table.arrangement.json --json
+```
+
+`validate` rejects a stale embedded `spec_hash`. `hash` performs the same strict schema checks but ignores the old embedded hash and prints the normalized replacement. IDs use the shared portable ASCII grammar (maximum 128 characters), and `edge_margin` is limited to 0–100 meters so Go and Unity use the same canonical number and member ordering rules.
 
 ## Output Stability Rules
 
