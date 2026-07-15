@@ -158,6 +158,9 @@ func Validate(spec Spec) error {
 	if spec.MaxStackHeight < 1 || spec.MaxStackHeight > MaximumStackHeight {
 		return fmt.Errorf("invalid surface arrangement: max_stack_height must be between 1 and %d", MaximumStackHeight)
 	}
+	if spec.SeedOffset < 0 {
+		return errors.New("invalid surface arrangement: seed_offset must be non-negative")
+	}
 	if spec.SpecHash == "" || spec.SpecHash != ContentHash(spec) {
 		return errors.New("invalid surface arrangement: spec_hash does not match normalized content")
 	}
@@ -225,5 +228,12 @@ func finite(value float64) bool {
 }
 
 func round(value float64) float64 {
-	return math.Round(value*1_000_000) / 1_000_000
+	// Unity stores arrangement numbers as System.Single. Reproduce that wire
+	// precision before rounding so Go and C# hash boundary decimals identically.
+	value = float64(float32(value))
+	rounded := math.Round(value*1_000_000) / 1_000_000
+	if math.Abs(rounded) < 0.0000005 {
+		return 0
+	}
+	return rounded
 }

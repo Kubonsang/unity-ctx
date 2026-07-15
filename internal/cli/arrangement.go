@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/Kubonsang/unity-ctx/internal/surfacearrangement"
 )
@@ -72,7 +73,21 @@ func parseArrangementFile(command string, args []string, stderr io.Writer) (stri
 	flags := flag.NewFlagSet("unity-ctx arrangement "+command, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	jsonOutput := flags.Bool("json", false, "")
-	if err := flags.Parse(args); err != nil {
+	// The public syntax is `<file> [--json]`. Go's flag package stops at the
+	// first positional argument, so move flags ahead while preserving their
+	// relative order and allow the documented order as well as flags-first.
+	ordered := make([]string, 0, len(args))
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			ordered = append(ordered, arg)
+		}
+	}
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "-") {
+			ordered = append(ordered, arg)
+		}
+	}
+	if err := flags.Parse(ordered); err != nil {
 		_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
 		return "", false, false
 	}

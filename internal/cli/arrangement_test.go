@@ -21,13 +21,18 @@ func TestArrangementValidateStableOutput(t *testing.T) {
 }
 
 func TestArrangementValidateStableJSON(t *testing.T) {
-	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	if code := runArrangement([]string{"validate", "--json", arrangementFixture}, stdout, stderr); code != 0 {
-		t.Fatalf("code=%d stderr=%s", code, stderr.String())
-	}
 	want := `{"file":"` + arrangementFixture + `","members":3,"preset":"InUse","spec_hash":"` + arrangementGoldenHash + `","status":"OK","surface_arrangement_version":1}` + "\n"
-	if stdout.String() != want || stderr.Len() != 0 {
-		t.Fatalf("stdout=%q want=%q stderr=%q", stdout.String(), want, stderr.String())
+	for _, args := range [][]string{
+		{"validate", "--json", arrangementFixture},
+		{"validate", arrangementFixture, "--json"},
+	} {
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		if code := runArrangement(args, stdout, stderr); code != 0 {
+			t.Fatalf("args=%v code=%d stderr=%s", args, code, stderr.String())
+		}
+		if stdout.String() != want || stderr.Len() != 0 {
+			t.Fatalf("args=%v stdout=%q want=%q stderr=%q", args, stdout.String(), want, stderr.String())
+		}
 	}
 }
 

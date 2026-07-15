@@ -1,6 +1,7 @@
 package surfacearrangement
 
 import (
+	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
@@ -85,6 +86,7 @@ func TestValidateRejectsOutOfRangeValues(t *testing.T) {
 		{"non-finite slider", func(s *Spec) { s.Stacking = math.Inf(1) }, "amount, orderliness"},
 		{"edge margin", func(s *Spec) { s.EdgeMargin = -0.001 }, "edge_margin"},
 		{"stack height", func(s *Spec) { s.MaxStackHeight = 4 }, "max_stack_height"},
+		{"negative seed offset", func(s *Spec) { s.SeedOffset = -1 }, "seed_offset must be non-negative"},
 		{"member count", func(s *Spec) { s.Members[0].MinimumCount = 4 }, "counts must satisfy"},
 		{"total maximum", func(s *Spec) { s.Members[0].MaximumCount = 10 }, "total member counts"},
 		{"member weight", func(s *Spec) { s.Members[0].SelectionWeight = -0.1 }, "selection_weight"},
@@ -98,6 +100,56 @@ func TestValidateRejectsOutOfRangeValues(t *testing.T) {
 			Normalize(&spec)
 			if err := Validate(spec); err == nil || !strings.Contains(err.Error(), test.message) {
 				t.Fatalf("Validate() error = %v, want containing %q", err, test.message)
+			}
+		})
+	}
+}
+
+func TestNormalizeMatchesUnityFloat32BoundarySemantics(t *testing.T) {
+	spec := validSpec()
+	spec.Members[0].SelectionWeight = 0.9999995
+	spec.Amount = 0.5500005
+	spec.Orderliness = math.Copysign(0, -1)
+	spec.Grouping = 0.0000005
+	spec.Stacking = 0.9999995
+	spec.EdgeMargin = 0.0000005
+
+	Normalize(&spec)
+
+	if spec.Members[0].SelectionWeight != 1 || spec.Amount != 0.55 || spec.Orderliness != 0 ||
+		spec.Grouping != 0 || spec.Stacking != 1 || spec.EdgeMargin != 0 {
+		t.Fatalf("unexpected float32 normalization: weight=%v amount=%v orderliness=%v grouping=%v stacking=%v edge=%v",
+			spec.Members[0].SelectionWeight, spec.Amount, spec.Orderliness, spec.Grouping, spec.Stacking, spec.EdgeMargin)
+	}
+	if math.Signbit(spec.Orderliness) || math.Signbit(spec.Grouping) || math.Signbit(spec.EdgeMargin) {
+		t.Fatal("normalized zero values must not retain a negative sign")
+	}
+}
+
+func TestSharedFloat32BoundaryFixture(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "arrangements", "float32_boundaries.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		SchemaVersion int `json:"schema_version"`
+		Cases         []struct {
+			Name       string  `json:"name"`
+			Input      float64 `json:"input"`
+			Normalized float64 `json:"normalized"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.SchemaVersion != 1 || len(fixture.Cases) == 0 {
+		t.Fatalf("invalid shared float32 fixture: version=%d cases=%d", fixture.SchemaVersion, len(fixture.Cases))
+	}
+	for _, test := range fixture.Cases {
+		t.Run(test.Name, func(t *testing.T) {
+			got := round(test.Input)
+			if got != test.Normalized || (got == 0 && math.Signbit(got)) {
+				t.Fatalf("round(%v)=%v signbit=%v want=%v", test.Input, got, math.Signbit(got), test.Normalized)
 			}
 		})
 	}
