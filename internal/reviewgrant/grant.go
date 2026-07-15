@@ -135,6 +135,7 @@ type heldDestinationLock struct {
 	path   string
 	record destinationLockRecord
 	info   os.FileInfo
+	file   *os.File
 }
 
 type destinationLockSnapshot struct {
@@ -603,11 +604,14 @@ func (ledger *Ledger) acquireDestinationLock(destination, nonceHash string) (hel
 			}
 			return heldDestinationLock{}, fmt.Errorf("approval destination lock durability is uncertain and requires manual recovery: %w", err)
 		}
-		snapshot, snapshotErr := readDestinationLockSnapshot(lockPath)
+		snapshot, lockFile, snapshotErr := openDestinationLockSnapshot(lockPath)
 		if snapshotErr != nil || snapshot.record != record {
+			if lockFile != nil {
+				_ = lockFile.Close()
+			}
 			return heldDestinationLock{}, errors.New("approval destination lock ownership could not be confirmed after acquisition; manual recovery is required")
 		}
-		return heldDestinationLock{path: lockPath, record: record, info: snapshot.info}, nil
+		return heldDestinationLock{path: lockPath, record: record, info: snapshot.info, file: lockFile}, nil
 	}
 	return heldDestinationLock{}, errors.New("approval destination lock changed repeatedly while it was being acquired")
 }
@@ -667,12 +671,15 @@ func refuseExistingDestinationLock(lockPath, destinationHash string, now time.Ti
 }
 
 func releaseDestinationLock(held heldDestinationLock, syncDirectory func(string) error) {
+	if held.file != nil {
+		defer held.file.Close()
+	}
 	// Never move a canonical lock that is already owned by a successor. There
 	// is no portable compare-and-unlink primitive, so the quarantine check below
 	// remains the second fail-closed fence for a same-user swap in the narrow
 	// interval between this validation and Rename.
 	current, err := readDestinationLockSnapshot(held.path)
-	if err != nil || current.record != held.record || held.info == nil || !os.SameFile(current.info, held.info) {
+	if err != nil || current.record != held.record || held.info == nil || held.file == nil || !os.SameFile(current.info, held.info) {
 		return
 	}
 	leaseID, err := newLeaseID()
@@ -706,8 +713,12 @@ func (lease *destinationLockLease) AssertOwned() error {
 	}
 	for _, held := range lease.locks {
 		snapshot, err := readDestinationLockSnapshot(held.path)
-		if err != nil || snapshot.record != held.record || held.info == nil || !os.SameFile(snapshot.info, held.info) {
+		if err != nil || snapshot.record != held.record || held.info == nil || held.file == nil || !os.SameFile(snapshot.info, held.info) {
 			return errors.New("approval destination lock ownership was lost; manual recovery is required")
+		}
+		openInfo, err := held.file.Stat()
+		if err != nil || !os.SameFile(openInfo, held.info) {
+			return errors.New("approval destination lock lease handle was lost; manual recovery is required")
 		}
 	}
 	return nil
@@ -717,8 +728,10 @@ func (lease *destinationLockLease) Release() {
 	if lease == nil {
 		return
 	}
-	for index := len(lease.locks) - 1; index >= 0; index-- {
-		held := lease.locks[index]
+	locks := lease.locks
+	lease.locks = nil
+	for index := len(locks) - 1; index >= 0; index-- {
+		held := locks[index]
 		releaseDestinationLock(held, lease.syncDirectory)
 	}
 }
@@ -729,48 +742,60 @@ func readDestinationLock(path string) (destinationLockRecord, error) {
 }
 
 func readDestinationLockSnapshot(path string) (destinationLockSnapshot, error) {
+	snapshot, file, err := openDestinationLockSnapshot(path)
+	if err != nil {
+		return destinationLockSnapshot{}, err
+	}
+	if err := file.Close(); err != nil {
+		return destinationLockSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+func openDestinationLockSnapshot(path string) (destinationLockSnapshot, *os.File, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return destinationLockSnapshot{}, err
+		return destinationLockSnapshot{}, nil, err
 	}
 	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > 16*1024 {
-		return destinationLockSnapshot{}, errors.New("destination lock must be a regular JSON file no larger than 16 KiB")
+		return destinationLockSnapshot{}, nil, errors.New("destination lock must be a regular JSON file no larger than 16 KiB")
 	}
-	file, err := os.Open(path)
+	file, err := openLeaseFile(path)
 	if err != nil {
-		return destinationLockSnapshot{}, err
+		return destinationLockSnapshot{}, nil, err
 	}
 	opened, err := file.Stat()
 	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
 		_ = file.Close()
-		return destinationLockSnapshot{}, errors.New("destination lock changed before it was opened")
+		return destinationLockSnapshot{}, nil, errors.New("destination lock changed before it was opened")
 	}
 	data, readErr := io.ReadAll(io.LimitReader(file, 16*1024+1))
-	closeErr := file.Close()
 	if readErr != nil {
-		return destinationLockSnapshot{}, readErr
-	}
-	if closeErr != nil {
-		return destinationLockSnapshot{}, closeErr
+		_ = file.Close()
+		return destinationLockSnapshot{}, nil, readErr
 	}
 	if len(data) > 16*1024 {
-		return destinationLockSnapshot{}, errors.New("destination lock exceeds 16 KiB")
+		_ = file.Close()
+		return destinationLockSnapshot{}, nil, errors.New("destination lock exceeds 16 KiB")
 	}
 	after, err := os.Lstat(path)
 	if err != nil || !after.Mode().IsRegular() || !os.SameFile(opened, after) {
-		return destinationLockSnapshot{}, errors.New("destination lock changed while it was read")
+		_ = file.Close()
+		return destinationLockSnapshot{}, nil, errors.New("destination lock changed while it was read")
 	}
 	var record destinationLockRecord
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&record); err != nil {
-		return destinationLockSnapshot{}, err
+		_ = file.Close()
+		return destinationLockSnapshot{}, nil, err
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return destinationLockSnapshot{}, errors.New("destination lock contains trailing JSON content")
+		_ = file.Close()
+		return destinationLockSnapshot{}, nil, errors.New("destination lock contains trailing JSON content")
 	}
-	return destinationLockSnapshot{record: record, info: opened}, nil
+	return destinationLockSnapshot{record: record, info: opened}, file, nil
 }
 
 func (ledger *Ledger) syncDirectoryFunc() func(string) error {
