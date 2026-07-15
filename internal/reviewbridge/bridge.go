@@ -30,6 +30,7 @@ type Response struct {
 	OK           bool   `json:"ok"`
 	Status       string `json:"status,omitempty"`
 	CurrentPath  string `json:"current_path,omitempty"`
+	Backup       string `json:"backup,omitempty"`
 	ContractHash string `json:"contract_hash,omitempty"`
 	Written      bool   `json:"written,omitempty"`
 	Error        string `json:"error,omitempty"`
@@ -130,9 +131,18 @@ func Run(input io.Reader, output, errorOutput io.Writer, config Config) int {
 	}
 	result, err := spatialcontract.ApproveAndApplyAuthorizedWithGeometry(projectRoot, currentPath, draftPath, request.CurrentHash, request.Reviewer, request.Grant, geometry, verifier, consumer)
 	if err != nil {
+		if result.Written {
+			response := Response{OK: false, Status: result.Status, CurrentPath: result.Current, Backup: result.Backup, ContractHash: result.ContractHash, Written: true, Error: err.Error()}
+			if encodeErr := json.NewEncoder(output).Encode(response); encodeErr != nil {
+				_, _ = fmt.Fprintf(errorOutput, "ERROR encode committed bridge response: %v\n", encodeErr)
+				return 1
+			}
+			_, _ = fmt.Fprintf(errorOutput, "ERROR %v current=%s backup=%s\n", err, result.Current, result.Backup)
+			return 1
+		}
 		return fail(output, errorOutput, 1, err)
 	}
-	response := Response{OK: true, Status: result.Status, CurrentPath: result.Current, ContractHash: result.ContractHash, Written: result.Written}
+	response := Response{OK: true, Status: result.Status, CurrentPath: result.Current, Backup: result.Backup, ContractHash: result.ContractHash, Written: result.Written}
 	if err := json.NewEncoder(output).Encode(response); err != nil {
 		_, _ = fmt.Fprintf(errorOutput, "ERROR encode bridge response: %v\n", err)
 		return 1

@@ -151,6 +151,28 @@ func TestDecodeRejectsFiniteFloat64ThatOverflowsUnityFloat32(t *testing.T) {
 	}
 }
 
+func TestDecodeReportsNonDraftOverflowBeforeEmbeddedHashMismatch(t *testing.T) {
+	asset := validAssetContract()
+	asset.Asset.CollisionProxies[0].Center[0] = 1e39
+	data, err := json.Marshal(asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decode(data); err == nil || !strings.Contains(err.Error(), "center must be finite") || strings.Contains(err.Error(), "geometry_hash does not match") {
+		t.Fatalf("non-Draft asset overflow error = %v", err)
+	}
+
+	interaction := validInteractionContractForOverflowTest()
+	interaction.Interaction.RelativePosition[0] = 1e39
+	data, err = json.Marshal(interaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decode(data); err == nil || !strings.Contains(err.Error(), "relative_position must be finite") || strings.Contains(err.Error(), "interaction_hash does not match") {
+		t.Fatalf("non-Draft interaction overflow error = %v", err)
+	}
+}
+
 func validInteractionContractForOverflowTest() Contract {
 	contract := Contract{
 		ContractVersion: ContractVersion,
@@ -761,6 +783,38 @@ func TestWriteAppliedContractCASPublishesAndVerifiesBothHashes(t *testing.T) {
 	writtenHash, err := ContentHashChecked(written)
 	if err != nil || writtenHash != result.ContractHash || written.State != StateApproved {
 		t.Fatalf("published contract hash=%q state=%q err=%v", writtenHash, written.State, err)
+	}
+}
+
+func TestWriteAppliedContractReportsCommittedResultAfterPublishSyncFailure(t *testing.T) {
+	project := t.TempDir()
+	approved := validAssetContract()
+	if err := recordReview(&approved, StateApproved, "local-user", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	current, err := CanonicalContractPath(project, approved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := prepareApprovedWrite(project, current, "draft.json", approved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncCount := 0
+	hooks := appliedWriteHooks{syncDirectory: func(string) error {
+		syncCount++
+		if syncCount == 2 {
+			return errors.New("injected post-publish sync failure")
+		}
+		return nil
+	}}
+	applied, err := writeAppliedContractWithHooks(result, project, current, approved, CurrentHashAbsent, hooks)
+	if err == nil || !strings.Contains(err.Error(), "durability is uncertain") || !applied.Written || applied.Status != "WRITE_COMMITTED_UNVERIFIED" || applied.Current != current {
+		t.Fatalf("post-publish failure result=%+v err=%v", applied, err)
+	}
+	loaded, loadErr := Load(current)
+	if loadErr != nil || loaded.State != StateApproved {
+		t.Fatalf("published contract state=%q err=%v", loaded.State, loadErr)
 	}
 }
 

@@ -1,6 +1,7 @@
 package reviewgrant
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -105,7 +106,9 @@ func TestLedgerRejectsForgedAndTamperedApprovalReceipts(t *testing.T) {
 		ContractHash: verification.ContractHash, CaptureSetHash: verification.CaptureSetHash,
 		Reviewer: verification.Reviewer, ContractPath: verification.Destination,
 	}
-	recordPath := filepath.Join(ledger.Root, "approvals", approvalReceiptFilename(approvalRecordFromVerification(verification)))
+	recordForPath := approvalRecordFromVerification(verification)
+	recordForPath.AuthorityKeyHash = publicKeyHash(privateKey.Public().(ed25519.PublicKey))
+	recordPath := filepath.Join(ledger.Root, "approvals", approvalReceiptFilename(recordForPath))
 	original, err := os.ReadFile(recordPath)
 	if err != nil {
 		t.Fatal(err)
@@ -228,7 +231,7 @@ func TestLedgerReceiptSurvivesRestartAndRejectsAuthorityKeyMismatch(t *testing.T
 	}
 }
 
-func TestLedgerAllowsSameBindingAfterAuthorityKeyRotation(t *testing.T) {
+func TestLedgerRequiresVersionedAuthorityIDAfterKeyRotation(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	ledger, firstPrivateKey := signedTestLedger(t, now)
 	first := signedVerification(t, firstPrivateKey, now)
@@ -246,8 +249,16 @@ func TestLedgerAllowsSameBindingAfterAuthorityKeyRotation(t *testing.T) {
 	second := first
 	second.Evidence.Nonce = "fedcba9876543210fedcba9876543210"
 	second.Evidence.Proof = base64.RawURLEncoding.EncodeToString(ed25519.Sign(secondPrivateKey, SigningPayload(second)))
+	if err := ledger.ConsumeApprovalGrant(second, func() error { return nil }); err == nil || !strings.Contains(err.Error(), "versioned authority ID") {
+		t.Fatalf("same authority ID accepted a replacement key: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ledger.AuthorityRoot, "local-review-v2.pub"), []byte(base64.RawURLEncoding.EncodeToString(secondPublicKey)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second.Evidence.Authority = "local-review-v2"
+	second.Evidence.Proof = base64.RawURLEncoding.EncodeToString(ed25519.Sign(secondPrivateKey, SigningPayload(second)))
 	if err := ledger.ConsumeApprovalGrant(second, func() error { return nil }); err != nil {
-		t.Fatalf("reapproval after authority key rotation failed: %v", err)
+		t.Fatalf("reapproval with a versioned authority ID failed: %v", err)
 	}
 	entries, err := os.ReadDir(filepath.Join(ledger.Root, "approvals"))
 	if err != nil || len(entries) != 2 {
@@ -259,7 +270,7 @@ func TestLedgerAllowsSameBindingAfterAuthorityKeyRotation(t *testing.T) {
 		Reviewer: second.Reviewer, ContractPath: second.Destination,
 	}
 	receipt, err := ledger.VerifyApprovedContractReceipt(lookup)
-	if err != nil || receipt.Authority != second.Evidence.Authority {
+	if err != nil || receipt.Authority != "local-review-v2" {
 		t.Fatalf("rotated receipt lookup failed: receipt=%+v err=%v", receipt, err)
 	}
 }
@@ -315,6 +326,76 @@ func TestInteractionCanBeReapprovedAfterGeometryChanges(t *testing.T) {
 	receipt, err := ledger.VerifyApprovedContractReceipt(lookup)
 	if err != nil || receipt.SubjectGeometryHash != second.SubjectGeometryHash || receipt.TargetGeometryHash != second.TargetGeometryHash {
 		t.Fatalf("latest geometry receipt=%+v err=%v", receipt, err)
+	}
+}
+
+func TestLedgerPrioritizesMatchingGeometrySignatureError(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ledger, privateKey := signedTestLedger(t, now)
+	old := signedVerification(t, privateKey, now)
+	old.SubjectGeometryHash = strings.Repeat("b", 64)
+	old.TargetGeometryHash = strings.Repeat("c", 64)
+	old.DependencyDestinations = []string{filepath.Join(t.TempDir(), "subject.json"), filepath.Join(t.TempDir(), "target.json")}
+	old.Evidence.Proof = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, SigningPayload(old)))
+	if err := ledger.ConsumeApprovalGrant(old, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+
+	matching := old
+	matching.SubjectGeometryHash = strings.Repeat("d", 64)
+	matching.TargetGeometryHash = strings.Repeat("e", 64)
+	matching.Evidence.Nonce = "abcdef0123456789abcdef0123456789"
+	matching.Evidence.Proof = base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.SignatureSize))
+	record := approvalRecordFromVerification(matching)
+	record.AuthorityKeyHash = publicKeyHash(privateKey.Public().(ed25519.PublicKey))
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(ledger.Root, "approvals", approvalReceiptFilename(record))
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lookup := spatialcontract.ApprovedContractVerification{
+		ContractType: spatialcontract.TypeInteraction,
+		ContractHash: matching.ContractHash, CaptureSetHash: matching.CaptureSetHash,
+		Reviewer: matching.Reviewer, ContractPath: matching.Destination,
+		SubjectGeometryHash: matching.SubjectGeometryHash, TargetGeometryHash: matching.TargetGeometryHash,
+	}
+	if _, err := ledger.VerifyApprovedContractReceipt(lookup); err == nil || !strings.Contains(err.Error(), "signature is invalid") || strings.Contains(err.Error(), "SUPPORT_CONTRACT_STALE") {
+		t.Fatalf("matching receipt error precedence = %v", err)
+	}
+}
+
+func TestLedgerRevalidatesAppliedStateBeforeAndAfterReceipt(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ledger, privateKey := signedTestLedger(t, now)
+	verification := signedVerification(t, privateKey, now)
+	revalidations := 0
+	verification.RevalidateApplied = func() error {
+		revalidations++
+		return nil
+	}
+	if err := ledger.ConsumeApprovalGrant(verification, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if revalidations != 2 {
+		t.Fatalf("applied destination revalidation count=%d want=2", revalidations)
+	}
+}
+
+func TestLedgerDoesNotWriteReceiptWhenAppliedStateChanged(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ledger, privateKey := signedTestLedger(t, now)
+	verification := signedVerification(t, privateKey, now)
+	verification.RevalidateApplied = func() error { return errors.New("APPLY_SOURCE_CHANGED injected") }
+	applied := false
+	if err := ledger.ConsumeApprovalGrant(verification, func() error { applied = true; return nil }); err == nil || !strings.Contains(err.Error(), "APPLY_SOURCE_CHANGED") || !applied {
+		t.Fatalf("changed applied state applied=%v err=%v", applied, err)
+	}
+	entries, err := os.ReadDir(filepath.Join(ledger.Root, "approvals"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("changed applied state wrote receipt: entries=%d err=%v", len(entries), err)
 	}
 }
 
@@ -396,6 +477,16 @@ func TestLedgerTreatsFreshIncompleteDestinationLockAsActiveWriter(t *testing.T) 
 	}
 	if applied {
 		t.Fatal("fresh incomplete destination lock allowed the apply callback")
+	}
+}
+
+func TestDestinationLockReaderRejectsOversizedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized.lock")
+	if err := os.WriteFile(path, bytes.Repeat([]byte{'x'}, 16*1024+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readDestinationLock(path); err == nil || !strings.Contains(err.Error(), "16 KiB") {
+		t.Fatalf("oversized destination lock error = %v", err)
 	}
 }
 

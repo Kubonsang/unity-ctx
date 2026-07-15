@@ -1,6 +1,7 @@
 package reviewgrant
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -55,6 +56,7 @@ type approvalRecord struct {
 	Version             int    `json:"version"`
 	Action              string `json:"action"`
 	Authority           string `json:"authority"`
+	AuthorityKeyHash    string `json:"authority_key_hash,omitempty"`
 	Nonce               string `json:"nonce"`
 	ExpiresUnix         int64  `json:"expires_unix"`
 	ContractHash        string `json:"contract_hash"`
@@ -97,6 +99,12 @@ type destinationLockRecord struct {
 	NonceHash       string `json:"nonce_hash"`
 	LeaseID         string `json:"lease_id"`
 	CreatedUnix     int64  `json:"created_unix"`
+}
+
+type authorityPinRecord struct {
+	Version   int    `json:"version"`
+	Authority string `json:"authority"`
+	KeyHash   string `json:"key_hash"`
 }
 
 type heldDestinationLock struct {
@@ -148,21 +156,22 @@ func localDataRoot() (string, error) {
 }
 
 func (verifier Verifier) VerifyApproval(value spatialcontract.ApprovalVerification) error {
-	return verifier.verifyApproval(value, true)
+	_, err := verifier.verifyApprovalKey(value, true)
+	return err
 }
 
-func (verifier Verifier) verifyApproval(value spatialcontract.ApprovalVerification, requireFresh bool) error {
+func (verifier Verifier) verifyApprovalKey(value spatialcontract.ApprovalVerification, requireFresh bool) (ed25519.PublicKey, error) {
 	if value.Action != spatialcontract.ApprovalActionApproveApply {
-		return fmt.Errorf("approval grant action must be %s", spatialcontract.ApprovalActionApproveApply)
+		return nil, fmt.Errorf("approval grant action must be %s", spatialcontract.ApprovalActionApproveApply)
 	}
 	if !authorityPattern.MatchString(value.Evidence.Authority) {
-		return errors.New("approval grant authority is invalid")
+		return nil, errors.New("approval grant authority is invalid")
 	}
 	if !noncePattern.MatchString(value.Evidence.Nonce) {
-		return errors.New("approval grant nonce is invalid")
+		return nil, errors.New("approval grant nonce is invalid")
 	}
 	if value.Evidence.ExpiresUnix <= 0 {
-		return errors.New("approval grant expiry is required")
+		return nil, errors.New("approval grant expiry is required")
 	}
 	if requireFresh {
 		now := time.Now()
@@ -171,35 +180,35 @@ func (verifier Verifier) verifyApproval(value spatialcontract.ApprovalVerificati
 		}
 		expires := time.Unix(value.Evidence.ExpiresUnix, 0)
 		if !expires.After(now) {
-			return errors.New("approval grant has expired")
+			return nil, errors.New("approval grant has expired")
 		}
 		if expires.After(now.Add(15 * time.Minute)) {
-			return errors.New("approval grant expiry exceeds the 15 minute limit")
+			return nil, errors.New("approval grant expiry exceeds the 15 minute limit")
 		}
 	}
 	if !hashPattern(value.ContractHash) || !currentHashPattern(value.CurrentHash) || !geometryBindingPattern(value.SubjectGeometryHash, value.TargetGeometryHash) || strings.TrimSpace(value.CaptureSetHash) == "" || strings.TrimSpace(value.Reviewer) == "" || !filepath.IsAbs(value.Destination) {
-		return errors.New("approval grant binding is incomplete")
+		return nil, errors.New("approval grant binding is incomplete")
 	}
 	root := strings.TrimSpace(verifier.AuthorityRoot)
 	if root == "" {
 		var err error
 		root, err = DefaultAuthorityRoot()
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	key, err := loadPublicKey(filepath.Join(root, value.Evidence.Authority+".pub"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	signature, err := decodeSignature(value.Evidence.Proof)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !ed25519.Verify(key, SigningPayload(value), signature) {
-		return errors.New("approval grant signature is invalid")
+		return nil, errors.New("approval grant signature is invalid")
 	}
-	return nil
+	return key, nil
 }
 
 // SigningPayload is the stable UTF-8 message Node/C# bridges sign with their
@@ -243,11 +252,17 @@ func (ledger *Ledger) ConsumeApprovalGrant(value spatialcontract.ApprovalVerific
 	if err != nil {
 		return err
 	}
-	if err := (Verifier{AuthorityRoot: authorityRoot, Now: ledger.Now}).VerifyApproval(value); err != nil {
+	verifiedKey, err := (Verifier{AuthorityRoot: authorityRoot, Now: ledger.Now}).verifyApprovalKey(value, true)
+	if err != nil {
 		return fmt.Errorf("approval grant cannot be recorded: %w", err)
+	}
+	keyHash := publicKeyHash(verifiedKey)
+	if err := ledger.ensureAuthorityPinned(value.Evidence.Authority, keyHash); err != nil {
+		return fmt.Errorf("approval grant authority pin failed: %w", err)
 	}
 	nonceHash := digest(value.Evidence.Authority + "\x00" + value.Evidence.Nonce)
 	record := approvalRecordFromVerification(value)
+	record.AuthorityKeyHash = keyHash
 	if record.SubjectGeometryHash == "" {
 		if len(value.DependencyDestinations) != 0 {
 			return errors.New("asset approval grant cannot lock interaction dependencies")
@@ -267,7 +282,7 @@ func (ledger *Ledger) ConsumeApprovalGrant(value spatialcontract.ApprovalVerific
 		return err
 	}
 	approvalDir := filepath.Join(ledger.Root, "approvals")
-	if err := os.MkdirAll(approvalDir, 0o700); err != nil {
+	if err := mkdirAllDurably(approvalDir, 0o700, ledger.syncDirectoryFunc()); err != nil {
 		return err
 	}
 	approvalPath := filepath.Join(approvalDir, approvalReceiptFilename(record))
@@ -276,7 +291,7 @@ func (ledger *Ledger) ConsumeApprovalGrant(value spatialcontract.ApprovalVerific
 		return err
 	}
 	consumedDir := filepath.Join(ledger.Root, "consumed")
-	if err := os.MkdirAll(consumedDir, 0o700); err != nil {
+	if err := mkdirAllDurably(consumedDir, 0o700, ledger.syncDirectoryFunc()); err != nil {
 		return err
 	}
 	marker := filepath.Join(consumedDir, nonceHash+".json")
@@ -299,13 +314,26 @@ func (ledger *Ledger) ConsumeApprovalGrant(value spatialcontract.ApprovalVerific
 	if err := destinationLease.AssertOwned(); err != nil {
 		return err
 	}
+	if value.RevalidateApplied != nil {
+		if err := value.RevalidateApplied(); err != nil {
+			return err
+		}
+	}
 	if approvalExists {
 		return nil
 	}
 	if err := writeRecordExclusiveOrEqual(approvalPath, record, ledger.syncDirectoryFunc()); err != nil {
 		return fmt.Errorf("approval receipt durability is uncertain: %w", err)
 	}
-	return destinationLease.AssertOwned()
+	if err := destinationLease.AssertOwned(); err != nil {
+		return err
+	}
+	if value.RevalidateApplied != nil {
+		if err := value.RevalidateApplied(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (ledger *Ledger) VerifyApprovedContract(value spatialcontract.ApprovedContractVerification) error {
@@ -348,6 +376,7 @@ func (ledger *Ledger) VerifyApprovedContractReceipt(value spatialcontract.Approv
 		return ApprovalReceipt{}, err
 	}
 	var firstErr error
+	var matchingErr error
 	geometryMismatch := false
 	for _, path := range paths {
 		record, readErr := readApprovalRecord(path)
@@ -379,13 +408,30 @@ func (ledger *Ledger) VerifyApprovedContractReceipt(value spatialcontract.Approv
 		// The grant is necessarily expired when many approved contracts are later
 		// consumed. Verify every signed binding, but deliberately do not re-apply
 		// the short-lived freshness window that was enforced when it was recorded.
-		if verifyErr := (Verifier{AuthorityRoot: authorityRoot}).verifyApproval(record.approvalVerification(), false); verifyErr != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("approval ledger receipt signature is invalid: %w", verifyErr)
+		verifiedKey, verifyErr := (Verifier{AuthorityRoot: authorityRoot}).verifyApprovalKey(record.approvalVerification(), false)
+		if verifyErr != nil {
+			if matchingErr == nil {
+				matchingErr = fmt.Errorf("approval ledger receipt signature is invalid: %w", verifyErr)
+			}
+			continue
+		}
+		keyHash := publicKeyHash(verifiedKey)
+		if record.AuthorityKeyHash != "" && !strings.EqualFold(record.AuthorityKeyHash, keyHash) {
+			if matchingErr == nil {
+				matchingErr = errors.New("approval ledger receipt authority key fingerprint does not match")
+			}
+			continue
+		}
+		if pinErr := ledger.ensureAuthorityPinned(record.Authority, keyHash); pinErr != nil {
+			if matchingErr == nil {
+				matchingErr = fmt.Errorf("approval ledger authority pin is invalid: %w", pinErr)
 			}
 			continue
 		}
 		return record.receipt(), nil
+	}
+	if matchingErr != nil {
+		return ApprovalReceipt{}, matchingErr
 	}
 	if geometryMismatch {
 		return ApprovalReceipt{}, errors.New("SUPPORT_CONTRACT_STALE: approval ledger geometry bindings do not match current approved assets")
@@ -407,10 +453,73 @@ func (ledger *Ledger) authorityRoot() (string, error) {
 	return DefaultAuthorityRoot()
 }
 
+func publicKeyHash(key ed25519.PublicKey) string {
+	sum := sha256.Sum256(key)
+	return hex.EncodeToString(sum[:])
+}
+
+func (ledger *Ledger) ensureAuthorityPinned(authority, keyHash string) error {
+	if !authorityPattern.MatchString(authority) || !hashPattern(keyHash) {
+		return errors.New("authority pin binding is invalid")
+	}
+	directory := filepath.Join(ledger.Root, "authorities")
+	if err := mkdirAllDurably(directory, 0o700, ledger.syncDirectoryFunc()); err != nil {
+		return err
+	}
+	path := filepath.Join(directory, authority+".json")
+	record := authorityPinRecord{Version: ledgerVersion, Authority: authority, KeyHash: strings.ToLower(keyHash)}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := writeImmutableBytesDurably(path, data, 0o600, ledger.syncDirectoryFunc()); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	existing, err := readAuthorityPin(path)
+	if err != nil {
+		return err
+	}
+	if existing != record {
+		return errors.New("authority key changed; register a new versioned authority ID instead of replacing its key")
+	}
+	return ledger.syncDirectoryFunc()(directory)
+}
+
+func readAuthorityPin(path string) (authorityPinRecord, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return authorityPinRecord{}, err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > 16*1024 {
+		return authorityPinRecord{}, errors.New("authority pin must be a regular JSON file no larger than 16 KiB")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return authorityPinRecord{}, err
+	}
+	var record authorityPinRecord
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&record); err != nil {
+		return authorityPinRecord{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return authorityPinRecord{}, errors.New("authority pin contains trailing JSON content")
+	}
+	if record.Version != ledgerVersion || !authorityPattern.MatchString(record.Authority) || !hashPattern(record.KeyHash) {
+		return authorityPinRecord{}, errors.New("authority pin is invalid")
+	}
+	return record, nil
+}
+
 func (ledger *Ledger) acquireDestinationLock(destination, nonceHash string) (heldDestinationLock, error) {
 	destinationHash := digest(canonicalPathKey(destination))
 	lockDir := filepath.Join(ledger.Root, "locks")
-	if err := os.MkdirAll(lockDir, 0o700); err != nil {
+	if err := mkdirAllDurably(lockDir, 0o700, ledger.syncDirectoryFunc()); err != nil {
 		return heldDestinationLock{}, err
 	}
 	lockPath := filepath.Join(lockDir, destinationHash+".lock")
@@ -472,23 +581,42 @@ func refuseExistingDestinationLock(lockPath, destinationHash string, now time.Ti
 		// fully written. A concurrent contender may observe that short window;
 		// treat any fresh partial record as an active writer, not corruption.
 		if now.Sub(info.ModTime()) <= staleDestinationLockAge {
-			return errors.New("approval destination is already being committed")
+			return fmt.Errorf("approval destination is already being committed lock=%s", lockPath)
 		}
-		return errors.New("approval destination lock is invalid and requires manual recovery")
+		return fmt.Errorf("approval destination lock is invalid and requires manual recovery lock=%s", lockPath)
 	}
 	if record.Version != ledgerVersion || record.DestinationHash != destinationHash || !hashPattern(record.NonceHash) || !hashPattern(record.LeaseID) || record.CreatedUnix <= 0 {
-		return errors.New("approval destination lock is invalid and requires manual recovery")
+		return fmt.Errorf("approval destination lock is invalid and requires manual recovery lock=%s", lockPath)
 	}
 	if now.Sub(info.ModTime()) <= staleDestinationLockAge || now.Sub(time.Unix(record.CreatedUnix, 0)) <= staleDestinationLockAge {
-		return errors.New("approval destination is already being committed")
+		return fmt.Errorf("approval destination is already being committed lock=%s lease_id=%s", lockPath, record.LeaseID)
 	}
-	return errors.New("approval destination lock is old and requires manual recovery")
+	return fmt.Errorf("approval destination lock is old and requires manual recovery lock=%s lease_id=%s", lockPath, record.LeaseID)
 }
 
-func releaseDestinationLock(path string, expected destinationLockRecord) {
-	record, err := readDestinationLock(path)
-	if err == nil && record == expected {
-		_ = os.Remove(path)
+func releaseDestinationLock(path string, expected destinationLockRecord, syncDirectory func(string) error) {
+	leaseID, err := newLeaseID()
+	if err != nil {
+		return
+	}
+	quarantine := path + ".release-" + leaseID[:16]
+	if err := os.Rename(path, quarantine); err != nil {
+		return
+	}
+	record, readErr := readDestinationLock(quarantine)
+	if readErr == nil && record == expected {
+		if err := os.Remove(quarantine); err == nil && syncDirectory != nil {
+			_ = syncDirectory(filepath.Dir(path))
+		}
+		return
+	}
+	// A successor may have replaced the path between the old owner's final
+	// assertion and release. Restore that exact inode only if the path is still
+	// absent; never delete or overwrite a newer lock.
+	if err := os.Link(quarantine, path); err == nil {
+		if removeErr := os.Remove(quarantine); removeErr == nil && syncDirectory != nil {
+			_ = syncDirectory(filepath.Dir(path))
+		}
 	}
 }
 
@@ -511,20 +639,41 @@ func (lease *destinationLockLease) Release() {
 	}
 	for index := len(lease.locks) - 1; index >= 0; index-- {
 		held := lease.locks[index]
-		before, err := os.Lstat(held.path)
-		releaseDestinationLock(held.path, held.record)
-		if err == nil {
-			if _, afterErr := os.Lstat(held.path); errors.Is(afterErr, os.ErrNotExist) && before.Mode().IsRegular() && lease.syncDirectory != nil {
-				_ = lease.syncDirectory(filepath.Dir(held.path))
-			}
-		}
+		releaseDestinationLock(held.path, held.record, lease.syncDirectory)
 	}
 }
 
 func readDestinationLock(path string) (destinationLockRecord, error) {
-	data, err := os.ReadFile(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		return destinationLockRecord{}, err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > 16*1024 {
+		return destinationLockRecord{}, errors.New("destination lock must be a regular JSON file no larger than 16 KiB")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return destinationLockRecord{}, err
+	}
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		_ = file.Close()
+		return destinationLockRecord{}, errors.New("destination lock changed before it was opened")
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, 16*1024+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return destinationLockRecord{}, readErr
+	}
+	if closeErr != nil {
+		return destinationLockRecord{}, closeErr
+	}
+	if len(data) > 16*1024 {
+		return destinationLockRecord{}, errors.New("destination lock exceeds 16 KiB")
+	}
+	after, err := os.Lstat(path)
+	if err != nil || !after.Mode().IsRegular() || !os.SameFile(opened, after) {
+		return destinationLockRecord{}, errors.New("destination lock changed while it was read")
 	}
 	var record destinationLockRecord
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
@@ -591,6 +740,91 @@ func writeBytesExclusiveDurably(path string, data []byte, mode os.FileMode, sync
 		return errors.New("durable ledger write requires directory sync")
 	}
 	return syncDirectory(filepath.Dir(path))
+}
+
+func writeImmutableBytesDurably(path string, data []byte, mode os.FileMode, syncDirectory func(string) error) error {
+	directory := filepath.Dir(path)
+	file, err := os.CreateTemp(directory, ".ledger-immutable-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := file.Name()
+	defer os.Remove(tempPath)
+	if err := file.Chmod(mode); err != nil {
+		_ = file.Close()
+		return err
+	}
+	written := 0
+	for written < len(data) {
+		count, writeErr := file.Write(data[written:])
+		written += count
+		if writeErr != nil {
+			_ = file.Close()
+			return writeErr
+		}
+		if count == 0 {
+			_ = file.Close()
+			return io.ErrShortWrite
+		}
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(tempPath, path); err != nil {
+		return err
+	}
+	if syncDirectory == nil {
+		return errors.New("durable immutable write requires directory sync")
+	}
+	return syncDirectory(directory)
+}
+
+func mkdirAllDurably(path string, mode os.FileMode, syncDirectory func(string) error) error {
+	if syncDirectory == nil {
+		return errors.New("durable directory creation requires directory sync")
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	missing := make([]string, 0, 3)
+	current := filepath.Clean(absolute)
+	for {
+		info, statErr := os.Lstat(current)
+		if statErr == nil {
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return errors.New("durable ledger path contains a non-directory or reparse point")
+			}
+			break
+		}
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+		missing = append(missing, current)
+		parent := filepath.Dir(current)
+		if parent == current {
+			return errors.New("cannot find an existing parent for the durable ledger")
+		}
+		current = parent
+	}
+	for index := len(missing) - 1; index >= 0; index-- {
+		directory := missing[index]
+		if err := os.Mkdir(directory, mode); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		info, err := os.Lstat(directory)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("durable ledger directory was replaced during creation")
+		}
+		if err := syncDirectory(filepath.Dir(directory)); err != nil {
+			return fmt.Errorf("sync durable ledger parent directory: %w", err)
+		}
+	}
+	return nil
 }
 
 func approvalRecordFromVerification(value spatialcontract.ApprovalVerification) approvalRecord {
@@ -685,7 +919,7 @@ func writeRecordExclusiveOrEqual(path string, record approvalRecord, syncDirecto
 		return err
 	}
 	data = append(data, '\n')
-	if err := writeBytesExclusiveDurably(path, data, 0o600, syncDirectory); err == nil {
+	if err := writeImmutableBytesDurably(path, data, 0o600, syncDirectory); err == nil {
 		return nil
 	} else if !errors.Is(err, os.ErrExist) {
 		return err
@@ -727,6 +961,7 @@ func approvalReceiptFilename(record approvalRecord) string {
 	binding := approvalRecordKey(record)
 	receiptID := digest(strings.Join([]string{
 		record.Authority,
+		record.AuthorityKeyHash,
 		record.Nonce,
 		record.Proof,
 		strings.ToLower(record.SubjectGeometryHash),
