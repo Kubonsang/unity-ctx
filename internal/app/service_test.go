@@ -1,6 +1,9 @@
 package app_test
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +20,8 @@ import (
 	"github.com/Kubonsang/unity-ctx/internal/bounds"
 	"github.com/Kubonsang/unity-ctx/internal/contextpack"
 	"github.com/Kubonsang/unity-ctx/internal/core"
+	"github.com/Kubonsang/unity-ctx/internal/reviewgrant"
+	"github.com/Kubonsang/unity-ctx/internal/spatialcontract"
 )
 
 type fakeScanRunner struct {
@@ -35,6 +40,10 @@ func (r *fakeScanRunner) RunEditorScan(projectPath, sceneAssetPath string, prefa
 		return nil, r.err
 	}
 	return append([]byte(nil), r.output...), nil
+}
+
+func (r *fakeScanRunner) RunDetailedEditorScan(projectPath, sceneAssetPath string, prefabPaths []string) ([]byte, error) {
+	return r.RunEditorScan(projectPath, sceneAssetPath, prefabPaths)
 }
 
 func TestScanRejectsNonSceneNamespace(t *testing.T) {
@@ -404,6 +413,116 @@ func TestScanWritesManifestAndReturnsDeterministicSummary(t *testing.T) {
 	if len(manifest.Prefabs) != 2 || manifest.Prefabs[0].Path != "Assets/Prefabs/chair.prefab" || manifest.Prefabs[1].Path != "Assets/Prefabs/table.prefab" {
 		t.Fatalf("manifest prefabs mismatch: got %#v", manifest.Prefabs)
 	}
+}
+
+func TestDetailedScanConsumesOnlyLedgerAuthorizedContract(t *testing.T) {
+	project := t.TempDir()
+	scenePath := filepath.Join(project, "Assets", "Scenes", "SimpleScene.unity")
+	if err := os.MkdirAll(filepath.Dir(scenePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scenePath, []byte("%YAML 1.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	contract := spatialcontract.Contract{
+		ContractVersion: spatialcontract.ContractVersion,
+		ContractType:    spatialcontract.TypeAsset,
+		State:           spatialcontract.StateAwaitingHumanReview,
+		Asset: &spatialcontract.AssetSpatialContract{
+			AssetGUID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", AssetPath: "Assets/Prefabs/banner.prefab",
+			DependencyHash: "dependency-v1", Units: "meter", Forward: spatialcontract.Vec3{0, 0, 1}, Up: spatialcontract.Vec3{0, 1, 0},
+			CollisionProxies: []spatialcontract.OBB{{ID: "banner", Center: spatialcontract.Vec3{0, 1, 0}, Size: spatialcontract.Vec3{1, 2, .05}, Rotation: spatialcontract.Quat{0, 0, 0, 1}}},
+			Frames:           []spatialcontract.ContactFrame{{ID: "back", Point: spatialcontract.Vec3{0, 1, -.025}, Normal: spatialcontract.Vec3{0, 0, -1}, Tangent: spatialcontract.Vec3{1, 0, 0}, Size: [2]float64{1, 2}}},
+			Contacts:         []spatialcontract.ContactRequirement{{ID: "wall", Kind: "WallMounted", FrameID: "back", Target: "surface:wall", MinimumGap: .005, MaximumGap: .01, MinimumSupport: .6, DirectionAlignment: .95}},
+			Revision:         1, CaptureSetHash: "capture-banner",
+		},
+		Technical: &spatialcontract.TechnicalEvidence{Passed: true, ErrorCount: 0, ReportHash: "report-banner"},
+	}
+	spatialcontract.Normalize(&contract)
+	if err := spatialcontract.ReviewAuthorized(&contract, "local-user", spatialcontract.ApprovalEvidence{Authority: "test", Nonce: "nonce", Proof: "proof"}, scanApprovalVerifier{}); err != nil {
+		t.Fatal(err)
+	}
+	contractPath, err := spatialcontract.CanonicalContractPath(project, contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spatialcontract.Save(contractPath, contract); err != nil {
+		t.Fatal(err)
+	}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityRoot := filepath.Join(project, "IsolatedReviewAuthorities")
+	if err := os.MkdirAll(authorityRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(authorityRoot, "test.pub"), []byte(base64.RawURLEncoding.EncodeToString(publicKey)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_800_000_000, 0)
+	ledger := &reviewgrant.Ledger{
+		Root: filepath.Join(project, "IsolatedReviewLedger"), AuthorityRoot: authorityRoot,
+		Now: func() time.Time { return now },
+	}
+	verification := spatialcontract.ApprovalVerification{
+		Action: spatialcontract.ApprovalActionApproveApply, ContractHash: spatialcontract.ContentHash(contract),
+		CurrentHash:    spatialcontract.CurrentHashAbsent,
+		CaptureSetHash: contract.Asset.CaptureSetHash, Reviewer: contract.Review.Reviewer, Destination: contractPath,
+		Evidence: spatialcontract.ApprovalEvidence{
+			Authority: "test", Nonce: "0123456789abcdef0123456789abcdef", ExpiresUnix: now.Add(5 * time.Minute).Unix(),
+		},
+	}
+	verification.Evidence.Proof = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, reviewgrant.SigningPayload(verification)))
+	if err := ledger.ConsumeApprovalGrant(verification, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := bounds.Manifest{
+		Scene: "Assets/Scenes/SimpleScene.unity", Source: "editor", Version: bounds.ManifestVersion2,
+		Capabilities: []string{"compound_obb"}, Objects: []bounds.ObjectBounds{},
+		Prefabs: []bounds.PrefabBounds{{
+			Path: contract.Asset.AssetPath, GUID: contract.Asset.AssetGUID,
+			Bounds: bounds.AABB{Center: bounds.Vec3{0, 1, 0}, Size: bounds.Vec3{1, 2, .05}},
+			Spatial: &bounds.SpatialProfile{
+				OBBs:    []bounds.OBB{{ID: "renderer-0", Center: bounds.Vec3{0, 1, 0}, Size: bounds.Vec3{1, 2, .05}, Rotation: bounds.Quat{0, 0, 0, 1}}},
+				Forward: bounds.Vec3{0, 0, 1}, Up: bounds.Vec3{0, 1, 0}, Source: "renderer", Confidence: .7, Reviewed: false, DependencyHash: "dependency-v1",
+			},
+		}},
+	}
+	payloadPath := filepath.Join(project, "Library", "payload.json")
+	if err := os.MkdirAll(filepath.Dir(payloadPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := bounds.Save(payloadPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(payloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(project, "Library", "out.json")
+	svc := app.NewWithScanRunnerAndApprovedContractVerifier(&fakeScanRunner{output: payload}, ledger)
+	got, code := svc.Scan("scene", scenePath, core.ViewCompact, false, app.ScanArgs{
+		Mode: "editor", Project: project, Out: outPath, Geometry: "detailed", Contracts: "Assets/SpatialContracts",
+	})
+	if code != 0 {
+		t.Fatalf("ledger-authorized scan code=%d body=%q", code, got.Body)
+	}
+	loaded, err := bounds.Load(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Prefabs) != 1 || loaded.Prefabs[0].Spatial == nil || !loaded.Prefabs[0].Spatial.Reviewed || len(loaded.Prefabs[0].Spatial.Contacts) != 1 {
+		t.Fatalf("approved contract was not overlaid: %#v", loaded.Prefabs)
+	}
+}
+
+type scanApprovalVerifier struct{}
+
+func (scanApprovalVerifier) VerifyApproval(value spatialcontract.ApprovalVerification) error {
+	return nil
 }
 
 func TestScanRejectsPayloadSceneMismatch(t *testing.T) {
@@ -946,7 +1065,7 @@ func TestGetFieldNotFound(t *testing.T) {
 }
 
 func TestCheckSceneWarnsWithSortedOverlapIDs(t *testing.T) {
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	manifestPath := filepath.Join(t.TempDir(), "scene.bounds.json")
 	manifest := bounds.Manifest{
 		Scene:   "Assets/Scenes/SimpleScene.unity",
@@ -1001,7 +1120,7 @@ func TestCheckSceneWarnsWithSortedOverlapIDs(t *testing.T) {
 }
 
 func TestCheckSceneOKAndJSONMatches(t *testing.T) {
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
 
 	svc := app.New()
@@ -1038,7 +1157,7 @@ func TestCheckSceneOKAndJSONMatches(t *testing.T) {
 }
 
 func TestCheckSceneV2UsesCompoundOBBWhenRotationFlagIsOmitted(t *testing.T) {
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	manifestPath := filepath.Join(t.TempDir(), "spatial.bounds.json")
 	manifest, err := bounds.Load(filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json"))
 	if err != nil {
@@ -1048,6 +1167,7 @@ func TestCheckSceneV2UsesCompoundOBBWhenRotationFlagIsOmitted(t *testing.T) {
 	// Deliberately separate the legacy AABB from the reviewed OBB. The v2
 	// result must follow the OBB even when identity rotation is implicit.
 	manifest.Objects[0].Bounds.Center = bounds.Vec3{100, 100, 100}
+	manifest.Prefabs[0].Spatial.Contacts = nil
 	if err := bounds.Save(manifestPath, manifest); err != nil {
 		t.Fatal(err)
 	}
@@ -1151,7 +1271,7 @@ func TestSuggestRequiresManifestPrefabAndNear(t *testing.T) {
 }
 
 func TestSuggestCompactBodyIsDeterministicOnSimpleScene(t *testing.T) {
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
 
 	svc := app.New()
@@ -1181,7 +1301,7 @@ func TestSuggestCompactBodyIsDeterministicOnSimpleScene(t *testing.T) {
 }
 
 func TestSuggestJSONIncludesNestedSuggestPayload(t *testing.T) {
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
 
 	svc := app.New()
@@ -1245,8 +1365,90 @@ func TestSuggestJSONIncludesNestedSuggestPayload(t *testing.T) {
 	}
 }
 
+func TestSuggestRequiresExistingSceneBeforePlanning(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "Assets", "Scenes", "SimpleScene.unity")
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+	got, code := app.New().Suggest("scene", missing, core.ViewCompact, false, app.SuggestArgs{
+		Manifest: manifestPath, Prefab: "Assets/Prefabs/chair.prefab", Near: "1000",
+	})
+	if code != 1 || got.Status != "ERROR" || !strings.HasPrefix(got.Body, "ERROR open ") {
+		t.Fatalf("missing scene was not rejected before planning: code=%d result=%#v", code, got)
+	}
+}
+
+func TestSuggestRejectsSameBasenameAndPunctuationSceneCollisions(t *testing.T) {
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+	for _, assetPath := range []string{
+		filepath.Join("Assets", "Other", "SimpleScene.unity"),
+		filepath.Join("Assets", "Scenes", "Simple-Scene.unity"),
+		filepath.Join("Assets", "ThirdParty", "Assets", "Scenes", "SimpleScene.unity"),
+	} {
+		t.Run(filepath.ToSlash(assetPath), func(t *testing.T) {
+			scenePath := stageSuggestSceneAt(t, assetPath)
+			got, code := app.New().Suggest("scene", scenePath, core.ViewCompact, false, app.SuggestArgs{
+				Manifest: manifestPath, Prefab: "Assets/Prefabs/chair.prefab", Near: "1000",
+			})
+			if code != 1 || got.Status != "ERROR" || !strings.Contains(got.Body, "manifest scene mismatch") {
+				t.Fatalf("scene collision was accepted: code=%d result=%#v", code, got)
+			}
+		})
+	}
+}
+
+func TestCheckAndPatchRejectSameBasenameAndPunctuationSceneCollisions(t *testing.T) {
+	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
+	patchPath := filepath.Join("..", "..", "testdata", "patches", "chair_place_ok.patch.json")
+	for _, assetPath := range []string{
+		filepath.Join("Assets", "Other", "SimpleScene.unity"),
+		filepath.Join("Assets", "Scenes", "Simple-Scene.unity"),
+		filepath.Join("Assets", "ThirdParty", "Assets", "Scenes", "SimpleScene.unity"),
+	} {
+		t.Run(filepath.ToSlash(assetPath), func(t *testing.T) {
+			scenePath := stageSuggestSceneAt(t, assetPath)
+			checkResult, checkCode := app.New().Check("scene", scenePath, core.ViewCompact, false, app.CheckArgs{
+				Manifest: manifestPath, Prefab: "Assets/Prefabs/chair.prefab", HasPosition: true, Position: [3]float64{5, 0, 0},
+			})
+			if checkCode != 1 || checkResult.Status != "ERROR" || !strings.Contains(checkResult.Body, "manifest scene mismatch") {
+				t.Fatalf("check accepted scene collision: code=%d result=%#v", checkCode, checkResult)
+			}
+
+			patchResult, patchCode := app.New().Patch("scene", scenePath, core.ViewCompact, false, app.PatchArgs{
+				Op: "place_prefab", Manifest: manifestPath, Prefab: "Assets/Prefabs/chair.prefab", PrefabGUID: "guid-chair",
+				HasPosition: true, Position: [3]float64{5, 0, 0},
+			})
+			if patchCode != 1 || patchResult.Status != "ERROR" || !strings.Contains(patchResult.Body, "manifest scene mismatch") {
+				t.Fatalf("patch accepted scene collision: code=%d result=%#v", patchCode, patchResult)
+			}
+
+			diffResult, diffCode := app.New().Diff("scene", scenePath, core.ViewCompact, false, app.DiffArgs{Patch: patchPath})
+			if diffCode != 1 || diffResult.Status != "ERROR" || !strings.Contains(diffResult.Body, "patch scene mismatch") {
+				t.Fatalf("diff accepted patch scene collision: code=%d result=%#v", diffCode, diffResult)
+			}
+
+			before, err := os.ReadFile(scenePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			applyResult, applyCode := app.New().Apply("scene", scenePath, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Write: true})
+			if applyCode != 1 || applyResult.Status != "ERROR" || !strings.Contains(applyResult.Body, "patch scene mismatch") {
+				t.Fatalf("apply accepted patch scene collision: code=%d result=%#v", applyCode, applyResult)
+			}
+			after, err := os.ReadFile(scenePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Fatal("rejected wrong-scene apply modified the scene")
+			}
+			if _, err := os.Stat(scenePath + ".bak"); !os.IsNotExist(err) {
+				t.Fatalf("rejected wrong-scene apply created a backup: %v", err)
+			}
+		})
+	}
+}
+
 func TestSuggestWarnsWhenAllCandidatesOverlap(t *testing.T) {
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	manifestPath := filepath.Join(t.TempDir(), "scene.bounds.json")
 	manifest := bounds.Manifest{
 		Scene:   "Assets/Scenes/SimpleScene.unity",
@@ -1315,7 +1517,7 @@ func TestSuggestWarnsWhenAllCandidatesOverlap(t *testing.T) {
 
 func TestSuggestWithOutWritesPatchFileForRankOne(t *testing.T) {
 	svc := app.New()
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
 	outFile := filepath.Join(t.TempDir(), "out.patch.json")
 
@@ -1370,7 +1572,7 @@ func TestSuggestWithOutWritesPatchFileForRankOne(t *testing.T) {
 
 func TestSuggestWithOutNoGUIDWritesUnknownPatch(t *testing.T) {
 	svc := app.New()
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
 	outFile := filepath.Join(t.TempDir(), "out.patch.json")
 
@@ -1407,7 +1609,7 @@ func TestSuggestWithOutNoGUIDWritesUnknownPatch(t *testing.T) {
 
 func TestSuggestWithOutPickSelectsRank(t *testing.T) {
 	svc := app.New()
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
 	outFile1 := filepath.Join(t.TempDir(), "rank1.patch.json")
 	outFile2 := filepath.Join(t.TempDir(), "rank2.patch.json")
@@ -1452,7 +1654,7 @@ func TestSuggestWithOutPickSelectsRank(t *testing.T) {
 
 func TestSuggestWithOutPickOutOfRangeReturnsError(t *testing.T) {
 	svc := app.New()
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
 	outFile := filepath.Join(t.TempDir(), "out.patch.json")
 
@@ -2053,7 +2255,7 @@ func TestCheckSceneRejectsNonFinitePosition(t *testing.T) {
 }
 
 func TestCheckSceneRejectsManifestSceneMismatch(t *testing.T) {
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	manifestPath := filepath.Join(t.TempDir(), "mismatch.bounds.json")
 	manifest := bounds.Manifest{
 		Scene:   "Assets/Scenes/OtherScene.unity",
@@ -2186,7 +2388,7 @@ func TestPatchRejectsUnsupportedOp(t *testing.T) {
 }
 
 func TestPatchClearPlacementReturnsOKSummaryPlusPlan(t *testing.T) {
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
 
 	svc := app.New()
@@ -2240,7 +2442,7 @@ func TestPatchClearPlacementReturnsOKSummaryPlusPlan(t *testing.T) {
 }
 
 func TestPatchOverlapPlacementReturnsWARNSummaryPlusPlan(t *testing.T) {
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
 
 	svc := app.New()
@@ -2273,7 +2475,7 @@ func TestPatchOverlapPlacementReturnsWARNSummaryPlusPlan(t *testing.T) {
 }
 
 func TestPatchUnresolvedPrefabReferenceReturnsUnknown(t *testing.T) {
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
 
 	svc := app.New()
@@ -2305,7 +2507,7 @@ func TestPatchUnresolvedPrefabReferenceReturnsUnknown(t *testing.T) {
 }
 
 func TestPatchAutoResolvesPrefabGUIDFromMeta(t *testing.T) {
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
 
 	project := t.TempDir()
@@ -2346,7 +2548,7 @@ func TestPatchAutoResolvesPrefabGUIDFromMeta(t *testing.T) {
 }
 
 func TestPatchWithoutMetaKeepsNeedPrefabGUID(t *testing.T) {
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	manifestPath := filepath.Join("..", "..", "testdata", "manifests", "simple_scene.bounds.json")
 
 	svc := app.New()
@@ -2370,7 +2572,7 @@ func TestPatchWithoutMetaKeepsNeedPrefabGUID(t *testing.T) {
 }
 
 func TestDiffReturnsPatchSummaryAndPlan(t *testing.T) {
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	patchPath := filepath.Join("..", "..", "testdata", "patches", "chair_place_ok.patch.json")
 
 	svc := app.New()
@@ -2397,7 +2599,7 @@ func TestDiffReturnsPatchSummaryAndPlan(t *testing.T) {
 }
 
 func TestApplyDryRunReturnsVerifiedSummaryWithoutWriting(t *testing.T) {
-	scenePath := copyFixtureFile(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), "simple_scene.unity")
+	scenePath := stageSceneFixtureAt(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), filepath.Join("Assets", "Scenes", "SimpleScene.unity"))
 	patchPath := filepath.Join("..", "..", "testdata", "patches", "chair_place_ok.patch.json")
 
 	before, err := os.ReadFile(scenePath)
@@ -2434,7 +2636,7 @@ func TestApplyDryRunReturnsVerifiedSummaryWithoutWriting(t *testing.T) {
 }
 
 func TestApplyWriteCreatesBackupAndWritesScene(t *testing.T) {
-	scenePath := copyFixtureFile(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), "simple_scene.unity")
+	scenePath := stageSceneFixtureAt(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), filepath.Join("Assets", "Scenes", "SimpleScene.unity"))
 	patchPath := filepath.Join("..", "..", "testdata", "patches", "chair_place_ok.patch.json")
 
 	svc := app.New()
@@ -2464,7 +2666,7 @@ func TestApplyWriteCreatesBackupAndWritesScene(t *testing.T) {
 }
 
 func TestApplyBlocksWhenPreCheckFails(t *testing.T) {
-	scenePath := copyFixtureFile(t, filepath.Join("..", "..", "testdata", "broken", "duplicate_fileid.unity"), "simple_scene.unity")
+	scenePath := stageSceneFixtureAt(t, filepath.Join("..", "..", "testdata", "broken", "duplicate_fileid.unity"), filepath.Join("Assets", "Scenes", "SimpleScene.unity"))
 	patchPath := filepath.Join("..", "..", "testdata", "patches", "chair_place_ok.patch.json")
 
 	before, err := os.ReadFile(scenePath)
@@ -2521,7 +2723,7 @@ func TestApplyBlocksWhenPreCheckFails(t *testing.T) {
 }
 
 func TestApplyRejectsUnknownPatchStatus(t *testing.T) {
-	scenePath := copyFixtureFile(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), "simple_scene.unity")
+	scenePath := stageSceneFixtureAt(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), filepath.Join("Assets", "Scenes", "SimpleScene.unity"))
 	patchPath := filepath.Join("..", "..", "testdata", "patches", "chair_place_unknown.patch.json")
 
 	svc := app.New()
@@ -3563,7 +3765,10 @@ const reparentSceneContent = "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
 
 func writeReparentScene(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "reparent.unity")
+	path := filepath.Join(t.TempDir(), "Assets", "Scenes", "reparent.unity")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll scene: %v", err)
+	}
 	if err := os.WriteFile(path, []byte(reparentSceneContent), 0o644); err != nil {
 		t.Fatalf("WriteFile scene: %v", err)
 	}
@@ -3890,7 +4095,7 @@ func TestApplyReparentSkipReasonNotConfusedByMetaInPath(t *testing.T) {
 // by the v1 place_prefab path: passing it to a non-reparent apply is now an
 // explicit error, so a passing apply is never misread as "cross-file verified".
 func TestApplyV1RejectsProjectFlag(t *testing.T) {
-	scenePath := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	scenePath := stageSuggestScene(t)
 	patchPath := filepath.Join("..", "..", "testdata", "patches", "chair_place_ok.patch.json")
 
 	got, code := app.New().Apply("scene", scenePath, core.ViewCompact, false, app.ApplyArgs{Patch: patchPath, Project: "."})
@@ -4061,4 +4266,30 @@ func TestApplyDeleteBlocksCrossFileFlowSequenceRef(t *testing.T) {
 	if !strings.Contains(string(data), "&1001") {
 		t.Fatal("a BLOCKED delete must leave the scene untouched")
 	}
+}
+
+func stageSuggestScene(t *testing.T) string {
+	return stageSuggestSceneAt(t, filepath.Join("Assets", "Scenes", "SimpleScene.unity"))
+}
+
+func stageSuggestSceneAt(t *testing.T, assetPath string) string {
+	t.Helper()
+	source := filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity")
+	return stageSceneFixtureAt(t, source, assetPath)
+}
+
+func stageSceneFixtureAt(t *testing.T, source, assetPath string) string {
+	t.Helper()
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), assetPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

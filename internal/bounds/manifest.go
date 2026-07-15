@@ -58,10 +58,14 @@ type ContactRequirement struct {
 }
 
 type SpatialProfile struct {
-	OBBs           []OBB                `json:"obbs"`
-	Forward        Vec3                 `json:"forward"`
-	Up             Vec3                 `json:"up"`
-	PivotOffset    Vec3                 `json:"pivot_offset"`
+	OBBs        []OBB `json:"obbs"`
+	Forward     Vec3  `json:"forward"`
+	Up          Vec3  `json:"up"`
+	PivotOffset Vec3  `json:"pivot_offset"`
+	// Frames is the canonical collection for reviewed, arbitrarily named
+	// contact frames. The three legacy fields remain readable/writable so v2
+	// manifests produced before this collection was introduced keep working.
+	Frames         []ContactFrame       `json:"frames,omitempty"`
 	BottomContact  *ContactFrame        `json:"bottom_contact,omitempty"`
 	BackContact    *ContactFrame        `json:"back_contact,omitempty"`
 	TopContact     *ContactFrame        `json:"top_contact,omitempty"`
@@ -174,12 +178,24 @@ func Save(path string, manifest Manifest) error {
 			sort.Slice(normalized.Objects[i].Spatial.OBBs, func(a, b int) bool {
 				return normalized.Objects[i].Spatial.OBBs[a].ID < normalized.Objects[i].Spatial.OBBs[b].ID
 			})
+			sort.Slice(normalized.Objects[i].Spatial.Frames, func(a, b int) bool {
+				return normalized.Objects[i].Spatial.Frames[a].ID < normalized.Objects[i].Spatial.Frames[b].ID
+			})
+			sort.Slice(normalized.Objects[i].Spatial.Contacts, func(a, b int) bool {
+				return normalized.Objects[i].Spatial.Contacts[a].ID < normalized.Objects[i].Spatial.Contacts[b].ID
+			})
 		}
 	}
 	for i := range normalized.Prefabs {
 		if normalized.Prefabs[i].Spatial != nil {
 			sort.Slice(normalized.Prefabs[i].Spatial.OBBs, func(a, b int) bool {
 				return normalized.Prefabs[i].Spatial.OBBs[a].ID < normalized.Prefabs[i].Spatial.OBBs[b].ID
+			})
+			sort.Slice(normalized.Prefabs[i].Spatial.Frames, func(a, b int) bool {
+				return normalized.Prefabs[i].Spatial.Frames[a].ID < normalized.Prefabs[i].Spatial.Frames[b].ID
+			})
+			sort.Slice(normalized.Prefabs[i].Spatial.Contacts, func(a, b int) bool {
+				return normalized.Prefabs[i].Spatial.Contacts[a].ID < normalized.Prefabs[i].Spatial.Contacts[b].ID
 			})
 		}
 	}
@@ -481,6 +497,9 @@ func validateSpatial(profile *SpatialProfile, path string) error {
 	if profile.Confidence < 0 || profile.Confidence > 1 {
 		return fmt.Errorf("invalid manifest: %s.confidence must be between 0 and 1", path)
 	}
+	if !unitVec3(profile.Forward) || !unitVec3(profile.Up) || math.Abs(dotVec3(profile.Forward, profile.Up)) > .001 {
+		return fmt.Errorf("invalid manifest: %s forward/up must be normalized and orthogonal", path)
+	}
 	seenOBBIDs := make(map[string]struct{}, len(profile.OBBs))
 	for i, box := range profile.OBBs {
 		if strings.TrimSpace(box.ID) == "" {
@@ -498,7 +517,18 @@ func validateSpatial(profile *SpatialProfile, path string) error {
 			return fmt.Errorf("invalid manifest: %s.obbs[%d].rotation must be normalized", path, i)
 		}
 	}
-	frames := make(map[string]struct{}, 2)
+	frames := make(map[string]struct{}, len(profile.Frames)+3)
+	for index := range profile.Frames {
+		frame := &profile.Frames[index]
+		if err := validateContactFrame(frame, fmt.Sprintf("%s.frames[%d]", path, index)); err != nil {
+			return err
+		}
+		if _, exists := frames[frame.ID]; exists {
+			return fmt.Errorf("invalid manifest: duplicate %s.frames.id=%q", path, frame.ID)
+		}
+		frames[frame.ID] = struct{}{}
+	}
+	legacyFrameIDs := make(map[string]string, 3)
 	for _, item := range []struct {
 		name  string
 		frame *ContactFrame
@@ -507,8 +537,17 @@ func validateSpatial(profile *SpatialProfile, path string) error {
 		if frame == nil {
 			continue
 		}
-		if strings.TrimSpace(frame.ID) == "" || frame.Size[0] <= 0 || frame.Size[1] <= 0 || !unitVec3(frame.Normal) || !unitVec3(frame.Tangent) || math.Abs(dotVec3(frame.Normal, frame.Tangent)) > .001 {
-			return fmt.Errorf("invalid manifest: %s.%s has invalid id, basis, or size", path, name)
+		if err := validateContactFrame(frame, path+"."+name); err != nil {
+			return err
+		}
+		if previous, exists := legacyFrameIDs[frame.ID]; exists {
+			return fmt.Errorf("invalid manifest: %s.%s duplicates legacy frame id=%q from %s", path, name, frame.ID, previous)
+		}
+		legacyFrameIDs[frame.ID] = name
+		// A legacy alias may repeat the canonical frame with the same ID and
+		// value, but may never silently redefine it.
+		if existing := findFrameByID(profile.Frames, frame.ID); existing != nil && *existing != *frame {
+			return fmt.Errorf("invalid manifest: %s.%s conflicts with frames id=%q", path, name, frame.ID)
 		}
 		frames[frame.ID] = struct{}{}
 	}
@@ -529,6 +568,22 @@ func validateSpatial(profile *SpatialProfile, path string) error {
 		}
 		if strings.TrimSpace(contact.Target) == "" || !finite(contact.MinimumGap) || !finite(contact.MaximumGap) || !finite(contact.MaximumPenetration) || !finite(contact.MinimumSupport) || !finite(contact.DirectionAlignment) || contact.MinimumGap < 0 || contact.MaximumGap < contact.MinimumGap || contact.MaximumPenetration < 0 || contact.MinimumSupport < 0 || contact.MinimumSupport > 1 || contact.DirectionAlignment < 0 || contact.DirectionAlignment > 1 {
 			return fmt.Errorf("invalid manifest: %s.contacts[%d] has invalid target or tolerances", path, index)
+		}
+	}
+	return nil
+}
+
+func validateContactFrame(frame *ContactFrame, path string) error {
+	if strings.TrimSpace(frame.ID) == "" || frame.Size[0] <= 0 || frame.Size[1] <= 0 || !unitVec3(frame.Normal) || !unitVec3(frame.Tangent) || math.Abs(dotVec3(frame.Normal, frame.Tangent)) > .001 {
+		return fmt.Errorf("invalid manifest: %s has invalid id, basis, or size", path)
+	}
+	return nil
+}
+
+func findFrameByID(frames []ContactFrame, id string) *ContactFrame {
+	for index := range frames {
+		if frames[index].ID == id {
+			return &frames[index]
 		}
 	}
 	return nil

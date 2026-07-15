@@ -76,6 +76,31 @@ func TestArrangementHashRecomputesStaleHashWithoutWeakeningValidate(t *testing.T
 	}
 }
 
+func TestArrangementValidateRejectsMissingHashButHashRepairsIt(t *testing.T) {
+	data, err := os.ReadFile(arrangementFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := strings.Replace(string(data), arrangementGoldenHash, "", 1)
+	path := filepath.Join(t.TempDir(), "missing-hash.json")
+	if err := os.WriteFile(path, []byte(missing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := runArrangement([]string{"validate", path}, stdout, stderr); code != 1 || !strings.Contains(stderr.String(), "spec_hash is required") {
+		t.Fatalf("validate code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := runArrangement([]string{"hash", path}, stdout, stderr); code != 0 {
+		t.Fatalf("hash code=%d stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "spec_hash="+arrangementGoldenHash) {
+		t.Fatalf("hash stdout=%q", stdout.String())
+	}
+}
+
 func TestArrangementRejectsInvalidInvocationAndSpec(t *testing.T) {
 	tests := []struct {
 		args    []string

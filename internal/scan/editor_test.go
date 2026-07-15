@@ -449,6 +449,20 @@ func TestBuildDetailedEditorScanSnippetUsesColliderFirstWithRendererFallback(t *
 		"var components = colliders.Length > 0 ? colliders : renderers;",
 		"source = colliderBacked ? \"collider\" : \"renderer-bounds\"",
 		"aggregateComponents(components)",
+		"new System.Collections.Generic.HashSet<int>",
+		"GetProperty(\"SourceCollider\")",
+		"GetProperty(\"Reviewed\")",
+		"GetProperty(\"SpatialReviewKind\")",
+		"GetProperty(\"SourceColliders\")",
+		"string.Equals(kind.GetValue(item) as string, \"room-obstacle\", StringComparison.Ordinal)",
+		"System.Tuple.Create(item.transform, collider == null ? new Collider[0] : new [] { collider })",
+		"reviewedSurfaceColliders.UnionWith(reviewedObstacleColliders)",
+		"var reviewedColliderScopes = reviewedSurfaceScopes.Concat(reviewedObstacleScopes).ToArray()",
+		"System.Func<Component,Component,bool> shapeContains",
+		"renderer.transform.IsChildOf(scope.Item1)",
+		"scope.Item2.Any(collider => componentUsable(collider) && shapeContains(collider, renderer))",
+		"!(entry.Item2[0] is Renderer && entry.Item2.All(rendererCoveredByReviewedCompound))",
+		"entry.Item2.Cast<Collider>().All(collider => reviewedSurfaceColliders.Contains(collider.GetInstanceID()))",
 		"Assets/KayKit/Models/Bookcase.fbx",
 	} {
 		if !strings.Contains(snippet, required) {
@@ -458,8 +472,30 @@ func TestBuildDetailedEditorScanSnippetUsesColliderFirstWithRendererFallback(t *
 	if strings.Contains(snippet, "FindObjectsByType<Renderer>") {
 		t.Fatal("detailed snippet only discovers renderer-backed scene objects")
 	}
+	if strings.Contains(snippet, `GetProperty("Reviewed").GetValue(item) && (bool)item.GetType().GetProperty("Supported")`) {
+		t.Fatal("unsupported reviewed surfaces must still be able to review solid obstacle geometry")
+	}
+	if strings.Contains(snippet, "System.Tuple.Create(collider == null ? null : collider.transform") {
+		t.Fatal("a room boundary collider must not become the ancestry scope for every renderer inside the room")
+	}
 	if strings.Index(snippet, "Assets/KayKit/Models/Bookcase.fbx") > strings.Index(snippet, "Assets/Prefabs/Torch.prefab") {
 		t.Fatal("detailed snippet does not sort GameObject asset paths")
+	}
+}
+
+func TestEditorScanSnippetsUseExplicitStringArrayForEmptyPrefabList(t *testing.T) {
+	for name, snippet := range map[string]string{
+		"basic":    buildEditorScanSnippet("Assets/Scenes/Room.unity", nil),
+		"detailed": buildDetailedEditorScanSnippet("Assets/Scenes/Room.unity", nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(snippet, "var prefabPaths = new string[] {  };") {
+				t.Fatalf("empty prefab list must still have an inferable C# type:\n%s", snippet)
+			}
+			if strings.Contains(snippet, "var prefabPaths = new [] {  };") {
+				t.Fatal("empty implicitly typed C# array does not compile")
+			}
+		})
 	}
 }
 

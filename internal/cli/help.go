@@ -37,7 +37,7 @@ var commandSpecs = map[string]commandSpec{
 	"set":          {"set a field; dry-run first, --write to commit", "--field F --value V [--id N] [--write]  (prefab: --project DIR --id N --ack-impact) [--json]"},
 	"reposition":   {"set a Transform's m_LocalPosition; dry-run first, --write to commit (scene)", "--id N --position x,y,z [--write] [--json]"},
 	"scan":         {"generate a bounds manifest via the Unity Editor (scene)", "--mode editor --project DIR --out FILE [--prefabs a,b] [--geometry detailed] [--contracts DIR] [--json]"},
-	"check":        {"placement overlap/contact check against a manifest (scene)", "--manifest FILE --prefab P --position x,y,z [--rotation x,y,z,w --surface-id ID --contact KIND] [--json]"},
+	"check":        {"placement overlap/contact check against a manifest (scene)", "--manifest FILE --prefab P --position x,y,z [--rotation x,y,z,w] [--surface-id ID --contact KIND | --contact-surfaces requirement-id=surface-id,...] [--json]"},
 	"patch":        {"build a patch plan (scene): place_prefab (v1), reparent or delete (v2 ops[])", "--op place_prefab --manifest FILE --prefab P --position x,y,z [--prefab-guid G] [--project DIR] | --op reparent --id N --new-parent M | --op delete --id N [--cascade]  [--json]"},
 	"diff":         {"summarize a persisted patch plan (scene; v1 or v2)", "--patch FILE [--json]"},
 	"apply":        {"apply a patch plan; dry-run first, --write to commit (scene)", "--patch FILE [--write] (reparent/delete: --ack-impact; delete --write requires --project; [--project DIR for cross-file report]) [--json]"},
@@ -62,6 +62,20 @@ func wantsHelp(args []string) bool {
 // helpText returns per-command help when command is known, otherwise the
 // general usage overview.
 func helpText(namespace, command string) string {
+	if namespace == "spatial" {
+		switch command {
+		case "validate":
+			return "unity-ctx spatial validate <file> [--json]\n  strictly validate a Spatial Contract and its embedded contract hash\n"
+		case "verify-approved":
+			return "unity-ctx spatial verify-approved <file> [--json]\n  verify the exact Approved contract against the external human-approval ledger\n"
+		case "diff":
+			return "unity-ctx spatial diff --current FILE --draft FILE [--json]\n  compare a stored Spatial Contract with a reviewed draft without writing\n"
+		case "review":
+			return "unity-ctx spatial review --draft FILE --decision RevisionRequested|UnableToJudge --reviewer ID [--issues a,b] [--comment TEXT] [--write] [--json]\n  record a non-approval review decision; approval is restricted to the trusted local bridge\n"
+		case "apply":
+			return "unity-ctx spatial apply --current FILE --draft FILE [--json]\n  dry-run a reviewed contract apply; writing is restricted to the trusted local bridge\n"
+		}
+	}
 	if namespace == "arrangement" {
 		switch command {
 		case "validate":
@@ -102,12 +116,13 @@ func generalUsage() string {
 	b.WriteString("unity-ctx — token-safe Unity scene/prefab/asset interface for AI agents\n\n")
 	b.WriteString("usage: unity-ctx <namespace> <command> <file> [flags]\n")
 	b.WriteString("       unity-ctx meta guid <file> [--project DIR]\n")
+	b.WriteString("       unity-ctx spatial validate|verify-approved|diff|review|apply [flags]\n")
 	b.WriteString("       unity-ctx arrangement validate|hash <file> [--json]\n")
 	b.WriteString("       unity-ctx mcp                          # MCP server over stdio\n\n")
 	b.WriteString("namespaces: scene | prefab | asset\n\n")
 	b.WriteString("read commands:  " + strings.Join(read, " ") + "\n")
 	b.WriteString("write commands: " + strings.Join(write, " ") + "\n")
-	b.WriteString("other:          arrangement validate|hash  impact (prefab)  meta guid  mcp\n\n")
+	b.WriteString("other:          spatial validate|verify-approved|diff|review|apply  arrangement validate|hash  impact (prefab)  meta guid  mcp\n\n")
 	b.WriteString("Run 'unity-ctx <namespace> <command> --help' for command-specific usage.\n")
 	return b.String()
 }

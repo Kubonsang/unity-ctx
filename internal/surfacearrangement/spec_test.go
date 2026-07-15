@@ -1,7 +1,9 @@
 package surfacearrangement
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -86,6 +88,7 @@ func TestDecodeIsStrict(t *testing.T) {
 	}{
 		{"unknown field", strings.Replace(string(golden), `"arrangement_id":`, `"surprise": true, "arrangement_id":`, 1), "unknown field"},
 		{"stale hash", strings.Replace(string(golden), goldenHash, strings.Repeat("0", 64), 1), "spec_hash does not match"},
+		{"missing hash", strings.Replace(string(golden), goldenHash, "", 1), "spec_hash is required"},
 		{"trailing json", string(golden) + `{}`, "unexpected trailing JSON content"},
 		{"missing version", strings.Replace(strings.Replace(string(golden), `"surface_arrangement_version": 1,`, ``, 1), goldenHash, "", 1), "surface_arrangement_version must be 1"},
 	}
@@ -95,6 +98,25 @@ func TestDecodeIsStrict(t *testing.T) {
 				t.Fatalf("Decode() error = %v, want containing %q", err, test.message)
 			}
 		})
+	}
+}
+
+func TestDecodeForHashAllowsMissingHashWhileDecodeRejectsIt(t *testing.T) {
+	spec := validSpec()
+	spec.SpecHash = ""
+	data, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decode(data); err == nil || !strings.Contains(err.Error(), "spec_hash is required") {
+		t.Fatalf("Decode() error = %v, want required hash", err)
+	}
+	got, err := DecodeForHash(data)
+	if err != nil {
+		t.Fatalf("DecodeForHash() error = %v", err)
+	}
+	if got.SpecHash == "" || got.SpecHash != ContentHash(got) {
+		t.Fatalf("DecodeForHash() did not calculate a valid hash: %#v", got)
 	}
 }
 
@@ -110,7 +132,6 @@ func TestValidateRejectsOutOfRangeValues(t *testing.T) {
 		{"slider", func(s *Spec) { s.Grouping = 1.01 }, "amount, orderliness"},
 		{"non-finite slider", func(s *Spec) { s.Stacking = math.Inf(1) }, "amount, orderliness"},
 		{"edge margin", func(s *Spec) { s.EdgeMargin = -0.001 }, "edge_margin"},
-		{"unbounded edge margin", func(s *Spec) { s.EdgeMargin = MaximumEdgeMarginMeters + 1 }, "edge_margin"},
 		{"stack height", func(s *Spec) { s.MaxStackHeight = 4 }, "max_stack_height"},
 		{"negative seed offset", func(s *Spec) { s.SeedOffset = -1 }, "seed_offset must be non-negative"},
 		{"member count", func(s *Spec) { s.Members[0].MinimumCount = 4 }, "counts must satisfy"},
@@ -162,44 +183,95 @@ func TestDecodeAndValidateRejectRawValuesBeforeRounding(t *testing.T) {
 	}
 }
 
-func TestSharedPortableSchemaFixture(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "arrangements", "portable_schema.json"))
+func TestCanonicalJSONMatchesUnityUnicodeAndNumberSemantics(t *testing.T) {
+	longID := "arrangement-" + strings.Repeat("x", 140) + "-한글<&>"
+	spec := Spec{
+		SurfaceArrangementVersion: Version,
+		ArrangementID:             longID,
+		TargetElementID:           "table<&>",
+		TargetFrameID:             "top-면",
+		Members: []Member{
+			// Go rune ordering puts U+E000 before U+10000. Unity's UTF-16
+			// ordinal ordering must put the surrogate pair first instead.
+			{DescriptorID: "book-\uE000", MinimumCount: 1, MaximumCount: 1, SelectionWeight: 1, AffinityGroup: "책<&>"},
+			{DescriptorID: "book-\U00010000", MinimumCount: 1, MaximumCount: 1, SelectionWeight: 0.5500005, AffinityGroup: "책<&>"},
+		},
+		Preset:          PresetInUse,
+		Amount:          0.5500005,
+		Orderliness:     0.45,
+		Grouping:        0.75,
+		Stacking:        0.55,
+		EdgeMargin:      101.25,
+		MaxStackHeight:  3,
+		SeedOffset:      17,
+		ResolverVersion: ResolverVersion,
+	}
+	Normalize(&spec)
+	if err := Validate(spec); err != nil {
+		t.Fatalf("Unicode/long-ID/>100m spec should match Unity validation: %v", err)
+	}
+	if got := spec.Members[0].DescriptorID; got != "book-\U00010000" {
+		t.Fatalf("UTF-16 ordinal first member = %q, want supplementary code point", got)
+	}
+	want := fmt.Sprintf(
+		`{"surface_arrangement_version":1,"arrangement_id":"%s","target_element_id":"table\u003c\u0026\u003e","target_frame_id":"top-면","members":[{"descriptor_id":"book-𐀀","minimum_count":1,"maximum_count":1,"selection_weight":0.55,"affinity_group":"책\u003c\u0026\u003e"},{"descriptor_id":"book-","minimum_count":1,"maximum_count":1,"selection_weight":1,"affinity_group":"책\u003c\u0026\u003e"}],"preset":"InUse","amount":0.55,"orderliness":0.45,"grouping":0.75,"stacking":0.55,"edge_margin":101.25,"max_stack_height":3,"seed_offset":17,"resolver_version":1,"spec_hash":""}`,
+		"arrangement-"+strings.Repeat("x", 140)+`-한글\u003c\u0026\u003e`,
+	)
+	got := string(canonicalJSON(spec))
+	if got != want {
+		t.Fatalf("canonical JSON differs from Unity\ngot:  %s\nwant: %s", got, want)
+	}
+	wantHash := fmt.Sprintf("%x", sha256.Sum256([]byte(want)))
+	if spec.SpecHash != wantHash || ContentHash(spec) != wantHash {
+		t.Fatalf("canonical hash got spec=%s content=%s want=%s", spec.SpecHash, ContentHash(spec), wantHash)
+	}
+}
+
+func TestSharedCanonicalParityFixture(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "arrangements", "canonical_parity.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var fixture struct {
-		SchemaVersion           int      `json:"schema_version"`
-		MaximumEdgeMarginMeters float64  `json:"maximum_edge_margin_meters"`
-		MaximumIDLength         int      `json:"maximum_id_length"`
-		ValidIDs                []string `json:"valid_ids"`
-		InvalidIDs              []string `json:"invalid_ids"`
+		SchemaVersion     int      `json:"schema_version"`
+		UTF16OrdinalOrder []string `json:"utf16_ordinal_order"`
+		HTMLEscape        struct {
+			Input     string `json:"input"`
+			Canonical string `json:"canonical"`
+		} `json:"html_escape"`
+		MinimumLongIDLength       int     `json:"minimum_long_id_length"`
+		EdgeMarginOverLegacyLimit float64 `json:"edge_margin_over_legacy_limit"`
+		CanonicalJSON             string  `json:"canonical_json"`
+		SpecHash                  string  `json:"spec_hash"`
 	}
 	if err := json.Unmarshal(data, &fixture); err != nil {
 		t.Fatal(err)
 	}
-	if fixture.SchemaVersion != Version || fixture.MaximumEdgeMarginMeters != MaximumEdgeMarginMeters || fixture.MaximumIDLength != MaximumIDLength {
-		t.Fatalf("portable schema fixture constants do not match implementation: %#v", fixture)
+	if fixture.SchemaVersion != Version || len(fixture.UTF16OrdinalOrder) != 2 ||
+		!utf16OrdinalLess(fixture.UTF16OrdinalOrder[0], fixture.UTF16OrdinalOrder[1]) {
+		t.Fatalf("invalid UTF-16 parity fixture: %#v", fixture)
 	}
-	for _, id := range fixture.ValidIDs {
-		if !portableID(id) {
-			t.Errorf("portableID(%q) = false, want true", id)
-		}
+	var quoted strings.Builder
+	appendJSONString(&quoted, fixture.HTMLEscape.Input)
+	if got, want := quoted.String(), `"`+fixture.HTMLEscape.Canonical+`"`; got != want {
+		t.Fatalf("HTML-safe quote = %q, want %q", got, want)
 	}
-	for _, id := range fixture.InvalidIDs {
-		if portableID(id) {
-			t.Errorf("portableID(%q) = true, want false", id)
-		}
-	}
-
 	spec := validSpec()
-	spec.Members[0].DescriptorID = "book-📖"
-	if err := Validate(spec); err == nil || !strings.Contains(err.Error(), "portable ASCII IDs") {
-		t.Fatalf("Validate(unicode ID) error = %v", err)
+	spec.ArrangementID = strings.Repeat("x", fixture.MinimumLongIDLength)
+	spec.EdgeMargin = fixture.EdgeMarginOverLegacyLimit
+	Normalize(&spec)
+	if err := Validate(spec); err != nil {
+		t.Fatalf("shared parity fixture rejected: %v", err)
 	}
-	spec = validSpec()
-	spec.EdgeMargin = 1e30
-	if err := Validate(spec); err == nil || !strings.Contains(err.Error(), "edge_margin") {
-		t.Fatalf("Validate(exponent-sized margin) error = %v", err)
+	canonicalSpec, err := DecodeForHash([]byte(fixture.CanonicalJSON))
+	if err != nil {
+		t.Fatalf("canonical fixture is not a valid arrangement: %v", err)
+	}
+	if got := string(canonicalJSON(canonicalSpec)); got != fixture.CanonicalJSON {
+		t.Fatalf("canonical fixture changed\ngot:  %s\nwant: %s", got, fixture.CanonicalJSON)
+	}
+	if canonicalSpec.SpecHash != fixture.SpecHash || ContentHash(canonicalSpec) != fixture.SpecHash {
+		t.Fatalf("fixed fixture hash got spec=%s content=%s want=%s", canonicalSpec.SpecHash, ContentHash(canonicalSpec), fixture.SpecHash)
 	}
 }
 

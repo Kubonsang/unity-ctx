@@ -12,6 +12,7 @@ import (
 
 	"github.com/Kubonsang/unity-ctx/internal/app"
 	"github.com/Kubonsang/unity-ctx/internal/bounds"
+	"github.com/Kubonsang/unity-ctx/internal/check"
 	"github.com/Kubonsang/unity-ctx/internal/contextpack"
 	"github.com/Kubonsang/unity-ctx/internal/core"
 	"github.com/Kubonsang/unity-ctx/internal/impact"
@@ -103,6 +104,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	rotation := flagSet.String("rotation", "", "")
 	surfaceID := flagSet.String("surface-id", "", "")
 	contact := flagSet.String("contact", "", "")
+	contactSurfaces := flagSet.String("contact-surfaces", "", "")
 	geometry := flagSet.String("geometry", "", "")
 	contracts := flagSet.String("contracts", "", "")
 
@@ -119,6 +121,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --surface-id\n", command)
 		return 2
 	}
+	if command != "check" && seenFlags["contact-surfaces"] {
+		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --contact-surfaces\n", command)
+		return 2
+	}
 	if command != "scan" && seenFlags["geometry"] {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --geometry\n", command)
 		return 2
@@ -127,7 +133,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "ERROR %s does not accept --contracts\n", command)
 		return 2
 	}
-
 	if flagSet.NArg() > 0 {
 		_, _ = fmt.Fprintf(stderr, "ERROR unexpected trailing arguments: %s\n", strings.Join(flagSet.Args(), " "))
 		return 2
@@ -420,6 +425,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		if (seenFlags["surface-id"] || seenFlags["contact"]) && (!seenFlags["surface-id"] || !seenFlags["contact"]) {
 			_, _ = io.WriteString(stderr, "ERROR check requires --surface-id and --contact together\n")
 			return 2
+		}
+		if seenFlags["contact-surfaces"] && (seenFlags["surface-id"] || seenFlags["contact"]) {
+			_, _ = io.WriteString(stderr, "ERROR check accepts either --contact-surfaces or --surface-id/--contact, not both\n")
+			return 2
+		}
+		if seenFlags["contact-surfaces"] {
+			if _, err := check.ParseContactSurfaces(*contactSurfaces); err != nil {
+				_, _ = fmt.Fprintf(stderr, "ERROR check %v\n", err)
+				return 2
+			}
 		}
 		if seenFlags["contact"] && *contact != "wall-backed" && *contact != "wall-mounted" && *contact != "floor-supported" && *contact != "ceiling-mounted" {
 			_, _ = io.WriteString(stderr, "ERROR check supports --contact wall-backed|wall-mounted|floor-supported|ceiling-mounted\n")
@@ -1042,14 +1057,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		})
 	case "check":
 		result, exitCode = service.Check(namespace, file, selectedView, *jsonOutput, app.CheckArgs{
-			Manifest:    *manifest,
-			Prefab:      *prefab,
-			HasPosition: seenFlags["position"],
-			Position:    parsedPosition,
-			HasRotation: seenFlags["rotation"],
-			Rotation:    parsedRotation,
-			SurfaceID:   *surfaceID,
-			Contact:     *contact,
+			Manifest:        *manifest,
+			Prefab:          *prefab,
+			HasPosition:     seenFlags["position"],
+			Position:        parsedPosition,
+			HasRotation:     seenFlags["rotation"],
+			Rotation:        parsedRotation,
+			SurfaceID:       *surfaceID,
+			Contact:         *contact,
+			ContactSurfaces: *contactSurfaces,
 		})
 	case "scan":
 		result, exitCode = service.Scan(namespace, file, selectedView, *jsonOutput, app.ScanArgs{

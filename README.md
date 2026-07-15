@@ -142,7 +142,7 @@ unity-ctx scene apply Assets/Scenes/GameLevel.unity --patch /tmp/chair.patch.jso
 
 ## Spatial geometry v0.9
 
-`scene scan --mode editor --geometry detailed` asks the Unity Editor to emit Spatial Manifest v2: Collider-first compound local OBB drafts, semantic contact frames, and planar surface candidates. Scanned geometry is unreviewed until the Unity workflow or an approved matching contract verifies it. `scene check` then proves rotated overlap and finite-surface contact gap/penetration/support, and `scene suggest --align wall --surface-id ...` returns deterministic candidates from approved contact requirements. Manifest v1 remains supported for existing AABB workflows; contact requests against it return `UNKNOWN NEED_GEOMETRY_V2`.
+`scene scan --mode editor --geometry detailed` asks the Unity Editor to emit Spatial Manifest v2: Collider-first compound local OBB drafts, arbitrary named contact frames (plus legacy bottom/back/top aliases), and planar surface candidates. Renderer fallbacks remain unreviewed. A scene compound is reviewed only when every collider is explicitly referenced by a reviewed Unity `RoomSurface` or a project-owned marker exposing `SpatialReviewKind == "room-obstacle"`, `Reviewed == true`, and `SourceColliders`; this generic opt-in covers pillars without a UnityDecoScene dependency. Unsupported reviewed surfaces can prove solid obstacle geometry without becoming contact targets, and mixed reviewed/unreviewed collider compounds fail closed. `scene check` then proves rotated overlap and finite-surface contact gap/penetration/support. Assets with simultaneous requirements must map every stable requirement ID, for example `--contact-surfaces floor=floor-main,wall=wall-north`; a legacy single contact cannot approve a multi-contact profile. `scene suggest` aligns the chosen reviewed frame basis for both floor and wall surfaces and returns deterministic candidates. Manifest v1 remains supported for existing AABB workflows; contact requests against it return `UNKNOWN NEED_GEOMETRY_V2`.
 
 The MCP server adds read-only `unity_spatial_check` and `unity_suggest_wall` tools. Unity remains the final scene authority, raw FBX files are not parsed by Go, and no mutation tool is added to MCP.
 
@@ -152,15 +152,16 @@ Reusable asset and `SupportedBy` interaction contracts are separate from scene s
 
 ```bash
 unity-ctx spatial validate Library/DungeonDecorator/SpatialDrafts/banner.spatial.json
+unity-ctx spatial verify-approved Assets/SpatialContracts/Assets/<guid>.spatial.json --json
 unity-ctx spatial diff --current Assets/SpatialContracts/Assets/<guid>.spatial.json --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json
 unity-ctx spatial apply --current Assets/SpatialContracts/Assets/<guid>.spatial.json --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json
 ```
 
-The public CLI can validate, diff, record non-approval feedback, and dry-run an apply. It cannot create `Approved` evidence or execute `spatial apply --write`. Only the local human-review bridge can call the authorized approval/write APIs after verifying its one-time evidence. Geometry, interaction, or capture changes invalidate technical and human evidence. MCP exposes neither approval nor mutation.
+The public CLI can validate, diff, record non-approval feedback, and dry-run an apply. It cannot create `Approved` evidence or execute `spatial apply --write`. The local human-review bridge invokes `unity-ctx review-bridge` over a one-request stdin protocol with a short-lived Ed25519 grant bound to the exact action, draft content, current-file baseline, capture, reviewer, and destination. `SupportedBy` grants also bind subject and target geometry hashes resolved from independently ledger-authorized Asset contracts. The operation holds an external destination lock across baseline recheck, write verification, and receipt commit; competing drafts cannot both win. It persists nonce consumption and the original cryptographically verifiable grant receipt in the OS-account local-data directory, never reusable proof in tracked JSON. Later `scene scan --contracts` and `spatial verify-approved` re-verify that receipt before consuming an Approved contract; interaction verification also rejects changed dependency geometry with `SUPPORT_CONTRACT_STALE`. Unsigned legacy approval records must be reviewed again. MCP exposes neither approval nor mutation. See `docs/COMMANDS.md` for the v2 signing payload and protocol.
 
 ## Surface Arrangement contracts
 
-`unity-ctx arrangement validate <file>` strictly validates the stored `spec_hash`. `unity-ctx arrangement hash <file>` instead recomputes the normalized replacement when an edited draft still contains its old hash. Arrangement IDs are portable ASCII identifiers up to 128 characters and `edge_margin` is limited to 0–100 meters, keeping Go and Unity canonical hashes identical without exponent or Unicode ordering ambiguity.
+`unity-ctx arrangement validate <file>` requires and strictly validates the stored `spec_hash`. `unity-ctx arrangement hash <file>` instead computes the normalized replacement when an edited draft has a missing or stale hash. Canonicalization follows Unity's actual wire semantics: values pass through `System.Single` precision, numbers use at most six fixed decimals, member IDs use UTF-16 ordinal ordering, and JSON strings use the same HTML-safe escapes. Unicode and long IDs as well as any finite non-negative `edge_margin` accepted by Unity are therefore accepted here too.
 
 ## Commands
 

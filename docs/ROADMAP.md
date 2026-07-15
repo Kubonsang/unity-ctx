@@ -115,10 +115,10 @@ Status: complete (tag `v0.8.0`)
 Status: implemented on the Concept Room Decorator integration branch.
 
 - Spatial Manifest v2 with v1 read compatibility and strict stable JSON output
-- compound local OBB proxies, semantic axes, pivot offsets, and bottom/back contact frames
+- compound local OBB proxies, semantic axes, pivot offsets, arbitrary named contact frames, and legacy bottom/back/top aliases
 - reviewed planar `SurfacePatch` floor, wall, and ceiling records
 - `scene scan --mode editor --geometry detailed` using Unity-imported Collider data first and Renderer bounds as fallback
-- rotated compound OBB SAT and reviewed contact checks in `scene check`
+- rotated compound OBB SAT and holistic simultaneous-contact checks in `scene check`
 - `scene suggest --align wall --surface-id ...` read-only deterministic candidates
 - `UNKNOWN NEED_GEOMETRY_V2` instead of estimating contact from manifest v1
 - read-only MCP tools `unity_spatial_check` and `unity_suggest_wall`

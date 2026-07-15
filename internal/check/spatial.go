@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/Kubonsang/unity-ctx/internal/bounds"
 )
@@ -13,6 +14,7 @@ var (
 	ErrNeedGeometryV2         = errors.New("NEED_GEOMETRY_V2")
 	ErrGeometryUnreviewed     = errors.New("GEOMETRY_UNREVIEWED")
 	ErrRoomGeometryUnreviewed = errors.New("ROOM_GEOMETRY_UNREVIEWED")
+	ErrContactMappingRequired = errors.New("CONTACT_SURFACE_MAPPING_REQUIRED")
 )
 
 type SpatialRequest struct {
@@ -22,6 +24,45 @@ type SpatialRequest struct {
 	Rotation  bounds.Quat
 	SurfaceID string
 	Contact   string
+	// ContactSurfaces enables holistic validation of every required contact.
+	// RequirementID is the stable key from SpatialProfile.Contacts. The legacy
+	// SurfaceID/Contact pair above remains supported for single-contact callers.
+	ContactSurfaces []ContactSurface
+}
+
+type ContactSurface struct {
+	RequirementID string
+	SurfaceID     string
+}
+
+type ContactResult struct {
+	RequirementID string
+	Contact       string
+	SurfaceID     string
+	Codes         []string
+	Gap           float64
+	Penetration   float64
+	Alignment     float64
+	Support       float64
+}
+
+// ParseContactSurfaces parses the stable CLI/bridge form
+// "requirement-id=surface-id,...". Requirement IDs, rather than contact kinds,
+// keep multiple requirements of the same kind unambiguous.
+func ParseContactSurfaces(value string) ([]ContactSurface, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	result := make([]ContactSurface, 0)
+	for index, raw := range strings.Split(value, ",") {
+		parts := strings.SplitN(raw, "=", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+			return nil, fmt.Errorf("invalid contact surface mapping[%d]: expected requirement-id=surface-id", index)
+		}
+		result = append(result, ContactSurface{RequirementID: strings.TrimSpace(parts[0]), SurfaceID: strings.TrimSpace(parts[1])})
+	}
+	return result, nil
 }
 
 type SpatialResult struct {
@@ -32,6 +73,7 @@ type SpatialResult struct {
 	Penetration float64
 	Alignment   float64
 	Support     float64
+	Contacts    []ContactResult
 }
 
 type worldOBB struct {
@@ -41,6 +83,17 @@ type worldOBB struct {
 }
 
 func CheckSpatialPlacement(req SpatialRequest) (SpatialResult, error) {
+	return checkSpatialPlacement(req, false)
+}
+
+// CheckSingleContactEvidence is for planners while they construct a complete
+// simultaneous mapping. It validates one legacy contact but must not be used
+// as the final placement gate.
+func CheckSingleContactEvidence(req SpatialRequest) (SpatialResult, error) {
+	return checkSpatialPlacement(req, true)
+}
+
+func checkSpatialPlacement(req SpatialRequest, allowPartial bool) (SpatialResult, error) {
 	if req.Manifest.Version != bounds.ManifestVersion2 {
 		return SpatialResult{}, ErrNeedGeometryV2
 	}
@@ -76,71 +129,141 @@ func CheckSpatialPlacement(req SpatialRequest) (SpatialResult, error) {
 		result.Codes = append(result.Codes, "OBB_OVERLAP")
 	}
 	sort.Slice(result.OverlapIDs, func(i, j int) bool { return result.OverlapIDs[i] < result.OverlapIDs[j] })
-	if req.Contact != "" || req.SurfaceID != "" {
+	if !allowPartial && len(prefab.Spatial.Contacts) > 0 && len(req.ContactSurfaces) == 0 && req.Contact == "" && req.SurfaceID == "" {
+		return SpatialResult{}, fmt.Errorf("%w: prefab has %d required contacts; provide ContactSurfaces", ErrContactMappingRequired, len(prefab.Spatial.Contacts))
+	}
+	if len(req.ContactSurfaces) > 0 {
+		contacts, err := resolveContactSurfaces(prefab.Spatial.Contacts, req.ContactSurfaces)
+		if err != nil {
+			return SpatialResult{}, err
+		}
+		for _, target := range contacts {
+			evaluateContact(req, prefab, rotation, target.requirement, target.surfaceID, &result)
+		}
+	} else if req.Contact != "" || req.SurfaceID != "" {
 		if req.Contact == "" || req.SurfaceID == "" {
 			return SpatialResult{}, fmt.Errorf("surface-id and contact must be provided together")
 		}
-		evaluateContact(req, prefab, rotation, &result)
+		if len(prefab.Spatial.Contacts) > 1 && !allowPartial {
+			return SpatialResult{}, fmt.Errorf("%w: prefab has %d required contacts; provide ContactSurfaces", ErrContactMappingRequired, len(prefab.Spatial.Contacts))
+		}
+		requirement := findContactRequirement(prefab.Spatial.Contacts, canonicalContactKind(req.Contact))
+		if requirement == nil {
+			appendCode(&result.Codes, "SUPPORT_CONTRACT_MISSING")
+		} else {
+			evaluateContact(req, prefab, rotation, *requirement, req.SurfaceID, &result)
+		}
 	}
 	result.Clear = len(result.Codes) == 0
 	return result, nil
 }
 
-func evaluateContact(req SpatialRequest, prefab bounds.PrefabBounds, rotation bounds.Quat, result *SpatialResult) {
+type resolvedContactSurface struct {
+	requirement bounds.ContactRequirement
+	surfaceID   string
+}
+
+func resolveContactSurfaces(requirements []bounds.ContactRequirement, mappings []ContactSurface) ([]resolvedContactSurface, error) {
+	byID := make(map[string]bounds.ContactRequirement, len(requirements))
+	for _, requirement := range requirements {
+		byID[requirement.ID] = requirement
+	}
+	seen := make(map[string]bool, len(mappings))
+	resolved := make([]resolvedContactSurface, 0, len(mappings))
+	for index, mapping := range mappings {
+		requirement, ok := byID[mapping.RequirementID]
+		if !ok {
+			return nil, fmt.Errorf("unknown contact requirement id=%q", mapping.RequirementID)
+		}
+		if seen[mapping.RequirementID] {
+			return nil, fmt.Errorf("duplicate contact surface mapping for requirement id=%q", mapping.RequirementID)
+		}
+		if mapping.SurfaceID == "" {
+			return nil, fmt.Errorf("contact surface mapping[%d].surface-id is required", index)
+		}
+		seen[mapping.RequirementID] = true
+		resolved = append(resolved, resolvedContactSurface{requirement: requirement, surfaceID: mapping.SurfaceID})
+	}
+	for _, requirement := range requirements {
+		if !seen[requirement.ID] {
+			return nil, fmt.Errorf("contact surface mapping is missing required contact id=%q", requirement.ID)
+		}
+	}
+	sort.Slice(resolved, func(i, j int) bool { return resolved[i].requirement.ID < resolved[j].requirement.ID })
+	return resolved, nil
+}
+
+func evaluateContact(req SpatialRequest, prefab bounds.PrefabBounds, rotation bounds.Quat, requirement bounds.ContactRequirement, surfaceID string, result *SpatialResult) {
+	evidence := ContactResult{RequirementID: requirement.ID, Contact: canonicalContactKind(requirement.Kind), SurfaceID: surfaceID}
 	var surface *bounds.SurfacePatch
 	for i := range req.Manifest.Surfaces {
-		if req.Manifest.Surfaces[i].ID == req.SurfaceID {
+		if req.Manifest.Surfaces[i].ID == surfaceID {
 			surface = &req.Manifest.Surfaces[i]
 			break
 		}
 	}
 	if surface == nil {
-		result.Codes = append(result.Codes, "SURFACE_UNREVIEWED")
+		appendContactCode(result, &evidence, "SURFACE_UNREVIEWED")
+		result.Contacts = append(result.Contacts, evidence)
 		return
 	}
 	if !surface.Supported {
-		result.Codes = append(result.Codes, "UNSUPPORTED_SURFACE")
+		appendContactCode(result, &evidence, "UNSUPPORTED_SURFACE")
+		result.Contacts = append(result.Contacts, evidence)
 		return
 	}
 	if !surface.Reviewed {
-		result.Codes = append(result.Codes, "SURFACE_UNREVIEWED")
+		appendContactCode(result, &evidence, "SURFACE_UNREVIEWED")
 	}
-	contact := canonicalContactKind(req.Contact)
+	contact := canonicalContactKind(requirement.Kind)
 	wantSurfaceType := surfaceTypeForContact(contact)
 	if wantSurfaceType == "" || surface.Type != wantSurfaceType {
-		result.Codes = append(result.Codes, "CONTACT_DIRECTION")
-		return
-	}
-	requirement := findContactRequirement(prefab.Spatial.Contacts, contact)
-	if requirement == nil {
-		result.Codes = append(result.Codes, "SUPPORT_CONTRACT_MISSING")
+		appendContactCode(result, &evidence, "CONTACT_DIRECTION")
+		result.Contacts = append(result.Contacts, evidence)
 		return
 	}
 	frame := findContactFrame(prefab.Spatial, requirement.FrameID)
 	if frame == nil {
-		result.Codes = append(result.Codes, "GEOMETRY_UNREVIEWED")
+		appendContactCode(result, &evidence, "GEOMETRY_UNREVIEWED")
+		result.Contacts = append(result.Contacts, evidence)
 		return
 	}
 	point := add(req.Position, rotate(rotation, frame.Point))
 	normal := normalize(rotate(rotation, frame.Normal))
 	surfaceNormal := normalize(surface.Normal)
 	signed := dot(sub(point, surface.Origin), surfaceNormal)
-	result.Gap = math.Max(0, signed)
-	result.Penetration = math.Max(0, -signed)
-	result.Alignment = dot(normal, mul(surfaceNormal, -1))
-	if result.Penetration > requirement.MaximumPenetration+1e-6 {
-		result.Codes = append(result.Codes, "SURFACE_PENETRATION")
+	evidence.Gap = math.Max(0, signed)
+	evidence.Penetration = math.Max(0, -signed)
+	evidence.Alignment = dot(normal, mul(surfaceNormal, -1))
+	if evidence.Penetration > requirement.MaximumPenetration+1e-6 {
+		appendContactCode(result, &evidence, "SURFACE_PENETRATION")
 	}
-	if result.Gap < requirement.MinimumGap-1e-6 || result.Gap > requirement.MaximumGap+1e-6 {
-		result.Codes = append(result.Codes, "CONTACT_GAP")
+	if evidence.Gap < requirement.MinimumGap-1e-6 || evidence.Gap > requirement.MaximumGap+1e-6 {
+		appendContactCode(result, &evidence, "CONTACT_GAP")
 	}
-	if result.Alignment < requirement.DirectionAlignment {
-		result.Codes = append(result.Codes, "CONTACT_DIRECTION")
+	if evidence.Alignment < requirement.DirectionAlignment {
+		appendContactCode(result, &evidence, "CONTACT_DIRECTION")
 	}
-	result.Support = contactSupport(*surface, *frame, req.Position, rotation)
-	if result.Support+1e-6 < requirement.MinimumSupport {
-		result.Codes = append(result.Codes, "INSUFFICIENT_SUPPORT")
+	evidence.Support = contactSupport(*surface, *frame, req.Position, rotation)
+	if evidence.Support+1e-6 < requirement.MinimumSupport {
+		appendContactCode(result, &evidence, "INSUFFICIENT_SUPPORT")
 	}
+	result.Gap, result.Penetration, result.Alignment, result.Support = evidence.Gap, evidence.Penetration, evidence.Alignment, evidence.Support
+	result.Contacts = append(result.Contacts, evidence)
+}
+
+func appendContactCode(result *SpatialResult, evidence *ContactResult, code string) {
+	appendCode(&evidence.Codes, code)
+	appendCode(&result.Codes, code)
+}
+
+func appendCode(codes *[]string, code string) {
+	for _, existing := range *codes {
+		if existing == code {
+			return
+		}
+	}
+	*codes = append(*codes, code)
 }
 
 func canonicalContactKind(value string) string {
@@ -181,6 +304,11 @@ func findContactRequirement(items []bounds.ContactRequirement, contact string) *
 }
 
 func findContactFrame(profile *bounds.SpatialProfile, id string) *bounds.ContactFrame {
+	for index := range profile.Frames {
+		if profile.Frames[index].ID == id {
+			return &profile.Frames[index]
+		}
+	}
 	if profile.BottomContact != nil && profile.BottomContact.ID == id {
 		return profile.BottomContact
 	}

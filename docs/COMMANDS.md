@@ -261,6 +261,9 @@ Required flags:
 Optional flags:
 
 - `--json`
+- `--rotation x,y,z,w` for Spatial Manifest v2
+- `--surface-id ID --contact KIND` for a profile with exactly one required contact
+- `--contact-surfaces requirement-id=surface-id,...` for a profile with simultaneous required contacts
 
 Rules:
 
@@ -269,6 +272,7 @@ Rules:
 - `<file>` must point to a readable scene file.
 - `--position` must be exactly `x,y,z` with finite numeric values.
 - The manifest scene reference must match the requested scene by exact path when possible, otherwise by normalized scene filename plus extension.
+- A legacy single surface/contact pair cannot approve an asset that declares multiple required contacts. Map every requirement by its stable ID with `--contact-surfaces`; missing, duplicate, or unknown requirements fail closed.
 - Irrelevant flags are rejected.
 
 Compact output:
@@ -1364,10 +1368,10 @@ Create a detailed manifest only when reviewed contact geometry is needed:
 unity-ctx scene scan Assets/Scenes/Room.unity --mode editor --geometry detailed --project C:/Project --out Room.spatial.json
 ```
 
-Prove one rotated transform against compound OBBs and a reviewed surface:
+Prove one rotated transform against compound OBBs and every required reviewed surface (this bookcase requires both floor and wall contact):
 
 ```bash
-unity-ctx scene check Assets/Scenes/Room.unity --manifest Room.spatial.json --prefab Assets/Props/Bookcase.prefab --position 0,0,3.9 --rotation 0,1,0,0 --surface-id wall-north --contact wall-backed
+unity-ctx scene check Assets/Scenes/Room.unity --manifest Room.spatial.json --prefab Assets/Props/Bookcase.prefab --position 0,0,3.9 --rotation 0,1,0,0 --contact-surfaces floor=floor-main,wall=wall-north
 ```
 
 Request read-only wall candidates:
@@ -1376,7 +1380,20 @@ Request read-only wall candidates:
 unity-ctx scene suggest Assets/Scenes/Room.unity --manifest Room.spatial.json --prefab Assets/Props/Banner.prefab --align wall --surface-id wall-north --contact wall-mounted --count 4
 ```
 
-Manifest v1 stays readable for legacy bounds work. A rotated/contact request against v1 returns `UNKNOWN NEED_GEOMETRY_V2`; it never estimates a contact frame. JSON fields, floating-point formatting, and ordering remain deterministic.
+Detailed scans never mark arbitrary Renderer bounds as reviewed. A scene compound becomes reviewed obstacle geometry only when every collider is explicitly opted in through one of two Unity-side review markers:
+
+- a reviewed `RoomSurface` referencing the collider (`Supported=false` keeps it out of contact placement while still reviewing its solid geometry), or
+- any project-owned `MonoBehaviour` exposing public `SpatialReviewKind == "room-obstacle"`, `Reviewed == true`, and `IEnumerable<Collider> SourceColliders`. This reflection contract keeps pillars and other solid obstacles available in projects that do not depend on UnityDecoScene.
+
+The marker stays project-owned; only these public properties form the scanner contract:
+
+```csharp
+public string SpatialReviewKind => "room-obstacle";
+public bool Reviewed => reviewed;
+public IEnumerable<Collider> SourceColliders => sourceColliders;
+```
+
+Mixed compounds fail closed: one unlisted collider keeps the entire scene object unreviewed. Approved asset contracts overlay all named contact frames, while `bottom_contact`, `back_contact`, and `top_contact` remain compatible aliases. Manifest v1 stays readable for legacy bounds work. A rotated/contact request against v1 returns `UNKNOWN NEED_GEOMETRY_V2`; it never estimates a contact frame. JSON fields, floating-point formatting, and ordering remain deterministic.
 
 The MCP server exposes `unity_spatial_check` and `unity_suggest_wall`. Both are read-only, and no approval or mutation tool is exposed.
 
@@ -1400,7 +1417,7 @@ unity-ctx spatial review \
   --write --json
 ```
 
-`Approved` cannot be created by the public CLI. The local human-review bridge must verify one-time approval evidence bound to the contract hash, capture hash, and reviewer. `RevisionRequested` and `UnableToJudge` cannot be applied to tracked contract storage.
+`Approved` cannot be created by the public CLI. The local human-review bridge must verify a short-lived, consume-once Ed25519 grant bound to the action, contract hash, current-file hash, capture hash, reviewer, and exact canonical destination. A `SupportedBy` interaction is additionally bound to the subject and target geometry hashes resolved from their independently ledger-authorized Asset contracts. Caller-supplied geometry hashes are not authority. `RevisionRequested` and `UnableToJudge` cannot be applied to tracked contract storage.
 
 Compare and dry-run an approved draft from the public CLI:
 
@@ -1409,7 +1426,49 @@ unity-ctx spatial diff --current Assets/SpatialContracts/Assets/<guid>.spatial.j
 unity-ctx spatial apply --current Assets/SpatialContracts/Assets/<guid>.spatial.json --draft Library/DungeonDecorator/SpatialDrafts/banner.spatial.json --json
 ```
 
-Public `spatial apply --write` is rejected. The authorized local bridge re-verifies approval evidence before atomically writing, reloading, and hash-verifying the canonical destination; existing destinations receive a `.bak` file. `scene scan --contracts Assets/SpatialContracts` overlays only approved asset contracts whose path, GUID, and non-empty dependency hash all match, and carries their reviewed contact policies into the manifest.
+Public `spatial apply --write` is rejected. The bridge uses the same installed binary through a signed stdin-only boundary:
+
+```bash
+unity-ctx review-bridge
+```
+
+It accepts exactly one JSON object on stdin:
+
+```json
+{
+  "protocol_version": 1,
+  "action": "approve_apply",
+  "project_root": "C:/Project",
+  "current_path": "C:/Project/Assets/SpatialContracts/Assets/<guid>.spatial.json",
+  "current_hash": "absent",
+  "draft_path": "C:/Project/Library/DungeonDecorator/SpatialDrafts/banner.spatial.json",
+  "reviewer": "local-user",
+  "grant": {
+    "authority": "spatial-review-bridge",
+    "nonce": "base64url-or-hex-random-value-at-least-24-characters",
+    "expires_unix": 1800000300,
+    "proof": "base64url-ed25519-signature"
+  }
+}
+```
+
+The registered Ed25519 public key is `<local-data>/unity-ctx/review-authorities/<authority>.pub`; the private key remains in the local review bridge and must never be stored in the project. `<local-data>` is derived from the OS account home (Windows `AppData/Local`, macOS `Library/Caches`, other platforms `.cache`) and deliberately ignores caller-controlled cache environment variables. Public keys may be PEM, base64, base64url, or hex. The consume-once markers, signed approval receipts, and destination locks live under `<local-data>/unity-ctx/review-ledger`, outside tracked files.
+
+The v0.1 trust boundary assumes a project/workspace-scoped agent cannot read or write the OS-local authority/ledger directories, alter the trusted review process environment, or replace its configured executable. It does not defend against an unrestricted process already running as the same OS user; such a process can access ordinary user-owned key material. Defending that stronger threat requires a user-presence-backed non-exportable key (for example Windows Hello/CNG) or a separately privileged approval service and is outside this version's scope.
+
+The signature message is the concatenation of these UTF-8 fields in order: `unity-ctx-review-grant-v2`, action, authority, nonce, expiry decimal, lowercase draft contract hash, lowercase current-file hash (or the literal `absent`), capture hash, reviewer, the cleaned absolute destination with `/` separators, lowercase subject geometry hash, and lowercase target geometry hash. The final two fields are empty for Asset contracts and both are required for supported interactions. Each field is encoded as `<UTF-8-byte-length>:<field>` with no extra delimiter. Grants expire after at most 15 minutes.
+
+The current-file hash is checked before authorization and again while an external lock for the canonical destination is held. That lock covers baseline recheck, contract write/reload/hash verification, and signed receipt commit, so competing drafts cannot both overwrite the same contract. A changed source fails with `APPLY_SOURCE_CHANGED`; a live competing writer fails closed. A well-formed orphan lock older than 20 minutes can be atomically quarantined and recovered. A nonce is reserved with create-if-absent semantics before mutation. A failed write consumes the nonce but cannot create an approval receipt.
+
+Durable approval receipts retain the complete original signed grant binding. Later consumption re-verifies the Ed25519 signature without requiring the short-lived grant to still be fresh. Unsigned legacy ledger records fail closed and require another human review. For interactions, `verify-approved` also reloads and ledger-verifies the canonical subject and target Asset contracts, then rejects a changed geometry hash with `SUPPORT_CONTRACT_STALE`.
+
+The response is one JSON line. Exit `0` means written or already identical, exit `1` means authorization/apply failure, and exit `2` means malformed or out-of-scope input. The operation approves and applies in one call, and never writes a reusable nonce or proof into the contract JSON. Existing destinations receive a `.bak` file. Interaction destinations losslessly bind subject, target, and relation using UTF-8 hex filename components.
+
+`scene scan --contracts Assets/SpatialContracts` verifies every Approved contract against the external ledger before overlaying it, then still requires matching path, GUID, and non-empty dependency hash. Older tracked approval JSON without a ledger record is not authority and must be reviewed again through the local human-review bridge.
+
+Editor integrations that consume one contract directly must run `unity-ctx spatial verify-approved <file> --json` immediately before import. The command is read-only and succeeds only when the exact contract path, content hash, capture hash, reviewer, and signed receipt match. Asset output includes `asset_guid` and `geometry_hash`; interaction output includes the freshly resolved `subject_geometry_hash` and `target_geometry_hash` plus dependency contract hashes for audit.
+
+`spatial validate`, `spatial diff`, and `spatial verify-approved` JSON also return `proposal_hash`. It is the canonical SHA-256 of a `unity-ctx-spatial-proposal-v1` envelope containing contract version, contract type, and the normalized Asset or Interaction payload after clearing `geometry_hash`/`interaction_hash` and `capture_set_hash`; review state and technical evidence are excluded. Capture manifests can therefore bind the proposal before their own capture hash exists. Generic `spatial diff` remains an offline, query-only comparison and never consults the approval ledger or invents interaction dependency hashes.
 
 ## Surface Arrangement v1
 
@@ -1418,7 +1477,7 @@ unity-ctx arrangement validate Assets/SpatialContracts/Arrangements/reading-tabl
 unity-ctx arrangement hash Assets/SpatialContracts/Arrangements/reading-table.arrangement.json --json
 ```
 
-`validate` rejects a stale embedded `spec_hash`. `hash` performs the same strict schema checks but ignores the old embedded hash and prints the normalized replacement. IDs use the shared portable ASCII grammar (maximum 128 characters), and `edge_margin` is limited to 0–100 meters so Go and Unity use the same canonical number and member ordering rules.
+`validate` requires and rejects a missing or stale embedded `spec_hash`. `hash` performs the same schema checks but ignores a missing or old embedded hash and prints the normalized replacement. Hash canonicalization mirrors Unity: `System.Single` precision, six fixed decimal places, UTF-16 ordinal member ordering, and HTML-safe JSON string escapes. Unicode and long IDs, plus any finite non-negative `edge_margin`, remain valid on both sides.
 
 ## Output Stability Rules
 

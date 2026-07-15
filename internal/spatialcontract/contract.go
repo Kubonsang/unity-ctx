@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/Kubonsang/unity-ctx/internal/bounds"
 )
@@ -111,19 +112,44 @@ type TechnicalEvidence struct {
 // bridge. unity-ctx deliberately does not know how to create this evidence;
 // the embedding bridge owns the nonce and proof verification policy.
 type ApprovalEvidence struct {
-	Authority string `json:"authority"`
-	Nonce     string `json:"nonce"`
-	Proof     string `json:"proof"`
+	Authority   string `json:"authority"`
+	Nonce       string `json:"nonce"`
+	ExpiresUnix int64  `json:"expires_unix,omitempty"`
+	Proof       string `json:"proof"`
 }
+
+const (
+	ApprovalActionReview       = "review"
+	ApprovalActionApproveApply = "approve_apply"
+	// CurrentHashAbsent is the signed compare-and-swap baseline used when the
+	// canonical tracked destination did not exist at diff time.
+	CurrentHashAbsent = "absent"
+)
 
 // ApprovalVerification is the exact review decision covered by an
 // ApprovalEvidence value. Verifiers must bind all of these fields to the
 // evidence so a proof cannot be replayed for another contract or capture set.
 type ApprovalVerification struct {
-	ContractHash   string
-	CaptureSetHash string
-	Reviewer       string
-	Evidence       ApprovalEvidence
+	Action                 string
+	ContractHash           string
+	CurrentHash            string
+	CaptureSetHash         string
+	Reviewer               string
+	Destination            string
+	SubjectGeometryHash    string
+	TargetGeometryHash     string
+	DependencyDestinations []string
+	Evidence               ApprovalEvidence
+}
+
+// ApprovalGeometryBindings are resolved from independently approved asset
+// contracts. They are signed with an interaction approval so a caller cannot
+// relabel an old relative pose with whichever geometry hashes are current.
+type ApprovalGeometryBindings struct {
+	SubjectGeometryHash    string       `json:"subject_geometry_hash,omitempty"`
+	TargetGeometryHash     string       `json:"target_geometry_hash,omitempty"`
+	DependencyDestinations []string     `json:"-"`
+	RevalidateCurrent      func() error `json:"-"`
 }
 
 // ApprovalVerifier is supplied by the trusted local human-review bridge.
@@ -131,6 +157,59 @@ type ApprovalVerification struct {
 // persist an approved contract.
 type ApprovalVerifier interface {
 	VerifyApproval(ApprovalVerification) error
+}
+
+// ApprovalGrantConsumer atomically consumes an action-scoped grant after its
+// signature has been verified. Implementations must reject a reused
+// authority/nonce pair. The local review bridge keeps this ledger outside the
+// tracked Unity project.
+type ApprovalGrantConsumer interface {
+	ConsumeApprovalGrant(ApprovalVerification, func() error) error
+}
+
+// ApprovedContractVerification is used when an Approved contract is consumed
+// after the one-shot approval operation (for example by a detailed scan). The
+// verifier is expected to consult the trusted bridge's external approval
+// ledger; StateApproved on its own is never proof of authority.
+type ApprovedContractVerification struct {
+	ContractType        string
+	ContractHash        string
+	CaptureSetHash      string
+	Reviewer            string
+	ContractPath        string
+	SubjectGeometryHash string
+	TargetGeometryHash  string
+}
+
+type ApprovedContractVerifier interface {
+	VerifyApprovedContract(ApprovedContractVerification) error
+}
+
+// ApprovedVerification builds the exact, validated ledger lookup for a saved
+// Approved contract. Tracked JSON is not authority by itself; callers must pass
+// the result to an ApprovedContractVerifier before consuming the contract.
+func ApprovedVerification(contract Contract, contractPath string) (ApprovedContractVerification, error) {
+	if err := Validate(contract); err != nil {
+		return ApprovedContractVerification{}, err
+	}
+	if contract.State != StateApproved || contract.Review == nil || contract.Review.Decision != StateApproved {
+		return ApprovedContractVerification{}, errors.New("spatial contract is not Approved")
+	}
+	absolute, err := filepath.Abs(contractPath)
+	if err != nil {
+		return ApprovedContractVerification{}, err
+	}
+	return ApprovedContractVerification{
+		ContractType:   contract.ContractType,
+		ContractHash:   ContentHash(contract),
+		CaptureSetHash: captureHash(contract),
+		Reviewer:       contract.Review.Reviewer,
+		ContractPath:   filepath.Clean(absolute),
+	}, nil
+}
+
+type OverlayPolicy struct {
+	Verifier ApprovedContractVerifier
 }
 
 type HumanReview struct {
@@ -155,12 +234,21 @@ type Contract struct {
 }
 
 type DiffResult struct {
-	Status       string   `json:"status"`
-	Current      string   `json:"current"`
-	Draft        string   `json:"draft"`
-	ContractHash string   `json:"contract_hash"`
-	Changed      bool     `json:"changed"`
-	Fields       []string `json:"fields"`
+	Status              string   `json:"status"`
+	Current             string   `json:"current"`
+	Draft               string   `json:"draft"`
+	ContractType        string   `json:"contract_type"`
+	ContractHash        string   `json:"contract_hash"`
+	ProposalHash        string   `json:"proposal_hash"`
+	CurrentHash         string   `json:"current_hash"`
+	AssetGUID           string   `json:"asset_guid,omitempty"`
+	GeometryHash        string   `json:"geometry_hash,omitempty"`
+	SubjectGUID         string   `json:"subject_guid,omitempty"`
+	TargetKey           string   `json:"target_key,omitempty"`
+	SubjectGeometryHash string   `json:"subject_geometry_hash,omitempty"`
+	TargetGeometryHash  string   `json:"target_geometry_hash,omitempty"`
+	Changed             bool     `json:"changed"`
+	Fields              []string `json:"fields"`
 }
 
 type ApplyResult struct {
@@ -289,10 +377,10 @@ func Normalize(contract *Contract) {
 		normalizeVec(&a.Forward)
 		normalizeVec(&a.Up)
 		normalizeVec(&a.PivotOffset)
-		sort.Slice(a.CollisionProxies, func(i, j int) bool { return a.CollisionProxies[i].ID < a.CollisionProxies[j].ID })
-		sort.Slice(a.ClearanceProxies, func(i, j int) bool { return a.ClearanceProxies[i].ID < a.ClearanceProxies[j].ID })
-		sort.Slice(a.Frames, func(i, j int) bool { return a.Frames[i].ID < a.Frames[j].ID })
-		sort.Slice(a.Contacts, func(i, j int) bool { return a.Contacts[i].ID < a.Contacts[j].ID })
+		sort.Slice(a.CollisionProxies, func(i, j int) bool { return utf16OrdinalLess(a.CollisionProxies[i].ID, a.CollisionProxies[j].ID) })
+		sort.Slice(a.ClearanceProxies, func(i, j int) bool { return utf16OrdinalLess(a.ClearanceProxies[i].ID, a.ClearanceProxies[j].ID) })
+		sort.Slice(a.Frames, func(i, j int) bool { return utf16OrdinalLess(a.Frames[i].ID, a.Frames[j].ID) })
+		sort.Slice(a.Contacts, func(i, j int) bool { return utf16OrdinalLess(a.Contacts[i].ID, a.Contacts[j].ID) })
 		a.GeometryHash = assetHash(*a)
 	}
 	if contract.Interaction != nil {
@@ -469,12 +557,14 @@ func Review(contract *Contract, decision, reviewer string, issues []string, comm
 	if decision == StateApproved {
 		return errors.New("human approval requires authorization from the local review bridge")
 	}
-	return recordReview(contract, decision, reviewer, issues, comment, nil)
+	return recordReview(contract, decision, reviewer, issues, comment)
 }
 
 // ReviewAuthorized records an Approved decision only after a trusted local
-// bridge has verified its human-review evidence. This API is intentionally not
-// wired to the public CLI.
+// bridge has verified its human-review evidence. It exists for trusted
+// in-process integrations and tests. Production bridges should prefer
+// ApproveAndApplyAuthorized, which consumes a one-shot grant and never leaves
+// an independently writable approved draft behind.
 func ReviewAuthorized(contract *Contract, reviewer string, evidence ApprovalEvidence, verifier ApprovalVerifier) error {
 	if contract == nil {
 		return errors.New("contract is nil")
@@ -503,6 +593,7 @@ func ReviewAuthorized(contract *Contract, reviewer string, evidence ApprovalEvid
 		return errors.New("capture_set_hash is required before human approval")
 	}
 	verification := ApprovalVerification{
+		Action:         ApprovalActionReview,
 		ContractHash:   ContentHash(*contract),
 		CaptureSetHash: capture,
 		Reviewer:       strings.TrimSpace(reviewer),
@@ -511,10 +602,12 @@ func ReviewAuthorized(contract *Contract, reviewer string, evidence ApprovalEvid
 	if err := verifier.VerifyApproval(verification); err != nil {
 		return fmt.Errorf("human approval authorization failed: %w", err)
 	}
-	return recordReview(contract, StateApproved, reviewer, nil, "", &evidence)
+	// A grant is authorization for one action, not a durable credential. Never
+	// serialize its nonce or proof into the tracked contract.
+	return recordReview(contract, StateApproved, reviewer, nil, "")
 }
 
-func recordReview(contract *Contract, decision, reviewer string, issues []string, comment string, authorization *ApprovalEvidence) error {
+func recordReview(contract *Contract, decision, reviewer string, issues []string, comment string) error {
 	if contract.State != StateAwaitingHumanReview {
 		return fmt.Errorf("human review requires %s state, got %s", StateAwaitingHumanReview, contract.State)
 	}
@@ -532,7 +625,6 @@ func recordReview(contract *Contract, decision, reviewer string, issues []string
 		ContractHash:   ContentHash(candidate),
 		CaptureSetHash: capture,
 		Reviewer:       strings.TrimSpace(reviewer),
-		Authorization:  authorization,
 		IssueTypes:     append([]string(nil), issues...),
 		Comment:        strings.TrimSpace(comment),
 		Revision:       1,
@@ -549,7 +641,40 @@ func ContentHash(contract Contract) string {
 	Normalize(&contract)
 	contract.State = ""
 	contract.Review = nil
-	data, _ := json.Marshal(contract)
+	data, _ := marshalCanonical(contract)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// ProposalHash identifies the reviewable asset or interaction payload without
+// capture evidence or its recursively derived embedded hash. Capture manifests
+// can bind this value before capture_set_hash exists, and recapturing identical
+// geometry does not manufacture a different proposal identity.
+func ProposalHash(contract Contract) string {
+	contract = cloneContract(contract)
+	Normalize(&contract)
+	contract.State = ""
+	contract.Review = nil
+	contract.Technical = nil
+	if contract.Asset != nil {
+		contract.Asset.GeometryHash = ""
+		contract.Asset.CaptureSetHash = ""
+	}
+	if contract.Interaction != nil {
+		contract.Interaction.InteractionHash = ""
+		contract.Interaction.CaptureSetHash = ""
+	}
+	payload := struct {
+		Domain          string                `json:"domain"`
+		ContractVersion int                   `json:"contract_version"`
+		ContractType    string                `json:"contract_type"`
+		Asset           *AssetSpatialContract `json:"asset,omitempty"`
+		Interaction     *InteractionContract  `json:"interaction,omitempty"`
+	}{
+		Domain: "unity-ctx-spatial-proposal-v1", ContractVersion: contract.ContractVersion,
+		ContractType: contract.ContractType, Asset: contract.Asset, Interaction: contract.Interaction,
+	}
+	data, _ := marshalCanonical(payload)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
@@ -589,18 +714,30 @@ func Diff(currentPath, draftPath string) (DiffResult, error) {
 	if err != nil {
 		return DiffResult{}, err
 	}
-	result := DiffResult{Status: "OK", Current: currentPath, Draft: draftPath, ContractHash: ContentHash(draft)}
-	current, err := Load(currentPath)
+	result := DiffResult{
+		Status: "OK", Current: currentPath, Draft: draftPath,
+		ContractType: draft.ContractType, ContractHash: ContentHash(draft), ProposalHash: ProposalHash(draft),
+	}
+	if draft.Asset != nil {
+		result.AssetGUID = draft.Asset.AssetGUID
+		result.GeometryHash = draft.Asset.GeometryHash
+	}
+	if draft.Interaction != nil {
+		result.SubjectGUID = draft.Interaction.SubjectGUID
+		result.TargetKey = draft.Interaction.TargetKey
+	}
+	currentHash, current, err := currentBaseline(currentPath, draft)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			result.Status = "NEW"
-			result.Changed = true
-			result.Fields = []string{"contract"}
-			return result, nil
-		}
 		return DiffResult{}, err
 	}
-	result.Fields = changedFields(current, draft)
+	result.CurrentHash = currentHash
+	if current == nil {
+		result.Status = "NEW"
+		result.Changed = true
+		result.Fields = []string{"contract"}
+		return result, nil
+	}
+	result.Fields = changedFields(*current, draft)
 	result.Changed = len(result.Fields) > 0
 	if !result.Changed {
 		result.Status = "UNCHANGED"
@@ -620,18 +757,190 @@ func Apply(currentPath, draftPath string, write bool) (ApplyResult, error) {
 // re-verifies the exact human approval evidence stored with the review. The
 // public CLI exposes only Apply's read-only dry run.
 func ApplyAuthorized(currentPath, draftPath string, verifier ApprovalVerifier) (ApplyResult, error) {
-	result, draft, err := prepareApply(currentPath, draftPath)
+	return ApplyResult{}, errors.New("separate authorized apply is disabled; use atomic ApproveAndApplyAuthorized with a fresh action-scoped grant")
+}
+
+// ApproveAndApplyAuthorized is the production bridge boundary. It verifies an
+// AwaitingHumanReview draft, binds a signed one-shot grant to the exact content,
+// capture, reviewer and canonical destination, consumes that grant, and writes
+// the Approved contract as one logical operation. Grant evidence is never
+// persisted in the contract.
+func ApproveAndApplyAuthorized(projectRoot, currentPath, draftPath, expectedCurrentHash, reviewer string, evidence ApprovalEvidence, verifier ApprovalVerifier, consumer ApprovalGrantConsumer) (ApplyResult, error) {
+	return ApproveAndApplyAuthorizedWithGeometry(projectRoot, currentPath, draftPath, expectedCurrentHash, reviewer, evidence, ApprovalGeometryBindings{}, verifier, consumer)
+}
+
+// ApproveAndApplyAuthorizedWithGeometry is the interaction-aware production
+// boundary. The caller must resolve these hashes from ledger-authorized asset
+// contracts; accepting hashes copied from the interaction caller would make a
+// stale pose appear current without another human review.
+func ApproveAndApplyAuthorizedWithGeometry(projectRoot, currentPath, draftPath, expectedCurrentHash, reviewer string, evidence ApprovalEvidence, geometry ApprovalGeometryBindings, verifier ApprovalVerifier, consumer ApprovalGrantConsumer) (ApplyResult, error) {
+	if verifier == nil {
+		return ApplyResult{}, errors.New("atomic spatial approval requires a bridge approval verifier")
+	}
+	if consumer == nil {
+		return ApplyResult{}, errors.New("atomic spatial approval requires a consume-once grant ledger")
+	}
+	draft, err := Load(draftPath)
 	if err != nil {
 		return ApplyResult{}, err
 	}
-	if err := verifyAuthorizedApproval(draft, verifier); err != nil {
+	if draft.State != StateAwaitingHumanReview {
+		return ApplyResult{}, fmt.Errorf("atomic spatial approval requires %s draft, got %s", StateAwaitingHumanReview, draft.State)
+	}
+	geometry.SubjectGeometryHash = strings.ToLower(strings.TrimSpace(geometry.SubjectGeometryHash))
+	geometry.TargetGeometryHash = strings.ToLower(strings.TrimSpace(geometry.TargetGeometryHash))
+	switch draft.ContractType {
+	case TypeAsset:
+		if geometry.SubjectGeometryHash != "" || geometry.TargetGeometryHash != "" || len(geometry.DependencyDestinations) != 0 || geometry.RevalidateCurrent != nil {
+			return ApplyResult{}, errors.New("asset approval must not carry interaction geometry bindings")
+		}
+	case TypeInteraction:
+		if _, _, err := InteractionAssetGUIDs(draft); err != nil {
+			return ApplyResult{}, err
+		}
+		if !sha256Hex(geometry.SubjectGeometryHash) || !sha256Hex(geometry.TargetGeometryHash) {
+			return ApplyResult{}, errors.New("SUPPORT_CONTRACT_STALE: interaction approval requires ledger-authorized subject and target geometry hashes")
+		}
+		if len(geometry.DependencyDestinations) != 2 || geometry.RevalidateCurrent == nil {
+			return ApplyResult{}, errors.New("SUPPORT_CONTRACT_STALE: interaction approval requires dependency locks and in-lock geometry revalidation")
+		}
+		for _, dependency := range geometry.DependencyDestinations {
+			if !filepath.IsAbs(strings.TrimSpace(dependency)) {
+				return ApplyResult{}, errors.New("interaction approval dependency destinations must be absolute")
+			}
+		}
+	default:
+		return ApplyResult{}, errors.New("spatial approval requires an asset or interaction contract")
+	}
+	reviewer = strings.TrimSpace(reviewer)
+	if reviewer == "" {
+		return ApplyResult{}, errors.New("human review requires reviewer")
+	}
+	if err := validateCanonicalDestination(projectRoot, currentPath, draft); err != nil {
 		return ApplyResult{}, err
 	}
-	if !result.Changed {
-		result.Status = "UNCHANGED"
-		return result, nil
+	expectedCurrentHash, err = normalizeCurrentHash(expectedCurrentHash)
+	if err != nil {
+		return ApplyResult{}, err
 	}
-	return writeAppliedContract(result, currentPath, draft)
+	if err := verifyCurrentBaseline(currentPath, draft, expectedCurrentHash); err != nil {
+		return ApplyResult{}, err
+	}
+
+	evidence.Authority = strings.TrimSpace(evidence.Authority)
+	evidence.Nonce = strings.TrimSpace(evidence.Nonce)
+	evidence.Proof = strings.TrimSpace(evidence.Proof)
+	if evidence.Authority == "" || evidence.Nonce == "" || evidence.Proof == "" {
+		return ApplyResult{}, errors.New("human approval evidence requires authority, nonce, and proof")
+	}
+	destination, err := filepath.Abs(currentPath)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	verification := ApprovalVerification{
+		Action:                 ApprovalActionApproveApply,
+		ContractHash:           ContentHash(draft),
+		CurrentHash:            expectedCurrentHash,
+		CaptureSetHash:         captureHash(draft),
+		Reviewer:               reviewer,
+		Destination:            filepath.Clean(destination),
+		SubjectGeometryHash:    geometry.SubjectGeometryHash,
+		TargetGeometryHash:     geometry.TargetGeometryHash,
+		DependencyDestinations: append([]string(nil), geometry.DependencyDestinations...),
+		Evidence:               evidence,
+	}
+	if err := verifier.VerifyApproval(verification); err != nil {
+		return ApplyResult{}, fmt.Errorf("human approval authorization failed: %w", err)
+	}
+
+	approved := cloneContract(draft)
+	if err := recordReview(&approved, StateApproved, reviewer, nil, ""); err != nil {
+		return ApplyResult{}, err
+	}
+	result, err := prepareApprovedWrite(projectRoot, currentPath, draftPath, approved)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	var applied ApplyResult
+	if err := consumer.ConsumeApprovalGrant(verification, func() error {
+		// The grant is already consumed when this callback runs. Re-check the
+		// exact diff baseline immediately before mutation so a concurrent edit
+		// cannot be silently overwritten or retried with the same grant.
+		if geometry.RevalidateCurrent != nil {
+			if geometryErr := geometry.RevalidateCurrent(); geometryErr != nil {
+				return geometryErr
+			}
+		}
+		if baselineErr := verifyCurrentBaseline(currentPath, draft, expectedCurrentHash); baselineErr != nil {
+			return baselineErr
+		}
+		if !result.Changed {
+			result.Status = "UNCHANGED"
+			applied = result
+			return nil
+		}
+		var writeErr error
+		applied, writeErr = writeAppliedContract(result, currentPath, approved)
+		return writeErr
+	}); err != nil {
+		return ApplyResult{}, fmt.Errorf("atomic spatial approval failed: %w", err)
+	}
+	return applied, nil
+}
+
+func normalizeCurrentHash(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == CurrentHashAbsent {
+		return value, nil
+	}
+	if len(value) != sha256.Size*2 {
+		return "", errors.New("current_hash must be a SHA-256 value or the absent sentinel")
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return "", errors.New("current_hash must be a SHA-256 value or the absent sentinel")
+	}
+	return value, nil
+}
+
+func sha256Hex(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+// currentBaseline returns a raw-file digest so formatting-only or review-only
+// edits are still protected by the approval compare-and-swap. A missing file
+// is represented by CurrentHashAbsent rather than an empty, unsigned value.
+func currentBaseline(path string, expectedIdentity Contract) (string, *Contract, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return CurrentHashAbsent, nil, nil
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	current, err := Decode(data)
+	if err != nil {
+		return "", nil, err
+	}
+	if !sameIdentity(current, expectedIdentity) {
+		return "", nil, errors.New("spatial apply current and draft contract identities do not match")
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), &current, nil
+}
+
+func verifyCurrentBaseline(path string, expectedIdentity Contract, expectedHash string) error {
+	actual, _, err := currentBaseline(path, expectedIdentity)
+	if err != nil {
+		return fmt.Errorf("APPLY_SOURCE_CHANGED inspect current contract: %w", err)
+	}
+	if actual != expectedHash {
+		return fmt.Errorf("APPLY_SOURCE_CHANGED current_hash mismatch got=%s want=%s", actual, expectedHash)
+	}
+	return nil
 }
 
 func prepareApply(currentPath, draftPath string) (ApplyResult, Contract, error) {
@@ -642,7 +951,11 @@ func prepareApply(currentPath, draftPath string) (ApplyResult, Contract, error) 
 	if draft.State != StateApproved {
 		return ApplyResult{}, Contract{}, errors.New("spatial apply requires an Approved human-reviewed draft")
 	}
-	if err := validateApplyIdentity(currentPath, draft); err != nil {
+	projectRoot, err := inferProjectRoot(currentPath)
+	if err != nil {
+		return ApplyResult{}, Contract{}, err
+	}
+	if err := validateApplyIdentity(projectRoot, currentPath, draft); err != nil {
 		return ApplyResult{}, Contract{}, err
 	}
 	diff, err := Diff(currentPath, draftPath)
@@ -653,27 +966,25 @@ func prepareApply(currentPath, draftPath string) (ApplyResult, Contract, error) 
 	return result, draft, nil
 }
 
-func verifyAuthorizedApproval(contract Contract, verifier ApprovalVerifier) error {
-	if verifier == nil {
-		return errors.New("spatial apply requires a bridge approval verifier")
+func prepareApprovedWrite(projectRoot, currentPath, draftPath string, approved Contract) (ApplyResult, error) {
+	if err := validateCanonicalDestination(projectRoot, currentPath, approved); err != nil {
+		return ApplyResult{}, err
 	}
-	if contract.Review == nil || contract.Review.Authorization == nil {
-		return errors.New("spatial apply requires bridge-verifiable human approval evidence")
+	changed := true
+	status := "WRITE"
+	if current, err := Load(currentPath); err == nil {
+		changed = len(changedFields(current, approved)) != 0
+		if !changed {
+			status = "UNCHANGED"
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return ApplyResult{}, err
 	}
-	verification := ApprovalVerification{
-		ContractHash:   ContentHash(contract),
-		CaptureSetHash: captureHash(contract),
-		Reviewer:       contract.Review.Reviewer,
-		Evidence:       *contract.Review.Authorization,
-	}
-	if err := verifier.VerifyApproval(verification); err != nil {
-		return fmt.Errorf("spatial apply approval authorization failed: %w", err)
-	}
-	return nil
+	return ApplyResult{Status: status, Current: currentPath, Draft: draftPath, ContractHash: ContentHash(approved), Changed: changed, Verified: true}, nil
 }
 
-func validateApplyIdentity(currentPath string, draft Contract) error {
-	if err := validateCanonicalDestination(currentPath, draft); err != nil {
+func validateApplyIdentity(projectRoot, currentPath string, draft Contract) error {
+	if err := validateCanonicalDestination(projectRoot, currentPath, draft); err != nil {
 		return err
 	}
 	current, err := Load(currentPath)
@@ -689,31 +1000,166 @@ func validateApplyIdentity(currentPath string, draft Contract) error {
 	return nil
 }
 
-func validateCanonicalDestination(path string, contract Contract) error {
-	normalized := strings.ToLower(filepath.ToSlash(filepath.Clean(path)))
-	var marker string
-	var validName func(string) bool
+func validateCanonicalDestination(projectRoot, path string, contract Contract) error {
+	expected, err := CanonicalContractPath(projectRoot, contract)
+	if err != nil {
+		return err
+	}
+	actual, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if !sameFilesystemPath(expected, actual) {
+		return fmt.Errorf("spatial apply destination does not match canonical contract identity: got=%s want=%s", filepath.Clean(actual), filepath.Clean(expected))
+	}
+	if err := validateDestinationAncestor(projectRoot, actual); err != nil {
+		return err
+	}
+	return nil
+}
+
+// CanonicalContractPath returns the sole tracked destination for a contract.
+// Interaction target and relation values are UTF-8 hex encoded so filenames
+// are lossless, separator-safe, and collision-free on case-insensitive filesystems.
+func CanonicalContractPath(projectRoot string, contract Contract) (string, error) {
+	root, err := filepath.Abs(strings.TrimSpace(projectRoot))
+	if err != nil || strings.TrimSpace(projectRoot) == "" {
+		return "", errors.New("spatial apply requires an explicit project root")
+	}
+	var relative string
 	switch contract.ContractType {
 	case TypeAsset:
-		marker = "assets/spatialcontracts/assets/"
-		expected := strings.ToLower(contract.Asset.AssetGUID) + ".spatial.json"
-		validName = func(name string) bool { return name == expected }
-	case TypeInteraction:
-		marker = "assets/spatialcontracts/interactions/"
-		prefix := strings.ToLower(contract.Interaction.SubjectGUID) + "__"
-		validName = func(name string) bool {
-			return strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".interaction.json")
+		if contract.Asset == nil || !guidPattern.MatchString(contract.Asset.AssetGUID) {
+			return "", errors.New("spatial apply requires a valid asset contract identity")
 		}
+		relative = filepath.Join("Assets", "SpatialContracts", "Assets", strings.ToLower(contract.Asset.AssetGUID)+".spatial.json")
+	case TypeInteraction:
+		if contract.Interaction == nil || !guidPattern.MatchString(contract.Interaction.SubjectGUID) || contract.Interaction.TargetKey == "" || contract.Interaction.Relation == "" {
+			return "", errors.New("spatial apply requires a valid interaction contract identity")
+		}
+		if len([]byte(contract.Interaction.TargetKey)) > 80 {
+			return "", errors.New("spatial apply interaction target_key exceeds the canonical filename limit")
+		}
+		name := strings.ToLower(contract.Interaction.SubjectGUID) + "__" +
+			hex.EncodeToString([]byte(contract.Interaction.TargetKey)) + "__" +
+			hex.EncodeToString([]byte(contract.Interaction.Relation)) + ".interaction.json"
+		relative = filepath.Join("Assets", "SpatialContracts", "Interactions", name)
 	default:
-		return errors.New("spatial apply requires an asset or interaction contract")
+		return "", errors.New("spatial apply requires an asset or interaction contract")
 	}
-	index := strings.LastIndex(normalized, marker)
-	if index < 0 {
-		return fmt.Errorf("spatial apply destination must be under %s", marker)
+	expected := filepath.Clean(filepath.Join(root, relative))
+	if !pathWithin(root, expected) {
+		return "", errors.New("canonical spatial contract destination escapes the project root")
 	}
-	name := normalized[index+len(marker):]
-	if name == "" || strings.Contains(name, "/") || !validName(name) {
-		return errors.New("spatial apply destination filename does not match the draft contract identity")
+	return expected, nil
+}
+
+// InteractionAssetGUIDs narrows v1 approval to the only dependency shape for
+// which both geometry revisions can currently be proven: SupportedBy between
+// two asset contracts.
+func InteractionAssetGUIDs(contract Contract) (string, string, error) {
+	if contract.ContractType != TypeInteraction || contract.Interaction == nil || contract.Interaction.Relation != "SupportedBy" {
+		return "", "", errors.New("interaction approval currently supports only SupportedBy asset relationships")
+	}
+	subject := strings.ToLower(strings.TrimSpace(contract.Interaction.SubjectGUID))
+	targetKey := strings.TrimSpace(contract.Interaction.TargetKey)
+	if !guidPattern.MatchString(subject) || !strings.HasPrefix(targetKey, "asset:") {
+		return "", "", errors.New("interaction approval currently requires subject_guid and target_key asset:<guid>")
+	}
+	target := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(targetKey, "asset:")))
+	if !guidPattern.MatchString(target) {
+		return "", "", errors.New("interaction approval target_key must be asset:<guid>")
+	}
+	return subject, target, nil
+}
+
+// ProjectRootForCanonicalContractPath recovers a project root only when path
+// is the exact canonical destination for the validated contract identity.
+func ProjectRootForCanonicalContractPath(path string, contract Contract) (string, error) {
+	root, err := inferProjectRoot(path)
+	if err != nil {
+		return "", err
+	}
+	expected, err := CanonicalContractPath(root, contract)
+	if err != nil {
+		return "", err
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil || !sameFilesystemPath(expected, absolute) {
+		return "", errors.New("spatial contract path does not match its canonical contract identity")
+	}
+	return root, nil
+}
+
+func inferProjectRoot(contractPath string) (string, error) {
+	absolute, err := filepath.Abs(contractPath)
+	if err != nil {
+		return "", err
+	}
+	directory := filepath.Dir(absolute)
+	for {
+		assets := filepath.Join(directory, "Assets")
+		if pathWithin(assets, absolute) {
+			relative, relErr := filepath.Rel(assets, absolute)
+			parts := strings.Split(filepath.ToSlash(relative), "/")
+			if relErr == nil && len(parts) == 3 && strings.EqualFold(parts[0], "SpatialContracts") &&
+				(strings.EqualFold(parts[1], "Assets") || strings.EqualFold(parts[1], "Interactions")) {
+				return directory, nil
+			}
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			break
+		}
+		directory = parent
+	}
+	return "", errors.New("spatial apply destination must be under the explicit project's Assets/SpatialContracts tree")
+}
+
+func pathWithin(root, candidate string) bool {
+	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(candidate))
+	if err != nil {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative))
+}
+
+func sameFilesystemPath(left, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	if filepath.Separator == '\\' {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
+func validateDestinationAncestor(projectRoot, destination string) error {
+	root, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(root, filepath.Clean(destination))
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return errors.New("spatial apply destination escapes the project root")
+	}
+	current := root
+	parts := strings.Split(relative, string(filepath.Separator))
+	for index := -1; index < len(parts); index++ {
+		if index >= 0 {
+			current = filepath.Join(current, parts[index])
+		}
+		info, statErr := os.Lstat(current)
+		if errors.Is(statErr, fs.ErrNotExist) {
+			// Once a component does not exist, later components cannot contain a
+			// pre-existing reparse point. MkdirAll will create ordinary directories.
+			break
+		}
+		if statErr != nil {
+			return fmt.Errorf("inspect spatial apply destination component: %w", statErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("spatial apply destination contains a symlink or junction under the project root")
+		}
 	}
 	return nil
 }
@@ -793,6 +1239,13 @@ func writeAppliedContract(result ApplyResult, currentPath string, draft Contract
 }
 
 func OverlayApprovedAssets(manifest *bounds.Manifest, root string) (int, error) {
+	return OverlayApprovedAssetsWithPolicy(manifest, root, OverlayPolicy{})
+}
+
+// OverlayApprovedAssetsWithPolicy overlays only contracts whose approval is
+// verified by the local bridge's external ledger. Legacy tracked approval JSON
+// is deliberately not treated as authority and must be reviewed again.
+func OverlayApprovedAssetsWithPolicy(manifest *bounds.Manifest, root string, policy OverlayPolicy) (int, error) {
 	if manifest == nil || strings.TrimSpace(root) == "" {
 		return 0, nil
 	}
@@ -811,6 +1264,17 @@ func OverlayApprovedAssets(manifest *bounds.Manifest, root string) (int, error) 
 		if contract.ContractType == TypeAsset && contract.State == StateApproved {
 			if _, exists := contracts[contract.Asset.AssetPath]; exists {
 				return fmt.Errorf("duplicate approved spatial contracts for asset path %s", contract.Asset.AssetPath)
+			}
+			if policy.Verifier == nil {
+				return fmt.Errorf("approved spatial contract %s requires external approval-ledger verification", path)
+			} else {
+				verification, err := ApprovedVerification(contract, path)
+				if err != nil {
+					return err
+				}
+				if err := policy.Verifier.VerifyApprovedContract(verification); err != nil {
+					return fmt.Errorf("approved spatial contract %s is not authorized for consumption: %w", path, err)
+				}
 			}
 			contracts[contract.Asset.AssetPath] = contract
 		}
@@ -850,6 +1314,7 @@ func OverlayApprovedAssets(manifest *bounds.Manifest, root string) (int, error) 
 		}
 		for _, frame := range asset.Frames {
 			converted := &bounds.ContactFrame{ID: frame.ID, Point: bounds.Vec3(frame.Point), Normal: bounds.Vec3(frame.Normal), Tangent: bounds.Vec3(frame.Tangent), Size: frame.Size}
+			profile.Frames = append(profile.Frames, *converted)
 			switch frame.ID {
 			case "bottom":
 				profile.BottomContact = converted
@@ -967,14 +1432,14 @@ func encode(contract Contract) ([]byte, error) {
 
 func assetHash(asset AssetSpatialContract) string {
 	asset.GeometryHash = ""
-	data, _ := json.Marshal(asset)
+	data, _ := marshalCanonical(asset)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
 
 func interactionHash(interaction InteractionContract) string {
 	interaction.InteractionHash = ""
-	data, _ := json.Marshal(interaction)
+	data, _ := marshalCanonical(interaction)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
@@ -1070,7 +1535,92 @@ func normalizeQuat(value *Quat) {
 }
 
 func round(value float64) float64 {
+	// Unity stores Spatial Contract geometry as System.Single. Convert first so
+	// values such as 0.5500005 normalize identically before the shared six-place
+	// MidpointRounding.AwayFromZero step.
+	value = float64(float32(value))
 	return math.Round(value*1_000_000) / 1_000_000
+}
+
+func marshalCanonical(value any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	// SpatialContractHashUtility writes '<', '>' and '&' literally. Go's
+	// default HTML escaping would otherwise produce a different C#/Go hash.
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return restoreUnityLineSeparators(bytes.TrimSuffix(buffer.Bytes(), []byte{'\n'})), nil
+}
+
+// utf16OrdinalLess mirrors C# StringComparer.Ordinal. Comparing Go strings
+// directly uses Unicode code-point order, which differs from UTF-16 code-unit
+// order when a supplementary-plane ID is compared with a BMP ID.
+func utf16OrdinalLess(left, right string) bool {
+	a := utf16.Encode([]rune(left))
+	b := utf16.Encode([]rune(right))
+	limit := len(a)
+	if len(b) < limit {
+		limit = len(b)
+	}
+	for index := 0; index < limit; index++ {
+		if a[index] != b[index] {
+			return a[index] < b[index]
+		}
+	}
+	return len(a) < len(b)
+}
+
+// encoding/json always escapes U+2028 and U+2029, even with HTML escaping
+// disabled. Unity's canonical writer emits those characters literally. Only
+// replace an actual JSON Unicode escape (an odd-length backslash run), never a
+// user's literal "\\u2028" or "\\u2029" text.
+func restoreUnityLineSeparators(data []byte) []byte {
+	result := make([]byte, 0, len(data))
+	inString := false
+	for index := 0; index < len(data); {
+		if data[index] == '"' {
+			inString = !inString
+			result = append(result, data[index])
+			index++
+			continue
+		}
+		if !inString || data[index] != '\\' {
+			result = append(result, data[index])
+			index++
+			continue
+		}
+
+		runEnd := index
+		for runEnd < len(data) && data[runEnd] == '\\' {
+			runEnd++
+		}
+		runLength := runEnd - index
+		if runLength%2 == 1 && runEnd+5 <= len(data) && data[runEnd] == 'u' {
+			escape := data[runEnd : runEnd+5]
+			if bytes.Equal(escape, []byte("u2028")) || bytes.Equal(escape, []byte("u2029")) {
+				result = append(result, data[index:runEnd-1]...)
+				if escape[4] == '8' {
+					result = append(result, []byte("\u2028")...)
+				} else {
+					result = append(result, []byte("\u2029")...)
+				}
+				index = runEnd + 5
+				continue
+			}
+		}
+		result = append(result, data[index:runEnd]...)
+		if runLength%2 == 1 && runEnd < len(data) {
+			// The next byte is escaped JSON string content. Copy it here so an
+			// escaped quote is not mistaken for the end of the string.
+			result = append(result, data[runEnd])
+			index = runEnd + 1
+		} else {
+			index = runEnd
+		}
+	}
+	return result
 }
 
 func finite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }

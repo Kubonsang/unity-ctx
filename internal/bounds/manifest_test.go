@@ -80,6 +80,33 @@ func TestLoadSpatialManifestV2(t *testing.T) {
 	}
 }
 
+func TestSpatialManifestV2PreservesArbitraryNamedContactFrame(t *testing.T) {
+	manifest, err := Load(filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := manifest.Prefabs[0].Spatial
+	profile.Frames = append(profile.Frames, ContactFrame{
+		ID: "handle-seat", Point: Vec3{.25, 1, 0}, Normal: Vec3{1, 0, 0},
+		Tangent: Vec3{0, 0, 1}, Size: [2]float64{.2, .4},
+	})
+	profile.Contacts = append(profile.Contacts, ContactRequirement{
+		ID: "handle", Kind: "WallMounted", FrameID: "handle-seat", Target: "surface:wall",
+		MinimumGap: .005, MaximumGap: .01, MinimumSupport: .6, DirectionAlignment: .95,
+	})
+	path := filepath.Join(t.TempDir(), "generic-frame.json")
+	if err := Save(path, manifest); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Prefabs[0].Spatial.Frames) != 1 || loaded.Prefabs[0].Spatial.Frames[0].ID != "handle-seat" {
+		t.Fatalf("generic frame lost during round trip: %#v", loaded.Prefabs[0].Spatial.Frames)
+	}
+}
+
 func TestLoadSpatialManifestV2AcceptsFBXGameObjectAsset(t *testing.T) {
 	path := filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json")
 	data, err := os.ReadFile(path)

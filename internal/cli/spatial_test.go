@@ -93,6 +93,101 @@ func TestSpatialCLIRejectsApprovalWithTechnicalErrors(t *testing.T) {
 	}
 }
 
+func TestSpatialValidateAcceptsJSONBeforeOrAfterFile(t *testing.T) {
+	draft := filepath.Join(t.TempDir(), "draft.spatial.json")
+	if err := spatialcontract.Save(draft, validSpatialCLIContract()); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"validate", "--json", draft},
+		{"validate", draft, "--json"},
+	} {
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		if code := runSpatial(args, stdout, stderr); code != 0 {
+			t.Fatalf("args=%v code=%d stderr=%s", args, code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), `"state":"AwaitingHumanReview"`) || !strings.Contains(stdout.String(), `"proposal_hash":"`) || stderr.Len() != 0 {
+			t.Fatalf("args=%v stdout=%q stderr=%q", args, stdout.String(), stderr.String())
+		}
+	}
+}
+
+func TestSpatialDiffInteractionRemainsOfflineAndQueryOnly(t *testing.T) {
+	project := t.TempDir()
+	contract := spatialcontract.Contract{
+		ContractVersion: spatialcontract.ContractVersion, ContractType: spatialcontract.TypeInteraction,
+		State: spatialcontract.StateAwaitingHumanReview,
+		Interaction: &spatialcontract.InteractionContract{
+			SubjectGUID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", TargetKey: "asset:cccccccccccccccccccccccccccccccc", Relation: "SupportedBy",
+			SubjectFrame: "bottom", TargetFrame: "top", RelativeRotation: spatialcontract.Quat{0, 0, 0, 1},
+			PositionTolerance: spatialcontract.Vec3{.1, .01, .1}, AngleTolerance: 10, CollisionPolicy: "contact-only",
+			Revision: 1, CaptureSetHash: "capture-interaction",
+		},
+		Technical: &spatialcontract.TechnicalEvidence{Passed: true, ErrorCount: 0, ReportHash: "report-interaction"},
+	}
+	spatialcontract.Normalize(&contract)
+	draft := filepath.Join(project, "Library", "interaction.json")
+	current, err := spatialcontract.CanonicalContractPath(project, contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spatialcontract.Save(draft, contract); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := runSpatial([]string{"diff", "--current", current, "--draft", draft, "--json"}, stdout, stderr); code != 0 {
+		t.Fatalf("offline interaction diff code=%d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"contract_type":"interaction"`) || !strings.Contains(stdout.String(), `"status":"NEW"`) {
+		t.Fatalf("unexpected interaction diff output %s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "subject_geometry_hash") || strings.Contains(stdout.String(), "target_geometry_hash") {
+		t.Fatalf("generic diff fabricated external provenance: %s", stdout.String())
+	}
+}
+
+func TestSpatialCommandSpecificHelp(t *testing.T) {
+	tests := []struct {
+		command string
+		prefix  string
+	}{
+		{"validate", "unity-ctx spatial validate <file> [--json]"},
+		{"verify-approved", "unity-ctx spatial verify-approved <file> [--json]"},
+		{"diff", "unity-ctx spatial diff --current FILE --draft FILE [--json]"},
+		{"review", "unity-ctx spatial review --draft FILE"},
+		{"apply", "unity-ctx spatial apply --current FILE --draft FILE [--json]"},
+	}
+	for _, test := range tests {
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		if code := Run([]string{"spatial", test.command, "--help"}, stdout, stderr); code != 0 {
+			t.Fatalf("command=%s code=%d stderr=%s", test.command, code, stderr.String())
+		}
+		if !strings.HasPrefix(stdout.String(), test.prefix) || stderr.Len() != 0 {
+			t.Fatalf("command=%s stdout=%q stderr=%q", test.command, stdout.String(), stderr.String())
+		}
+	}
+}
+
+func TestSpatialVerifyApprovedRejectsSelfConsistentTrackedJSONWithoutLedger(t *testing.T) {
+	contract := validSpatialCLIContract()
+	if err := spatialcontract.ReviewAuthorized(&contract, "student-01", spatialcontract.ApprovalEvidence{
+		Authority: "test-bridge", Nonce: "nonce-1", Proof: "valid-proof",
+	}, cliApprovalVerifier{}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), contract.Asset.AssetGUID+".spatial.json")
+	if err := spatialcontract.Save(path, contract); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := runSpatial([]string{"verify-approved", path, "--json"}, stdout, stderr); code != 1 {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "not authorized for consumption") {
+		t.Fatalf("unexpected verify-approved error %s", stderr.String())
+	}
+}
+
 func TestSpatialCLIRecordsNonApprovalReviewDecision(t *testing.T) {
 	draft := filepath.Join(t.TempDir(), "revision.spatial.json")
 	if err := spatialcontract.Save(draft, validSpatialCLIContract()); err != nil {

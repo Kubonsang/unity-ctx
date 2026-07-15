@@ -10,6 +10,7 @@ import (
 
 	"github.com/Kubonsang/unity-ctx/internal/bench"
 	"github.com/Kubonsang/unity-ctx/internal/bounds"
+	"github.com/Kubonsang/unity-ctx/internal/check"
 	"github.com/Kubonsang/unity-ctx/internal/core"
 	"github.com/Kubonsang/unity-ctx/internal/document"
 	impactscan "github.com/Kubonsang/unity-ctx/internal/impact"
@@ -34,6 +35,17 @@ func joinIDsOrNone(values []int64) string {
 		parts[i] = strconv.FormatInt(value, 10)
 	}
 	return strings.Join(parts, ",")
+}
+
+func formatContactResults(values []check.ContactResult) string {
+	if len(values) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, fmt.Sprintf("%s@%s[%s]:gap=%g:penetration=%g:alignment=%g:support=%g", value.RequirementID, value.SurfaceID, joinStringsOrNone(value.Codes), value.Gap, value.Penetration, value.Alignment, value.Support))
+	}
+	return strings.Join(parts, ";")
 }
 
 func formatCheckBody(prefix, manifestPath, prefabPath string, position [3]float64, overlapIDs []int64) string {
@@ -110,12 +122,12 @@ func formatSuggestBody(manifestPath, prefabPath string, plan suggestplan.Result)
 			len(plan.Candidates)-clearCount,
 		),
 	}
-	if plan.Align == suggestplan.AlignWall {
-		lines[0] += fmt.Sprintf(" surface_id=%s contact=%s", plan.Near.Name, plan.Contact)
+	if plan.SurfaceID != "" {
+		lines[0] += fmt.Sprintf(" surface_id=%s contact=%s", plan.SurfaceID, plan.Contact)
 	}
 
 	for _, candidate := range plan.Candidates {
-		if plan.Align == suggestplan.AlignWall {
+		if plan.SurfaceID != "" {
 			lines = append(lines, fmt.Sprintf("CANDIDATE rank=%d direction=%s position=%s rotation=%g,%g,%g,%g status=%s overlap_ids=%s anchor_id=%d anchor_name=%s", candidate.Rank, candidate.Direction, formatPosition([3]float64(candidate.Position)), candidate.Rotation[0], candidate.Rotation[1], candidate.Rotation[2], candidate.Rotation[3], candidate.Status, formatPatchIDList(candidate.OverlapIDs), plan.Near.FileID, plan.Near.Name))
 		} else {
 			lines = append(lines, fmt.Sprintf("CANDIDATE rank=%d direction=%s position=%s status=%s overlap_ids=%s anchor_id=%d anchor_name=%s", candidate.Rank, candidate.Direction, formatPosition([3]float64(candidate.Position)), candidate.Status, formatPatchIDList(candidate.OverlapIDs), plan.Near.FileID, plan.Near.Name))
@@ -224,7 +236,7 @@ func suggestPayloadFromPlan(manifestPath string, plan suggestplan.Result) *Sugge
 	candidates := make([]SuggestCandidatePayload, 0, len(plan.Candidates))
 	for _, candidate := range plan.Candidates {
 		var rotation *bounds.Quat
-		if plan.Align == suggestplan.AlignWall {
+		if plan.SurfaceID != "" {
 			value := candidate.Rotation
 			rotation = &value
 		}
@@ -238,10 +250,6 @@ func suggestPayloadFromPlan(manifestPath string, plan suggestplan.Result) *Sugge
 		})
 	}
 
-	surfaceID := ""
-	if plan.Align == suggestplan.AlignWall {
-		surfaceID = plan.Near.Name
-	}
 	return &SuggestPayload{
 		Status:     plan.Status,
 		Manifest:   manifestPath,
@@ -253,7 +261,7 @@ func suggestPayloadFromPlan(manifestPath string, plan suggestplan.Result) *Sugge
 		Align:      string(plan.Align),
 		Count:      plan.Count,
 		Candidates: candidates,
-		SurfaceID:  surfaceID,
+		SurfaceID:  plan.SurfaceID,
 		Contact:    plan.Contact,
 	}
 }

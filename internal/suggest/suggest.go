@@ -50,6 +50,7 @@ type Result struct {
 	Near       Anchor
 	Align      Align
 	Contact    string
+	SurfaceID  string
 	Count      int
 	Candidates []Candidate
 }
@@ -76,6 +77,9 @@ func Plan(req Request) (Result, error) {
 	}
 	if align == AlignWall {
 		return planWall(req)
+	}
+	if align == AlignFloor && req.Manifest.Version == bounds.ManifestVersion2 {
+		return planReviewedFloor(req)
 	}
 
 	anchorObject, err := resolveAnchor(req.Manifest, req.Near)
@@ -169,6 +173,112 @@ func Plan(req Request) (Result, error) {
 	return result, nil
 }
 
+func planReviewedFloor(req Request) (Result, error) {
+	anchorObject, err := resolveAnchor(req.Manifest, req.Near)
+	if err != nil {
+		return Result{}, err
+	}
+	prefab, ok := findPrefabEntry(req.Manifest.Prefabs, req.Prefab)
+	if !ok || prefab.Spatial == nil || len(prefab.Spatial.OBBs) == 0 {
+		return Result{}, check.ErrNeedGeometryV2
+	}
+	if !prefab.Spatial.Reviewed {
+		return Result{}, check.ErrGeometryUnreviewed
+	}
+	requirement := findRequirement(prefab.Spatial.Contacts, "floor-supported")
+	if requirement == nil {
+		return Result{}, fmt.Errorf("SUPPORT_CONTRACT_MISSING contact=%q", "floor-supported")
+	}
+	if len(prefab.Spatial.Contacts) != 1 {
+		return Result{}, fmt.Errorf("%w: floor suggest cannot map %d required contacts", check.ErrContactMappingRequired, len(prefab.Spatial.Contacts))
+	}
+	frame := profileFrame(prefab.Spatial, requirement.FrameID)
+	if frame == nil {
+		return Result{}, check.ErrGeometryUnreviewed
+	}
+	surface, err := resolveReviewedSurface(req.Manifest.Surfaces, req.SurfaceID, "floor")
+	if err != nil {
+		return Result{}, err
+	}
+	rotation, err := alignContactFrame(prefab.Spatial, *frame, *surface)
+	if err != nil {
+		return Result{}, err
+	}
+	candidates := make([]Candidate, 0, len(directionOrder))
+	for _, spec := range directionOrder {
+		position := candidatePosition(anchorObject.Bounds, prefab.Bounds, spec.name, AlignFloor)
+		contactPoint := add(position, rotate(rotation, frame.Point))
+		normal := normalize(surface.Normal)
+		currentGap := dot(sub(contactPoint, surface.Origin), normal)
+		targetGap := (requirement.MinimumGap + requirement.MaximumGap) * .5
+		position = add(position, mul(normal, targetGap-currentGap))
+		checked, err := check.CheckSpatialPlacement(check.SpatialRequest{
+			Manifest: req.Manifest, Prefab: req.Prefab, Position: position, Rotation: rotation,
+			ContactSurfaces: []check.ContactSurface{{RequirementID: requirement.ID, SurfaceID: surface.ID}},
+		})
+		if err != nil {
+			return Result{}, err
+		}
+		status := "WARN"
+		if checked.Clear {
+			status = "OK"
+		}
+		candidates = append(candidates, Candidate{Status: status, Direction: spec.name, Position: position, Rotation: rotation, OverlapIDs: checked.OverlapIDs})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Status != candidates[j].Status {
+			return statusRank(candidates[i].Status) < statusRank(candidates[j].Status)
+		}
+		return directionRank(candidates[i].Direction) < directionRank(candidates[j].Direction)
+	})
+	limit := req.Count
+	if limit > len(candidates) {
+		limit = len(candidates)
+	}
+	if limit > 4 {
+		limit = 4
+	}
+	candidates = candidates[:limit]
+	status := "WARN"
+	for index := range candidates {
+		candidates[index].Rank = index + 1
+		if candidates[index].Status == "OK" {
+			status = "OK"
+		}
+	}
+	return Result{
+		Status: status, Manifest: req.Manifest.Scene, PrefabPath: req.Prefab,
+		Near: Anchor{FileID: anchorObject.FileID, Name: anchorObject.Name}, Align: AlignFloor,
+		Contact: "floor-supported", SurfaceID: surface.ID, Count: len(candidates), Candidates: candidates,
+	}, nil
+}
+
+func resolveReviewedSurface(surfaces []bounds.SurfacePatch, id, surfaceType string) (*bounds.SurfacePatch, error) {
+	candidates := make([]*bounds.SurfacePatch, 0)
+	for index := range surfaces {
+		surface := &surfaces[index]
+		if id != "" && surface.ID != id {
+			continue
+		}
+		if surface.Type == surfaceType {
+			candidates = append(candidates, surface)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("missing reviewed %s surface id=%q", surfaceType, id)
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })
+	for _, surface := range candidates {
+		if surface.Reviewed && surface.Supported {
+			return surface, nil
+		}
+	}
+	if !candidates[0].Reviewed {
+		return nil, fmt.Errorf("SURFACE_UNREVIEWED id=%q", candidates[0].ID)
+	}
+	return nil, fmt.Errorf("UNSUPPORTED_SURFACE id=%q", candidates[0].ID)
+}
+
 func planWall(req Request) (Result, error) {
 	if req.Manifest.Version != bounds.ManifestVersion2 {
 		return Result{}, check.ErrNeedGeometryV2
@@ -182,6 +292,9 @@ func planWall(req Request) (Result, error) {
 	}
 	if surface == nil {
 		return Result{}, fmt.Errorf("missing surface id=%q", req.SurfaceID)
+	}
+	if surface.Type != "wall" {
+		return Result{}, fmt.Errorf("surface id=%q type=%q is not wall", req.SurfaceID, surface.Type)
 	}
 	if !surface.Supported || !surface.Reviewed {
 		return Result{}, fmt.Errorf("SURFACE_UNREVIEWED id=%q", req.SurfaceID)
@@ -201,7 +314,10 @@ func planWall(req Request) (Result, error) {
 	if wallFrame == nil {
 		return Result{}, check.ErrGeometryUnreviewed
 	}
-	rotation := lookRotation(surface.Normal, cross(surface.Normal, surface.Tangent))
+	rotation, err := alignContactFrame(prefab.Spatial, *wallFrame, *surface)
+	if err != nil {
+		return Result{}, err
+	}
 	gap := (wallRequirement.MinimumGap + wallRequirement.MaximumGap) * 0.5
 	offsets := []float64{-0.3, -0.1, 0.1, 0.3}
 	candidates := make([]Candidate, 0, 4)
@@ -210,44 +326,48 @@ func planWall(req Request) (Result, error) {
 		point = add(point, mul(normalize(surface.Normal), gap))
 		contactOffset := rotate(rotation, wallFrame.Point)
 		position := sub(point, contactOffset)
-		var floorChecked *check.SpatialResult
+		contactSurfaces := []check.ContactSurface{{RequirementID: wallRequirement.ID, SurfaceID: req.SurfaceID}}
 		if floorRequirement := findRequirement(prefab.Spatial.Contacts, "floor-supported"); floorRequirement != nil {
-			var floorResult check.SpatialResult
-			position, floorResult, err = projectToRequiredFloor(req.Manifest, req.Prefab, prefab.Spatial, *floorRequirement, position, rotation)
+			var floorSurfaceID string
+			position, floorSurfaceID, err = projectToRequiredFloor(req.Manifest, req.Prefab, prefab.Spatial, *floorRequirement, position, rotation)
 			if err != nil {
 				return Result{}, err
 			}
-			floorChecked = &floorResult
+			contactSurfaces = append(contactSurfaces, check.ContactSurface{RequirementID: floorRequirement.ID, SurfaceID: floorSurfaceID})
 		}
-		checked, err := check.CheckSpatialPlacement(check.SpatialRequest{Manifest: req.Manifest, Prefab: req.Prefab, Position: position, Rotation: rotation, SurfaceID: req.SurfaceID, Contact: canonicalContact(wallRequirement.Kind)})
+		if len(contactSurfaces) != len(prefab.Spatial.Contacts) {
+			return Result{}, fmt.Errorf("SUPPORT_REGION_INVALID: suggest wall cannot map every required contact")
+		}
+		checked, err := check.CheckSpatialPlacement(check.SpatialRequest{Manifest: req.Manifest, Prefab: req.Prefab, Position: position, Rotation: rotation, ContactSurfaces: contactSurfaces})
 		if err != nil {
 			return Result{}, err
 		}
 		status := "OK"
-		if !checked.Clear || (floorChecked != nil && !floorChecked.Clear) {
+		if !checked.Clear {
 			status = "WARN"
 		}
 		overlaps := append([]int64(nil), checked.OverlapIDs...)
-		if floorChecked != nil {
-			overlaps = append(overlaps, floorChecked.OverlapIDs...)
-		}
 		sort.Slice(overlaps, func(i, j int) bool { return overlaps[i] < overlaps[j] })
 		overlaps = uniqueIDs(overlaps)
-		candidates = append(candidates, Candidate{Rank: index + 1, Status: status, Direction: fmt.Sprintf("wall-%d", index+1), Position: position, Rotation: rotation, OverlapIDs: overlaps})
+		candidates = append(candidates, Candidate{Status: status, Direction: fmt.Sprintf("wall-%d", index+1), Position: position, Rotation: rotation, OverlapIDs: overlaps})
 	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return statusRank(candidates[i].Status) < statusRank(candidates[j].Status)
+	})
 	limit := req.Count
 	if limit < 1 || limit > 4 {
 		limit = 4
 	}
 	candidates = candidates[:limit]
 	status := "WARN"
-	for _, candidate := range candidates {
+	for index := range candidates {
+		candidates[index].Rank = index + 1
+		candidate := candidates[index]
 		if candidate.Status == "OK" {
 			status = "OK"
-			break
 		}
 	}
-	return Result{Status: status, Manifest: req.Manifest.Scene, PrefabPath: req.Prefab, Near: Anchor{Name: req.SurfaceID}, Align: AlignWall, Contact: canonicalContact(wallRequirement.Kind), Count: len(candidates), Candidates: candidates}, nil
+	return Result{Status: status, Manifest: req.Manifest.Scene, PrefabPath: req.Prefab, Near: Anchor{Name: req.SurfaceID}, Align: AlignWall, Contact: canonicalContact(wallRequirement.Kind), SurfaceID: req.SurfaceID, Count: len(candidates), Candidates: candidates}, nil
 }
 
 func resolveWallRequirement(items []bounds.ContactRequirement, requested string) (bounds.ContactRequirement, error) {
@@ -298,6 +418,11 @@ func canonicalContact(value string) string {
 }
 
 func profileFrame(profile *bounds.SpatialProfile, id string) *bounds.ContactFrame {
+	for index := range profile.Frames {
+		if profile.Frames[index].ID == id {
+			return &profile.Frames[index]
+		}
+	}
 	if profile.BottomContact != nil && profile.BottomContact.ID == id {
 		return profile.BottomContact
 	}
@@ -310,10 +435,10 @@ func profileFrame(profile *bounds.SpatialProfile, id string) *bounds.ContactFram
 	return nil
 }
 
-func projectToRequiredFloor(manifest bounds.Manifest, prefabPath string, profile *bounds.SpatialProfile, requirement bounds.ContactRequirement, position bounds.Vec3, rotation bounds.Quat) (bounds.Vec3, check.SpatialResult, error) {
+func projectToRequiredFloor(manifest bounds.Manifest, prefabPath string, profile *bounds.SpatialProfile, requirement bounds.ContactRequirement, position bounds.Vec3, rotation bounds.Quat) (bounds.Vec3, string, error) {
 	frame := profileFrame(profile, requirement.FrameID)
 	if frame == nil {
-		return bounds.Vec3{}, check.SpatialResult{}, check.ErrGeometryUnreviewed
+		return bounds.Vec3{}, "", check.ErrGeometryUnreviewed
 	}
 	surfaces := append([]bounds.SurfacePatch(nil), manifest.Surfaces...)
 	sort.Slice(surfaces, func(i, j int) bool { return surfaces[i].ID < surfaces[j].ID })
@@ -326,15 +451,15 @@ func projectToRequiredFloor(manifest bounds.Manifest, prefabPath string, profile
 		currentGap := dot(sub(point, surface.Origin), normal)
 		targetGap := (requirement.MinimumGap + requirement.MaximumGap) * 0.5
 		candidate := add(position, mul(normal, targetGap-currentGap))
-		checked, err := check.CheckSpatialPlacement(check.SpatialRequest{Manifest: manifest, Prefab: prefabPath, Position: candidate, Rotation: rotation, SurfaceID: surface.ID, Contact: "floor-supported"})
+		checked, err := check.CheckSingleContactEvidence(check.SpatialRequest{Manifest: manifest, Prefab: prefabPath, Position: candidate, Rotation: rotation, SurfaceID: surface.ID, Contact: "floor-supported"})
 		if err != nil {
-			return bounds.Vec3{}, check.SpatialResult{}, err
+			return bounds.Vec3{}, "", err
 		}
 		if onlyOverlapCodes(checked.Codes) {
-			return candidate, checked, nil
+			return candidate, surface.ID, nil
 		}
 	}
-	return bounds.Vec3{}, check.SpatialResult{}, fmt.Errorf("SUPPORT_REGION_INVALID: no reviewed floor can satisfy %s", requirement.ID)
+	return bounds.Vec3{}, "", fmt.Errorf("SUPPORT_REGION_INVALID: no reviewed floor can satisfy %s", requirement.ID)
 }
 
 func onlyOverlapCodes(codes []string) bool {
@@ -407,6 +532,52 @@ func lookRotation(forward, up bounds.Vec3) bounds.Quat {
 		q = bounds.Quat{(f[0] + r[2]) / s, (u[2] + f[1]) / s, s / 4, (r[1] - u[0]) / s}
 	}
 	return q
+}
+
+func alignContactFrame(profile *bounds.SpatialProfile, frame bounds.ContactFrame, surface bounds.SurfacePatch) (bounds.Quat, error) {
+	sourceNormal := normalize(frame.Normal)
+	sourceTangent := normalize(frame.Tangent)
+	sourceBitangent := normalize(cross(sourceNormal, sourceTangent))
+	targetNormal := mul(normalize(surface.Normal), -1)
+	targetTangent := normalize(surface.Tangent)
+	targetBitangent := normalize(cross(targetNormal, targetTangent))
+	if dot(sourceNormal, sourceNormal) < .999 || dot(sourceTangent, sourceTangent) < .999 || dot(targetNormal, targetNormal) < .999 || dot(targetTangent, targetTangent) < .999 {
+		return bounds.Quat{}, check.ErrGeometryUnreviewed
+	}
+	source := lookRotation(sourceNormal, sourceBitangent)
+	target := lookRotation(targetNormal, targetBitangent)
+	rotation := quatMul(target, quatConjugate(source))
+	length := math.Sqrt(dotQuat(rotation, rotation))
+	if length < 1e-9 {
+		return bounds.Quat{}, check.ErrGeometryUnreviewed
+	}
+	rotation = bounds.Quat{rotation[0] / length, rotation[1] / length, rotation[2] / length, rotation[3] / length}
+	// A reviewed profile's forward/up axes must remain a valid basis after the
+	// same transform; checking them here prevents a corrupt profile from
+	// producing a plausible-looking contact rotation.
+	worldForward := normalize(rotate(rotation, profile.Forward))
+	worldUp := normalize(rotate(rotation, profile.Up))
+	if dot(worldForward, worldForward) < .999 || dot(worldUp, worldUp) < .999 || math.Abs(dot(worldForward, worldUp)) > .001 {
+		return bounds.Quat{}, check.ErrGeometryUnreviewed
+	}
+	return rotation, nil
+}
+
+func quatMul(a, b bounds.Quat) bounds.Quat {
+	return bounds.Quat{
+		a[3]*b[0] + a[0]*b[3] + a[1]*b[2] - a[2]*b[1],
+		a[3]*b[1] - a[0]*b[2] + a[1]*b[3] + a[2]*b[0],
+		a[3]*b[2] + a[0]*b[1] - a[1]*b[0] + a[2]*b[3],
+		a[3]*b[3] - a[0]*b[0] - a[1]*b[1] - a[2]*b[2],
+	}
+}
+
+func quatConjugate(value bounds.Quat) bounds.Quat {
+	return bounds.Quat{-value[0], -value[1], -value[2], value[3]}
+}
+
+func dotQuat(a, b bounds.Quat) float64 {
+	return a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3]
 }
 
 func resolveAnchor(manifest bounds.Manifest, near string) (bounds.ObjectBounds, error) {

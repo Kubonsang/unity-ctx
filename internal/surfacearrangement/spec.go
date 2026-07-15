@@ -11,7 +11,9 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode/utf16"
 )
 
 const (
@@ -19,12 +21,6 @@ const (
 	ResolverVersion    = 1
 	MaximumItemCount   = 12
 	MaximumStackHeight = 3
-	// MaximumEdgeMarginMeters keeps the canonical number inside the plain
-	// decimal range shared by Go's JSON encoder and Unity's formatter. It is
-	// deliberately generous for a tabletop/surface arrangement while rejecting
-	// non-physical values that would otherwise be written with an exponent.
-	MaximumEdgeMarginMeters = 100
-	MaximumIDLength         = 128
 )
 
 type Preset string
@@ -86,8 +82,9 @@ func LoadForHash(path string) (Spec, error) {
 }
 
 // Decode rejects unknown fields and trailing JSON, normalizes stable fields,
-// and verifies a supplied spec_hash. A missing hash is populated so authoring
-// tools can validate drafts before persisting their normalized form.
+// and strictly verifies the required spec_hash. Draft authoring and repair
+// tools must use DecodeForHash so the validate path cannot bless an unhashed
+// document by inventing its integrity value.
 func Decode(data []byte) (Spec, error) {
 	spec, err := decodeDocument(data)
 	if err != nil {
@@ -97,8 +94,11 @@ func Decode(data []byte) (Spec, error) {
 	if err := validateFields(spec); err != nil {
 		return Spec{}, err
 	}
+	if providedHash == "" {
+		return Spec{}, errors.New("invalid surface arrangement: spec_hash is required")
+	}
 	Normalize(&spec)
-	if providedHash != "" && providedHash != spec.SpecHash {
+	if providedHash != spec.SpecHash {
 		return Spec{}, fmt.Errorf("invalid surface arrangement: spec_hash does not match normalized content got=%s want=%s", providedHash, spec.SpecHash)
 	}
 	if err := Validate(spec); err != nil {
@@ -107,9 +107,9 @@ func Decode(data []byte) (Spec, error) {
 	return spec, nil
 }
 
-// DecodeForHash is the strict parsing path for recomputing a spec hash. It
-// applies every schema and portability check to the raw values, but replaces
-// (rather than verifies) the embedded spec_hash.
+// DecodeForHash is the schema-strict parsing path for recomputing a spec hash.
+// It validates raw values but replaces (rather than verifies) a missing or
+// stale embedded spec_hash.
 func DecodeForHash(data []byte) (Spec, error) {
 	spec, err := decodeDocument(data)
 	if err != nil {
@@ -175,15 +175,6 @@ func validateFields(spec Spec) error {
 	if spec.ArrangementID == "" || spec.TargetElementID == "" || spec.TargetFrameID == "" {
 		return errors.New("invalid surface arrangement: arrangement_id, target_element_id, and target_frame_id are required")
 	}
-	if err := validatePortableField("arrangement_id", spec.ArrangementID); err != nil {
-		return err
-	}
-	if err := validatePortableField("target_element_id", spec.TargetElementID); err != nil {
-		return err
-	}
-	if err := validatePortableField("target_frame_id", spec.TargetFrameID); err != nil {
-		return err
-	}
 	if !validPreset(Preset(strings.TrimSpace(string(spec.Preset)))) {
 		return fmt.Errorf("invalid surface arrangement: preset must be %q, %q, or %q", PresetNeat, PresetInUse, PresetScattered)
 	}
@@ -198,9 +189,6 @@ func validateFields(spec Spec) error {
 		affinityGroup := strings.TrimSpace(member.AffinityGroup)
 		if descriptorID == "" || affinityGroup == "" {
 			return fmt.Errorf("invalid surface arrangement: members[%d] requires descriptor_id and affinity_group", index)
-		}
-		if !portableID(descriptorID) || !portableID(affinityGroup) {
-			return fmt.Errorf("invalid surface arrangement: members[%d] descriptor_id and affinity_group must be portable ASCII IDs", index)
 		}
 		if seen[descriptorID] {
 			return fmt.Errorf("invalid surface arrangement: duplicate member descriptor_id %q", descriptorID)
@@ -225,8 +213,8 @@ func validateFields(spec Spec) error {
 	if !unitInterval(spec.Amount) || !unitInterval(spec.Orderliness) || !unitInterval(spec.Grouping) || !unitInterval(spec.Stacking) {
 		return errors.New("invalid surface arrangement: amount, orderliness, grouping, and stacking must be finite and between 0 and 1")
 	}
-	if !finite(spec.EdgeMargin) || spec.EdgeMargin < 0 || spec.EdgeMargin > MaximumEdgeMarginMeters {
-		return fmt.Errorf("invalid surface arrangement: edge_margin must be finite and between 0 and %d meters", MaximumEdgeMarginMeters)
+	if !finite(spec.EdgeMargin) || spec.EdgeMargin < 0 {
+		return errors.New("invalid surface arrangement: edge_margin must be finite and non-negative")
 	}
 	if spec.MaxStackHeight < 1 || spec.MaxStackHeight > MaximumStackHeight {
 		return fmt.Errorf("invalid surface arrangement: max_stack_height must be between 1 and %d", MaximumStackHeight)
@@ -243,7 +231,7 @@ func ContentHash(spec Spec) string {
 	spec = canonicalCopy(spec)
 	spec.SpecHash = ""
 	canonicalizeWithoutHash(&spec)
-	data, _ := json.Marshal(spec)
+	data := canonicalJSON(spec)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
@@ -278,7 +266,7 @@ func canonicalizeWithoutHash(spec *Spec) {
 		spec.Members[i].SelectionWeight = round(spec.Members[i].SelectionWeight)
 	}
 	sort.SliceStable(spec.Members, func(i, j int) bool {
-		return spec.Members[i].DescriptorID < spec.Members[j].DescriptorID
+		return utf16OrdinalLess(spec.Members[i].DescriptorID, spec.Members[j].DescriptorID)
 	})
 	spec.Amount = round(spec.Amount)
 	spec.Orderliness = round(spec.Orderliness)
@@ -304,32 +292,6 @@ func finite(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
-func portableID(value string) bool {
-	if len(value) == 0 || len(value) > MaximumIDLength {
-		return false
-	}
-	for index := 0; index < len(value); index++ {
-		character := value[index]
-		if (character >= 'a' && character <= 'z') ||
-			(character >= 'A' && character <= 'Z') ||
-			(character >= '0' && character <= '9') {
-			continue
-		}
-		if index > 0 && (character == '.' || character == '_' || character == ':' || character == '-') {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-func validatePortableField(name, value string) error {
-	if portableID(strings.TrimSpace(value)) {
-		return nil
-	}
-	return fmt.Errorf("invalid surface arrangement: %s must be a portable ASCII ID (1-%d letters, digits, '.', '_', ':', or '-')", name, MaximumIDLength)
-}
-
 func round(value float64) float64 {
 	// Unity stores arrangement numbers as System.Single. Reproduce that wire
 	// precision before rounding so Go and C# hash boundary decimals identically.
@@ -339,4 +301,112 @@ func round(value float64) float64 {
 		return 0
 	}
 	return rounded
+}
+
+// utf16OrdinalLess reproduces StringComparer.Ordinal. Go compares strings by
+// UTF-8 bytes, while Unity compares UTF-16 code units; the distinction matters
+// when a member ID contains supplementary Unicode characters.
+func utf16OrdinalLess(left, right string) bool {
+	leftUnits := utf16.Encode([]rune(left))
+	rightUnits := utf16.Encode([]rune(right))
+	limit := len(leftUnits)
+	if len(rightUnits) < limit {
+		limit = len(rightUnits)
+	}
+	for index := 0; index < limit; index++ {
+		if leftUnits[index] != rightUnits[index] {
+			return leftUnits[index] < rightUnits[index]
+		}
+	}
+	return len(leftUnits) < len(rightUnits)
+}
+
+// canonicalJSON mirrors Unity's SurfaceArrangementSpecUtility.CanonicalJson:
+// fixed field order, StringComparer.Ordinal member order, System.Single input
+// precision, at most six fixed decimal places, and JSON's HTML-safe escaping.
+func canonicalJSON(spec Spec) []byte {
+	var result strings.Builder
+	result.Grow(1024)
+	result.WriteByte('{')
+	appendIntegerField(&result, "surface_arrangement_version", int64(spec.SurfaceArrangementVersion))
+	result.WriteByte(',')
+	appendStringField(&result, "arrangement_id", spec.ArrangementID)
+	result.WriteByte(',')
+	appendStringField(&result, "target_element_id", spec.TargetElementID)
+	result.WriteByte(',')
+	appendStringField(&result, "target_frame_id", spec.TargetFrameID)
+	result.WriteByte(',')
+	appendJSONName(&result, "members")
+	result.WriteByte('[')
+	for index, member := range spec.Members {
+		if index > 0 {
+			result.WriteByte(',')
+		}
+		result.WriteByte('{')
+		appendStringField(&result, "descriptor_id", member.DescriptorID)
+		result.WriteByte(',')
+		appendIntegerField(&result, "minimum_count", int64(member.MinimumCount))
+		result.WriteByte(',')
+		appendIntegerField(&result, "maximum_count", int64(member.MaximumCount))
+		result.WriteByte(',')
+		appendNumberField(&result, "selection_weight", member.SelectionWeight)
+		result.WriteByte(',')
+		appendStringField(&result, "affinity_group", member.AffinityGroup)
+		result.WriteByte('}')
+	}
+	result.WriteByte(']')
+	result.WriteByte(',')
+	appendStringField(&result, "preset", string(spec.Preset))
+	result.WriteByte(',')
+	appendNumberField(&result, "amount", spec.Amount)
+	result.WriteByte(',')
+	appendNumberField(&result, "orderliness", spec.Orderliness)
+	result.WriteByte(',')
+	appendNumberField(&result, "grouping", spec.Grouping)
+	result.WriteByte(',')
+	appendNumberField(&result, "stacking", spec.Stacking)
+	result.WriteByte(',')
+	appendNumberField(&result, "edge_margin", spec.EdgeMargin)
+	result.WriteByte(',')
+	appendIntegerField(&result, "max_stack_height", int64(spec.MaxStackHeight))
+	result.WriteByte(',')
+	appendIntegerField(&result, "seed_offset", spec.SeedOffset)
+	result.WriteByte(',')
+	appendIntegerField(&result, "resolver_version", int64(spec.ResolverVersion))
+	result.WriteByte(',')
+	appendStringField(&result, "spec_hash", "")
+	result.WriteByte('}')
+	return []byte(result.String())
+}
+
+func appendJSONName(result *strings.Builder, name string) {
+	appendJSONString(result, name)
+	result.WriteByte(':')
+}
+
+func appendStringField(result *strings.Builder, name, value string) {
+	appendJSONName(result, name)
+	appendJSONString(result, value)
+}
+
+func appendIntegerField(result *strings.Builder, name string, value int64) {
+	appendJSONName(result, name)
+	result.WriteString(strconv.FormatInt(value, 10))
+}
+
+func appendNumberField(result *strings.Builder, name string, value float64) {
+	appendJSONName(result, name)
+	formatted := strconv.FormatFloat(round(value), 'f', 6, 64)
+	formatted = strings.TrimRight(strings.TrimRight(formatted, "0"), ".")
+	if formatted == "" || formatted == "-0" {
+		formatted = "0"
+	}
+	result.WriteString(formatted)
+}
+
+func appendJSONString(result *strings.Builder, value string) {
+	// encoding/json deliberately keeps HTML escaping enabled here because
+	// Unity's canonical Quote function emits the same lower-case escapes.
+	encoded, _ := json.Marshal(value)
+	result.Write(encoded)
 }

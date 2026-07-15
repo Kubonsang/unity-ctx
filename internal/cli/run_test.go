@@ -571,8 +571,8 @@ func TestSceneCheckJSONReturnsResultEnvelope(t *testing.T) {
 	if got.Command != "check" {
 		t.Fatalf("command mismatch: got %q want %q", got.Command, "check")
 	}
-	if got.File != "testdata/scenes/simple_scene.unity" {
-		t.Fatalf("file mismatch: got %q want %q", got.File, "testdata/scenes/simple_scene.unity")
+	if got.File != result.fileArg {
+		t.Fatalf("file mismatch: got %q want %q", got.File, result.fileArg)
 	}
 	if got.View != "compact" {
 		t.Fatalf("view mismatch: got %q want %q", got.View, "compact")
@@ -768,7 +768,7 @@ func TestSceneCheckRejectsManifestSceneMismatch(t *testing.T) {
 		t.Fatalf("expected empty stderr, got %q", result.stderr)
 	}
 
-	want := "ERROR manifest scene mismatch file=" + scenePath + " manifest_scene=Assets/Scenes/OtherScene.unity\n"
+	want := "ERROR manifest scene mismatch file=" + result.fileArg + " manifest_scene=Assets/Scenes/OtherScene.unity\n"
 	if result.stdout != want {
 		t.Fatalf("stdout mismatch: got %q want %q", result.stdout, want)
 	}
@@ -1192,7 +1192,7 @@ func TestDiffReturnsCompactSummary(t *testing.T) {
 }
 
 func TestApplyDryRunReturnsCompactSummary(t *testing.T) {
-	scenePath := copyFixtureToTemp(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), "simple_scene.unity")
+	scenePath := copyFixtureToTemp(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), filepath.Join("Assets", "Scenes", "SimpleScene.unity"))
 
 	result := runCLI(
 		t,
@@ -1217,7 +1217,7 @@ func TestApplyDryRunReturnsCompactSummary(t *testing.T) {
 }
 
 func TestApplyWriteCreatesBackup(t *testing.T) {
-	scenePath := copyFixtureToTemp(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), "simple_scene.unity")
+	scenePath := copyFixtureToTemp(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), filepath.Join("Assets", "Scenes", "SimpleScene.unity"))
 
 	result := runCLI(
 		t,
@@ -1247,7 +1247,7 @@ func TestApplyWriteCreatesBackup(t *testing.T) {
 }
 
 func TestApplyRejectsUnknownPatchStatus(t *testing.T) {
-	scenePath := copyFixtureToTemp(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), "simple_scene.unity")
+	scenePath := copyFixtureToTemp(t, filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"), filepath.Join("Assets", "Scenes", "SimpleScene.unity"))
 
 	result := runCLI(
 		t,
@@ -1488,6 +1488,9 @@ func copyFixtureToTemp(t *testing.T, source, name string) string {
 	}
 
 	path := filepath.Join(t.TempDir(), name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -3620,10 +3623,27 @@ type runResult struct {
 	exitCode int
 	stdout   string
 	stderr   string
+	fileArg  string
 }
 
 func runCLI(t *testing.T, args ...string) runResult {
 	t.Helper()
+	boundSceneCommand := len(args) >= 3 && args[0] == "scene" && (args[1] == "suggest" || args[1] == "check" || args[1] == "patch" || args[1] == "diff" || args[1] == "apply")
+	if boundSceneCommand && filepath.ToSlash(args[2]) == "testdata/scenes/simple_scene.unity" {
+		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "scenes", "simple_scene.unity"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		scenePath := filepath.Join(t.TempDir(), "Assets", "Scenes", "SimpleScene.unity")
+		if err := os.MkdirAll(filepath.Dir(scenePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(scenePath, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		args = append([]string(nil), args...)
+		args[2] = scenePath
+	}
 
 	return runCLIWithEnv(t, nil, args...)
 }
@@ -3651,10 +3671,15 @@ func runCLIWithEnv(t *testing.T, env []string, args ...string) runResult {
 		exitCode = exitErr.ExitCode()
 	}
 
+	fileArg := ""
+	if len(args) >= 3 {
+		fileArg = args[2]
+	}
 	return runResult{
 		exitCode: exitCode,
 		stdout:   stdout.String(),
 		stderr:   stderr.String(),
+		fileArg:  fileArg,
 	}
 }
 
@@ -4334,7 +4359,10 @@ func TestSceneRepositionFullPathTrailingComment(t *testing.T) {
 func reparentSceneForCLI(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "reparent.unity")
+	path := filepath.Join(dir, "Assets", "Scenes", "reparent.unity")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir scene: %v", err)
+	}
 	content := "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n" +
 		"--- !u!1 &1000\nGameObject:\n  m_Component:\n  - component: {fileID: 4000}\n  m_Name: ParentA\n" +
 		"--- !u!4 &4000\nTransform:\n  m_GameObject: {fileID: 1000}\n  m_LocalPosition: {x: 0, y: 0, z: 0}\n" +

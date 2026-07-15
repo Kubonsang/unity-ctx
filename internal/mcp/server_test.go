@@ -79,6 +79,80 @@ func TestToolsListExposesReadOnlyTools(t *testing.T) {
 	}
 }
 
+func TestSuggestWallSchemaAndHandlerCapCountAtFour(t *testing.T) {
+	resps := run(t, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
+	tools := resps[0]["result"].(map[string]any)["tools"].([]any)
+	var countSchema map[string]any
+	for _, raw := range tools {
+		tool := raw.(map[string]any)
+		if tool["name"] == "unity_suggest_wall" {
+			properties := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+			countSchema = properties["count"].(map[string]any)
+			break
+		}
+	}
+	if countSchema == nil || countSchema["maximum"] != float64(4) {
+		t.Fatalf("unity_suggest_wall count schema = %#v, want maximum 4", countSchema)
+	}
+
+	for _, rawCount := range []string{"5", "4.9", `"5"`} {
+		request := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"unity_suggest_wall","arguments":{"file":"room.unity","manifest":"room.json","prefab":"chair.prefab","surface_id":"wall","count":` + rawCount + `}}}`
+		resps = run(t, request)
+		result := resps[0]["result"].(map[string]any)
+		if result["isError"] != true {
+			t.Fatalf("count=%s should fail, got %#v", rawCount, result)
+		}
+		content := result["content"].([]any)
+		if text := content[0].(map[string]any)["text"].(string); !strings.Contains(text, "between 1 and 4") {
+			t.Fatalf("count=%s unexpected error %q", rawCount, text)
+		}
+	}
+}
+
+func TestSpatialCheckSchemaAndHandlerAcceptStableMultiContactMapping(t *testing.T) {
+	resps := run(t, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
+	tools := resps[0]["result"].(map[string]any)["tools"].([]any)
+	var schema map[string]any
+	for _, raw := range tools {
+		tool := raw.(map[string]any)
+		if tool["name"] == "unity_spatial_check" {
+			schema = tool["inputSchema"].(map[string]any)
+			break
+		}
+	}
+	properties := schema["properties"].(map[string]any)
+	contactSurfaces := properties["contact_surfaces"].(map[string]any)
+	if contactSurfaces["type"] != "object" || contactSurfaces["minProperties"] != float64(1) {
+		t.Fatalf("contact_surfaces schema = %#v", contactSurfaces)
+	}
+	if _, ok := schema["oneOf"].([]any); !ok {
+		t.Fatalf("spatial check schema must require exactly one contact input form: %#v", schema)
+	}
+
+	value, present, ok := contactSurfacesArg(map[string]any{"contact_surfaces": map[string]any{
+		"wall": "wall-north", "floor": "floor-main",
+	}}, "contact_surfaces")
+	if !present || !ok || value != "floor=floor-main,wall=wall-north" {
+		t.Fatalf("stable mapping = %q present=%v ok=%v", value, present, ok)
+	}
+
+	request := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"unity_spatial_check","arguments":{"file":"missing.unity","manifest":"missing.json","prefab":"asset.prefab","position":[0,0,0],"rotation":[0,0,0,1],"surface_id":"wall","contact":"wall-backed","contact_surfaces":{"wall":"wall"}}}}`
+	resps = run(t, request)
+	result := resps[0]["result"].(map[string]any)
+	content := result["content"].([]any)
+	if text := content[0].(map[string]any)["text"].(string); !strings.Contains(text, "provide exactly one") {
+		t.Fatalf("mutually exclusive contact forms were not rejected: %q", text)
+	}
+
+	request = `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"unity_spatial_check","arguments":{"file":"missing.unity","manifest":"missing.json","prefab":"asset.prefab","position":[0,0,0],"rotation":[0,0,0,1]}}}`
+	resps = run(t, request)
+	result = resps[0]["result"].(map[string]any)
+	content = result["content"].([]any)
+	if text := content[0].(map[string]any)["text"].(string); !strings.Contains(text, "provide exactly one") {
+		t.Fatalf("omitted contact mapping was not rejected before geometry access: %q", text)
+	}
+}
+
 func TestToolsCallRunsValidate(t *testing.T) {
 	req := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"unity_validate","arguments":{"namespace":"asset","file":"../../testdata/assets/enemy_config.asset"}}}`
 	resps := run(t, req)

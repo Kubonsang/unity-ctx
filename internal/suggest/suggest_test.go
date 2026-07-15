@@ -72,6 +72,86 @@ func TestPlanWallUsesWallMountedPolicyWithoutFloorProjection(t *testing.T) {
 	}
 }
 
+func TestPlanWallAlignsArbitraryReviewedFrameBasisAndProfileAxes(t *testing.T) {
+	manifest, err := bounds.Load(filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := manifest.Prefabs[0].Spatial
+	profile.Forward = bounds.Vec3{1, 0, 0}
+	profile.Up = bounds.Vec3{0, 1, 0}
+	profile.BottomContact, profile.BackContact = nil, nil
+	profile.Frames = []bounds.ContactFrame{{
+		ID: "side-mount", Point: bounds.Vec3{.5, 1, 0}, Normal: bounds.Vec3{1, 0, 0},
+		Tangent: bounds.Vec3{0, 0, 1}, Size: [2]float64{1, 2},
+	}}
+	profile.Contacts = []bounds.ContactRequirement{{
+		ID: "mount", Kind: "WallMounted", FrameID: "side-mount", Target: "surface:wall",
+		MinimumGap: .005, MaximumGap: .01, MinimumSupport: 1, DirectionAlignment: .95,
+	}}
+	result, err := Plan(Request{Manifest: manifest, Prefab: "Assets/Prefabs/Bookcase.prefab", Count: 1, Align: AlignWall, SurfaceID: "wall-north"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := result.Candidates[0]
+	surface := manifest.Surfaces[1]
+	frame := profile.Frames[0]
+	worldNormal := normalize(rotate(candidate.Rotation, frame.Normal))
+	worldTangent := normalize(rotate(candidate.Rotation, frame.Tangent))
+	if dot(worldNormal, mul(surface.Normal, -1)) < .999999 || dot(worldTangent, surface.Tangent) < .999999 {
+		t.Fatalf("contact basis is not aligned: normal=%v tangent=%v rotation=%v", worldNormal, worldTangent, candidate.Rotation)
+	}
+	worldUp := normalize(rotate(candidate.Rotation, profile.Up))
+	surfaceUp := normalize(cross(surface.Normal, surface.Tangent))
+	if dot(worldUp, surfaceUp) < .999999 {
+		t.Fatalf("profile up axis is not aligned to wall up: got=%v want=%v", worldUp, surfaceUp)
+	}
+}
+
+func TestPlanFloorAlignsArbitraryReviewedFrameToReviewedSurface(t *testing.T) {
+	manifest, err := bounds.Load(filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := manifest.Prefabs[0].Spatial
+	profile.Forward = bounds.Vec3{1, 0, 0}
+	profile.Up = bounds.Vec3{0, 1, 0}
+	profile.BottomContact, profile.BackContact = nil, nil
+	profile.Frames = []bounds.ContactFrame{{
+		ID: "foot-side", Point: bounds.Vec3{-.5, 1, 0}, Normal: bounds.Vec3{-1, 0, 0},
+		Tangent: bounds.Vec3{0, 0, 1}, Size: [2]float64{1, 2},
+	}}
+	profile.Contacts = []bounds.ContactRequirement{{
+		ID: "floor-side", Kind: "FloorSupported", FrameID: "foot-side", Target: "surface:floor",
+		MinimumGap: 0, MaximumGap: .01, MinimumSupport: .6, DirectionAlignment: .95,
+	}}
+	result, err := Plan(Request{
+		Manifest: manifest, Prefab: "Assets/Prefabs/Bookcase.prefab", Near: "ExistingCrate",
+		Count: 1, Align: AlignFloor, SurfaceID: "floor-main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := result.Candidates[0]
+	if result.SurfaceID != "floor-main" || result.Contact != "floor-supported" || candidate.Rotation == (bounds.Quat{}) {
+		t.Fatalf("floor surface metadata missing: result=%#v", result)
+	}
+	surface := manifest.Surfaces[0]
+	frame := profile.Frames[0]
+	worldNormal := normalize(rotate(candidate.Rotation, frame.Normal))
+	worldTangent := normalize(rotate(candidate.Rotation, frame.Tangent))
+	if dot(worldNormal, mul(surface.Normal, -1)) < .999999 || dot(worldTangent, surface.Tangent) < .999999 {
+		t.Fatalf("floor contact basis is not aligned: normal=%v tangent=%v rotation=%v", worldNormal, worldTangent, candidate.Rotation)
+	}
+	evidence, err := check.CheckSpatialPlacement(check.SpatialRequest{
+		Manifest: manifest, Prefab: "Assets/Prefabs/Bookcase.prefab", Position: candidate.Position, Rotation: candidate.Rotation,
+		ContactSurfaces: []check.ContactSurface{{RequirementID: "floor-side", SurfaceID: "floor-main"}},
+	})
+	if err != nil || len(evidence.Contacts) != 1 || math.Abs(evidence.Contacts[0].Gap-.005) > 1e-6 {
+		t.Fatalf("unexpected floor evidence: %#v err=%v", evidence, err)
+	}
+}
+
 func TestPlanWallRejectsMissingReviewedContactPolicy(t *testing.T) {
 	manifest, err := bounds.Load(filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json"))
 	if err != nil {
@@ -81,6 +161,49 @@ func TestPlanWallRejectsMissingReviewedContactPolicy(t *testing.T) {
 	_, err = Plan(Request{Manifest: manifest, Prefab: "Assets/Prefabs/Bookcase.prefab", Count: 1, Align: AlignWall, SurfaceID: "wall-north"})
 	if err == nil || err.Error() != `SUPPORT_CONTRACT_MISSING contact=""` {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestPlanWallRejectsNonWallSurface(t *testing.T) {
+	manifest, err := bounds.Load(filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Plan(Request{Manifest: manifest, Prefab: "Assets/Prefabs/Bookcase.prefab", Count: 1, Align: AlignWall, SurfaceID: "floor-main"})
+	if err == nil || err.Error() != `surface id="floor-main" type="floor" is not wall` {
+		t.Fatalf("wrong-surface error=%v", err)
+	}
+}
+
+func TestPlanWallRanksClearCandidatesBeforeBlockedCandidates(t *testing.T) {
+	manifest, err := bounds.Load(filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := Plan(Request{Manifest: manifest, Prefab: "Assets/Prefabs/Bookcase.prefab", Count: 4, Align: AlignWall, SurfaceID: "wall-north"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := baseline.Candidates[0]
+	manifest.Objects = append(manifest.Objects, bounds.ObjectBounds{
+		FileID: 9000,
+		Name:   "FirstCandidateBlocker",
+		Bounds: bounds.AABB{Center: bounds.Vec3{blocked.Position[0], blocked.Position[1] + 1, blocked.Position[2]}, Size: bounds.Vec3{1, 2, .2}},
+		Spatial: &bounds.SpatialProfile{
+			OBBs:    []bounds.OBB{{ID: "blocker", Center: bounds.Vec3{blocked.Position[0], blocked.Position[1] + 1, blocked.Position[2]}, Size: bounds.Vec3{1, 2, .2}, Rotation: blocked.Rotation}},
+			Forward: bounds.Vec3{0, 0, 1}, Up: bounds.Vec3{0, 1, 0}, Source: "collider", Confidence: 1, Reviewed: true,
+		},
+	})
+
+	result, err := Plan(Request{Manifest: manifest, Prefab: "Assets/Prefabs/Bookcase.prefab", Count: 4, Align: AlignWall, SurfaceID: "wall-north"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Candidates[0].Status != "OK" || result.Candidates[len(result.Candidates)-1].Status != "WARN" {
+		t.Fatalf("wall candidates are not safety-ranked: %#v", result.Candidates)
+	}
+	if result.Candidates[0].Rank != 1 || result.Candidates[len(result.Candidates)-1].Rank != len(result.Candidates) {
+		t.Fatalf("ranks were not reassigned after safety sort: %#v", result.Candidates)
 	}
 }
 
@@ -97,7 +220,7 @@ func TestPlanWallRejectsUnreviewedGeometry(t *testing.T) {
 }
 
 func checkWallCandidate(manifest bounds.Manifest, candidate Candidate, contact, surfaceID string) (check.SpatialResult, error) {
-	return check.CheckSpatialPlacement(check.SpatialRequest{
+	return check.CheckSingleContactEvidence(check.SpatialRequest{
 		Manifest: manifest, Prefab: "Assets/Prefabs/Bookcase.prefab", Position: candidate.Position,
 		Rotation: candidate.Rotation, SurfaceID: surfaceID, Contact: contact,
 	})

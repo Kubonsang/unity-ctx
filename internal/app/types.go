@@ -65,14 +65,15 @@ type BenchArgs struct {
 }
 
 type CheckArgs struct {
-	Manifest    string
-	Prefab      string
-	HasPosition bool
-	Position    [3]float64
-	HasRotation bool
-	Rotation    [4]float64
-	SurfaceID   string
-	Contact     string
+	Manifest        string
+	Prefab          string
+	HasPosition     bool
+	Position        [3]float64
+	HasRotation     bool
+	Rotation        [4]float64
+	SurfaceID       string
+	Contact         string
+	ContactSurfaces string
 }
 
 type PatchArgs struct {
