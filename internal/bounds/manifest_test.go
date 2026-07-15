@@ -66,8 +66,97 @@ func TestLoadSpatialManifestV2(t *testing.T) {
 	if manifest.Version != ManifestVersion2 {
 		t.Fatalf("version=%d", manifest.Version)
 	}
-	if len(manifest.Surfaces) != 1 || len(manifest.Prefabs) != 1 || manifest.Prefabs[0].Spatial == nil {
+	if len(manifest.Surfaces) != 2 || len(manifest.Prefabs) != 1 || manifest.Prefabs[0].Spatial == nil {
 		t.Fatalf("spatial manifest not decoded: %#v", manifest)
+	}
+	foundFloor := false
+	for _, surface := range manifest.Surfaces {
+		if surface.ID == "floor-main" && surface.Type == "floor" {
+			foundFloor = true
+		}
+	}
+	if !foundFloor {
+		t.Fatalf("floor-main surface not decoded: %#v", manifest.Surfaces)
+	}
+}
+
+func TestLoadSpatialManifestV2AcceptsFBXGameObjectAsset(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.ReplaceAll(string(data), "Assets/Prefabs/Bookcase.prefab", "Assets/KayKit/Models/Bookcase.fbx"))
+
+	manifest, err := Decode(data)
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if got := manifest.Prefabs[0].Path; got != "Assets/KayKit/Models/Bookcase.fbx" {
+		t.Fatalf("prefab path mismatch: got %q", got)
+	}
+}
+
+func TestManifestGameObjectAssetExtensionAllowlist(t *testing.T) {
+	for _, extension := range []string{".prefab", ".fbx", ".dae", ".3ds", ".dxf", ".obj", ".skp", ".blend", ".max", ".ma", ".mb", ".FBX"} {
+		path := "Assets/Models/asset" + extension
+		if err := validatePrefabAssetPath(path, 0); err != nil {
+			t.Errorf("validatePrefabAssetPath(%q) error = %v", path, err)
+		}
+	}
+	for _, extension := range []string{".mat", ".png", ".asset", ""} {
+		path := "Assets/Models/asset" + extension
+		if err := validatePrefabAssetPath(path, 0); err == nil {
+			t.Errorf("validatePrefabAssetPath(%q) error = nil, want unsupported extension", path)
+		}
+	}
+}
+
+func TestLoadSpatialManifestV2RejectsUnsupportedGameObjectAssetExtension(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.ReplaceAll(string(data), "Assets/Prefabs/Bookcase.prefab", "Assets/Materials/Bookcase.mat"))
+
+	_, err = Decode(data)
+	if err == nil {
+		t.Fatal("Decode() error = nil, want invalid GameObject asset extension")
+	}
+	want := "invalid manifest: prefabs[0].path " + gameObjectAssetPathRequirement
+	if err.Error() != want {
+		t.Fatalf("error mismatch: got %q want %q", err.Error(), want)
+	}
+}
+
+func TestSaveSpatialManifestV2RejectsDuplicateSurfaceID(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json")
+	manifest, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicateID := manifest.Surfaces[0].ID
+	manifest.Surfaces = append(manifest.Surfaces, manifest.Surfaces[0])
+
+	err = Save(filepath.Join(t.TempDir(), "duplicate-surface.json"), manifest)
+	if err == nil {
+		t.Fatal("Save() error = nil, want duplicate surface ID")
+	}
+	want := "invalid manifest: duplicate surfaces.id=\"" + duplicateID + "\""
+	if err.Error() != want {
+		t.Fatalf("error mismatch: got %q want %q", err.Error(), want)
+	}
+}
+
+func TestSaveSpatialManifestV2RejectsInvalidApprovedContactPolicy(t *testing.T) {
+	manifest, err := Load(filepath.Join("..", "..", "testdata", "manifests", "spatial_room_v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Prefabs[0].Spatial.Contacts[0].MinimumSupport = 1.1
+	if err := Save(filepath.Join(t.TempDir(), "invalid-contact.json"), manifest); err == nil || !strings.Contains(err.Error(), "invalid target or tolerances") {
+		t.Fatalf("Save() error = %v", err)
 	}
 }
 
@@ -260,7 +349,7 @@ func TestLoadRejectsInvalidPathShapes(t *testing.T) {
   ]
 }
 `,
-			want: "invalid manifest: prefabs[0].path must be an Assets path ending in .prefab",
+			want: "invalid manifest: prefabs[0].path " + gameObjectAssetPathRequirement,
 		},
 	}
 
@@ -314,7 +403,7 @@ func TestSaveRejectsInvalidPathShapes(t *testing.T) {
 					},
 				},
 			},
-			want: "invalid manifest: prefabs[0].path must be an Assets path ending in .prefab",
+			want: "invalid manifest: prefabs[0].path " + gameObjectAssetPathRequirement,
 		},
 	}
 

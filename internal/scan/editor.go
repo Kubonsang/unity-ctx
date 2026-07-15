@@ -17,6 +17,8 @@ import (
 
 const editorManifestVersion = 1
 
+const editorGameObjectAssetPathRequirement = "must be an Assets path with a supported GameObject asset extension (.prefab, .fbx, .dae, .3ds, .dxf, .obj, .skp, .blend, .max, .ma, or .mb)"
+
 const unityCLIUsings = "System,System.Linq,UnityEditor,UnityEditor.SceneManagement,UnityEngine"
 
 type Runner interface {
@@ -429,11 +431,20 @@ func validateEditorPrefabPath(path string, index int) error {
 	case path == "":
 		return fmt.Errorf("invalid editor export: prefabs[%d].path must be non-empty", index)
 	case !strings.HasPrefix(path, "Assets/"):
-		return fmt.Errorf("invalid editor export: prefabs[%d].path must be an Assets path ending in .prefab", index)
-	case !strings.HasSuffix(path, ".prefab"):
-		return fmt.Errorf("invalid editor export: prefabs[%d].path must be an Assets path ending in .prefab", index)
+		return fmt.Errorf("invalid editor export: prefabs[%d].path %s", index, editorGameObjectAssetPathRequirement)
+	case !isSupportedEditorGameObjectAssetPath(path):
+		return fmt.Errorf("invalid editor export: prefabs[%d].path %s", index, editorGameObjectAssetPathRequirement)
 	default:
 		return nil
+	}
+}
+
+func isSupportedEditorGameObjectAssetPath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".prefab", ".fbx", ".dae", ".3ds", ".dxf", ".obj", ".skp", ".blend", ".max", ".ma", ".mb":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -500,27 +511,87 @@ var prefabPaths = new [] { %s };
 var openedScene = EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Single);
 System.Func<Vector3,double[]> vec = value => new [] { (double)value.x, (double)value.y, (double)value.z };
 System.Func<Quaternion,double[]> quat = value => new [] { (double)value.x, (double)value.y, (double)value.z, (double)value.w };
-System.Func<Renderer,object> rendererObb = renderer => {
-	var local = renderer.localBounds;
-	var scale = renderer.transform.lossyScale;
-	return new { id = renderer.gameObject.name, center = vec(renderer.transform.TransformPoint(local.center)), size = vec(Vector3.Scale(local.size, new Vector3(Mathf.Abs(scale.x), Mathf.Abs(scale.y), Mathf.Abs(scale.z)))), rotation = quat(renderer.transform.rotation) };
+System.Func<Component,string> componentKey = component => {
+	var parts = new System.Collections.Generic.List<string>();
+	var current = component.transform;
+	while (current != null) { parts.Add(current.GetSiblingIndex().ToString("D4") + "-" + current.name); current = current.parent; }
+	parts.Reverse();
+	var peers = component.gameObject.GetComponents(component.GetType());
+	var componentIndex = System.Array.IndexOf(peers, component);
+	return string.Join("/", parts.ToArray()) + ":" + component.GetType().FullName + ":" + componentIndex.ToString("D4");
 };
-var sceneObjects = UnityEngine.Object.FindObjectsByType<Renderer>(FindObjectsInactive.Include, FindObjectsSortMode.None)
-	.Where(renderer => renderer != null && renderer.gameObject.scene.path == openedScene.path)
-	.GroupBy(renderer => Unsupported.GetLocalIdentifierInFileForPersistentObject(renderer.gameObject))
-	.Where(group => group.Key > 0)
-	.Select(group => {
-		var renderers = group.ToArray(); var aggregate = renderers[0].bounds;
-		for (var i = 1; i < renderers.Length; i++) aggregate.Encapsulate(renderers[i].bounds);
-		return new { fileID = group.Key, name = renderers[0].gameObject.name, bounds = new { center = vec(aggregate.center), size = vec(aggregate.size) }, spatial = new { obbs = renderers.Select(rendererObb).ToArray(), forward = vec(Vector3.forward), up = vec(Vector3.up), pivot_offset = vec(Vector3.zero), source = "renderer-bounds", confidence = 0.6, reviewed = false } };
+System.Func<Component,System.Tuple<Vector3,Vector3,Quaternion>> componentShape = component => {
+	var scale = component.transform.lossyScale;
+	var absoluteScale = new Vector3(Mathf.Abs(scale.x), Mathf.Abs(scale.y), Mathf.Abs(scale.z));
+	var box = component as BoxCollider;
+	if (box != null) return System.Tuple.Create(box.transform.TransformPoint(box.center), Vector3.Scale(box.size, absoluteScale), box.transform.rotation);
+	var sphere = component as SphereCollider;
+	if (sphere != null) { var diameter = sphere.radius * 2f * Mathf.Max(absoluteScale.x, Mathf.Max(absoluteScale.y, absoluteScale.z)); return System.Tuple.Create(sphere.transform.TransformPoint(sphere.center), new Vector3(diameter, diameter, diameter), sphere.transform.rotation); }
+	var capsule = component as CapsuleCollider;
+	if (capsule != null) {
+		var axisScale = capsule.direction == 0 ? absoluteScale.x : capsule.direction == 2 ? absoluteScale.z : absoluteScale.y;
+		var radiusScale = capsule.direction == 0 ? Mathf.Max(absoluteScale.y, absoluteScale.z) : capsule.direction == 2 ? Mathf.Max(absoluteScale.x, absoluteScale.y) : Mathf.Max(absoluteScale.x, absoluteScale.z);
+		var diameter = capsule.radius * 2f * radiusScale;
+		var height = Mathf.Max(capsule.height * axisScale, diameter);
+		var localSize = capsule.direction == 0 ? new Vector3(height, diameter, diameter) : capsule.direction == 2 ? new Vector3(diameter, diameter, height) : new Vector3(diameter, height, diameter);
+		return System.Tuple.Create(capsule.transform.TransformPoint(capsule.center), localSize, capsule.transform.rotation);
+	}
+	var mesh = component as MeshCollider;
+	if (mesh != null && mesh.sharedMesh != null) { var local = mesh.sharedMesh.bounds; return System.Tuple.Create(mesh.transform.TransformPoint(local.center), Vector3.Scale(local.size, absoluteScale), mesh.transform.rotation); }
+	var renderer = component as Renderer;
+	if (renderer != null) { var local = renderer.localBounds; return System.Tuple.Create(renderer.transform.TransformPoint(local.center), Vector3.Scale(local.size, absoluteScale), renderer.transform.rotation); }
+	var collider = component as Collider;
+	if (collider != null) { var world = collider.bounds; return System.Tuple.Create(world.center, world.size, Quaternion.identity); }
+	return System.Tuple.Create(Vector3.zero, Vector3.zero, Quaternion.identity);
+};
+System.Func<Component,bool> componentUsable = component => {
+	if (component == null) return false;
+	var shape = componentShape(component); var size = shape.Item2;
+	return size.x > 0.000001f && size.y > 0.000001f && size.z > 0.000001f
+		&& !System.Single.IsNaN(size.x) && !System.Single.IsNaN(size.y) && !System.Single.IsNaN(size.z)
+		&& !System.Single.IsInfinity(size.x) && !System.Single.IsInfinity(size.y) && !System.Single.IsInfinity(size.z);
+};
+System.Func<Vector3,Quaternion,Vector3,Bounds> shapeBounds = (center, rotation, size) => {
+	var axisX = rotation * Vector3.right; var axisY = rotation * Vector3.up; var axisZ = rotation * Vector3.forward;
+	var worldSize = new Vector3(
+		Mathf.Abs(axisX.x) * size.x + Mathf.Abs(axisY.x) * size.y + Mathf.Abs(axisZ.x) * size.z,
+		Mathf.Abs(axisX.y) * size.x + Mathf.Abs(axisY.y) * size.y + Mathf.Abs(axisZ.y) * size.z,
+		Mathf.Abs(axisX.z) * size.x + Mathf.Abs(axisY.z) * size.y + Mathf.Abs(axisZ.z) * size.z);
+	return new Bounds(center, worldSize);
+};
+System.Func<Component[],Bounds> aggregateComponents = components => {
+	var first = componentShape(components[0]); var aggregate = shapeBounds(first.Item1, first.Item3, first.Item2);
+	for (var i = 1; i < components.Length; i++) { var shape = componentShape(components[i]); aggregate.Encapsulate(shapeBounds(shape.Item1, shape.Item3, shape.Item2)); }
+	return aggregate;
+};
+System.Func<Component,object> componentObb = component => {
+	var shape = componentShape(component);
+	return new { id = componentKey(component), center = vec(shape.Item1), size = vec(shape.Item2), rotation = quat(shape.Item3) };
+};
+System.Func<Transform,Component[]> preferredComponents = transform => {
+	var colliders = transform.GetComponents<Collider>().Cast<Component>().Where(componentUsable).OrderBy(componentKey).ToArray();
+	if (colliders.Length > 0) return colliders;
+	return transform.GetComponents<Renderer>().Cast<Component>().Where(componentUsable).OrderBy(componentKey).ToArray();
+};
+var sceneObjects = UnityEngine.Object.FindObjectsByType<Transform>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+	.Where(transform => transform != null && transform.gameObject.scene.path == openedScene.path)
+	.Select(transform => System.Tuple.Create(transform, preferredComponents(transform), Unsupported.GetLocalIdentifierInFileForPersistentObject(transform.gameObject)))
+	.Where(entry => entry.Item2.Length > 0 && entry.Item3 > 0)
+	.Select(entry => {
+		var aggregate = aggregateComponents(entry.Item2); var colliderBacked = entry.Item2[0] is Collider;
+		return new { fileID = entry.Item3, name = entry.Item1.gameObject.name, bounds = new { center = vec(aggregate.center), size = vec(aggregate.size) }, spatial = new { obbs = entry.Item2.Select(componentObb).ToArray(), forward = vec(Vector3.forward), up = vec(Vector3.up), pivot_offset = vec(Vector3.zero), source = colliderBacked ? "collider" : "renderer-bounds", confidence = colliderBacked ? 0.9 : 0.6, reviewed = false } };
 	}).OrderBy(item => item.fileID).ToArray();
 var prefabObjects = prefabPaths.Select(path => {
-	var root = AssetDatabase.LoadAssetAtPath<GameObject>(path); if (root == null) throw new Exception("prefab not found: " + path);
-	var renderers = root.GetComponentsInChildren<Renderer>(true); if (renderers.Length == 0) throw new Exception("prefab has no renderer bounds: " + path);
-	var aggregate = renderers[0].bounds; for (var i = 1; i < renderers.Length; i++) aggregate.Encapsulate(renderers[i].bounds);
+	var root = AssetDatabase.LoadAssetAtPath<GameObject>(path); if (root == null) throw new Exception("GameObject asset not found: " + path);
+	var colliders = root.GetComponentsInChildren<Collider>(true).Cast<Component>().Where(componentUsable).OrderBy(componentKey).ToArray();
+	var renderers = root.GetComponentsInChildren<Renderer>(true).Cast<Component>().Where(componentUsable).OrderBy(componentKey).ToArray();
+	var components = colliders.Length > 0 ? colliders : renderers;
+	if (components.Length == 0) throw new Exception("GameObject asset has no usable collider or renderer bounds: " + path);
+	var aggregate = aggregateComponents(components); var colliderBacked = colliders.Length > 0;
 	var bottom = new { id = "bottom", point = vec(new Vector3(aggregate.center.x, aggregate.min.y, aggregate.center.z)), normal = vec(Vector3.down), tangent = vec(Vector3.right), size = new [] { (double)aggregate.size.x, (double)aggregate.size.z } };
 	var back = new { id = "back", point = vec(new Vector3(aggregate.center.x, aggregate.center.y, aggregate.min.z)), normal = vec(Vector3.back), tangent = vec(Vector3.right), size = new [] { (double)aggregate.size.x, (double)aggregate.size.y } };
-	return new { path = path, guid = AssetDatabase.AssetPathToGUID(path), bounds = new { center = vec(aggregate.center), size = vec(aggregate.size) }, spatial = new { obbs = renderers.Select(rendererObb).ToArray(), forward = vec(Vector3.forward), up = vec(Vector3.up), pivot_offset = vec(aggregate.center), bottom_contact = bottom, back_contact = back, source = "renderer-bounds", confidence = 0.6, reviewed = false, dependency_hash = AssetDatabase.GetAssetDependencyHash(path).ToString() } };
+	var top = new { id = "top", point = vec(new Vector3(aggregate.center.x, aggregate.max.y, aggregate.center.z)), normal = vec(Vector3.up), tangent = vec(Vector3.right), size = new [] { (double)aggregate.size.x, (double)aggregate.size.z } };
+	return new { path = path, guid = AssetDatabase.AssetPathToGUID(path), bounds = new { center = vec(aggregate.center), size = vec(aggregate.size) }, spatial = new { obbs = components.Select(componentObb).ToArray(), forward = vec(Vector3.forward), up = vec(Vector3.up), pivot_offset = vec(aggregate.center), bottom_contact = bottom, back_contact = back, top_contact = top, source = colliderBacked ? "collider" : "renderer-bounds", confidence = colliderBacked ? 0.9 : 0.6, reviewed = false, dependency_hash = AssetDatabase.GetAssetDependencyHash(path).ToString() } };
 }).OrderBy(item => item.path).ToArray();
 var surfaces = UnityEngine.Object.FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Include, FindObjectsSortMode.None)
 	.Where(item => item != null && item.gameObject.scene.path == openedScene.path && item.GetType().FullName == "UnityDecoScene.DungeonDecorator.RoomSurface")

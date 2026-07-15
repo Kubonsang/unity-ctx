@@ -24,12 +24,17 @@
         "forward": [0.0, 0.0, 1.0], "up": [0.0, 1.0, 0.0], "pivot_offset": [0.0, 1.0, 0.0],
         "bottom_contact": { "id": "bottom", "point": [0.0, 0.0, 0.0], "normal": [0.0, -1.0, 0.0], "tangent": [1.0, 0.0, 0.0], "size": [1.0, 0.2] },
         "back_contact": { "id": "back", "point": [0.0, 1.0, -0.1], "normal": [0.0, 0.0, -1.0], "tangent": [1.0, 0.0, 0.0], "size": [1.0, 2.0] },
+        "contacts": [
+          { "id": "floor", "kind": "FloorSupported", "frame_id": "bottom", "target": "surface:floor", "minimum_gap": 0.0, "maximum_gap": 0.01, "maximum_penetration": 0.0, "minimum_support": 0.6, "direction_alignment": 0.95 },
+          { "id": "wall", "kind": "WallBacked", "frame_id": "back", "target": "surface:wall", "minimum_gap": 0.01, "maximum_gap": 0.05, "maximum_penetration": 0.0, "minimum_support": 1.0, "direction_alignment": 0.95 }
+        ],
         "source": "collider", "confidence": 1.0, "reviewed": true, "dependency_hash": "fixture-v2"
       }
     }
   ],
   "capabilities": ["aabb", "contact-frames", "obb", "surfaces"],
   "surfaces": [
+    { "id": "floor-main", "type": "floor", "origin": [0.0, 0.0, 0.0], "normal": [0.0, 1.0, 0.0], "tangent": [1.0, 0.0, 0.0], "size": [8.0, 8.0], "reviewed": true, "supported": true },
     { "id": "wall-north", "type": "wall", "origin": [0.0, 2.0, 4.0], "normal": [0.0, 0.0, -1.0], "tangent": [-1.0, 0.0, 0.0], "size": [8.0, 4.0], "reviewed": true, "supported": true }
   ]
 }
