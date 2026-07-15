@@ -1,18 +1,20 @@
 package spatialcontract
 
 import (
+	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Kubonsang/unity-ctx/internal/bounds"
 )
 
 func TestAssetContractRoundTripApprovalAndStableSave(t *testing.T) {
 	contract := validAssetContract()
-	if err := Approve(&contract, "local-user"); err != nil {
-		t.Fatalf("Approve() error = %v", err)
-	}
+	authorizeForTest(t, &contract)
 	path := filepath.Join(t.TempDir(), "banner.spatial.json")
 	if err := Save(path, contract); err != nil {
 		t.Fatalf("Save() error = %v", err)
@@ -34,15 +36,52 @@ func TestAssetContractRoundTripApprovalAndStableSave(t *testing.T) {
 	}
 }
 
-func TestApprovedContractRejectsChangedCaptureHash(t *testing.T) {
+func TestChangedPayloadInvalidatesTechnicalAndReviewEvidence(t *testing.T) {
 	contract := validAssetContract()
-	if err := Approve(&contract, "local-user"); err != nil {
-		t.Fatal(err)
-	}
+	authorizeForTest(t, &contract)
 	contract.Asset.CaptureSetHash = "capture-changed"
 	Normalize(&contract)
-	if err := Validate(contract); err == nil || !strings.Contains(err.Error(), "contract_hash is stale") {
-		t.Fatalf("Validate() error = %v, want stale review", err)
+	if contract.State != StateStale || contract.Technical != nil || contract.Review != nil {
+		t.Fatalf("changed contract retained evidence: state=%s technical=%#v review=%#v", contract.State, contract.Technical, contract.Review)
+	}
+	if err := Validate(contract); err != nil {
+		t.Fatalf("Validate() stale contract error = %v", err)
+	}
+}
+
+func TestAdvancedContractCannotOmitEmbeddedPayloadHash(t *testing.T) {
+	contract := validAssetContract()
+	contract.Asset.CollisionProxies[0].Center[0] = .25
+	contract.Asset.GeometryHash = ""
+	data, err := json.Marshal(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decode(data); err == nil || !strings.Contains(err.Error(), "requires an embedded geometry_hash") {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if err := Save(filepath.Join(t.TempDir(), "draft.json"), contract); err == nil || !strings.Contains(err.Error(), "requires an embedded geometry_hash") {
+		t.Fatalf("Save() error = %v", err)
+	}
+}
+
+func TestContentHashAndSaveDoNotMutateCaller(t *testing.T) {
+	contract := validAssetContract()
+	contract.Asset.CollisionProxies = []OBB{
+		{ID: "z", Center: Vec3{0, 0, 0}, Size: Vec3{1, 1, 1}, Rotation: Quat{0, 0, 0, 1}},
+		{ID: "a", Center: Vec3{1, 0, 0}, Size: Vec3{1, 1, 1}, Rotation: Quat{0, 0, 0, 1}},
+	}
+	contract.Asset.GeometryHash = assetHash(*contract.Asset)
+	originalFirstID := contract.Asset.CollisionProxies[0].ID
+	_ = ContentHash(contract)
+	if contract.Asset.CollisionProxies[0].ID != originalFirstID {
+		t.Fatalf("ContentHash mutated caller proxies: %#v", contract.Asset.CollisionProxies)
+	}
+	// Save validates the cloned normalized value; a validation failure must also
+	// leave the caller untouched.
+	_ = Save(filepath.Join(t.TempDir(), "contract.json"), contract)
+	if contract.Asset.CollisionProxies[0].ID != originalFirstID {
+		t.Fatalf("Save mutated caller proxies: %#v", contract.Asset.CollisionProxies)
 	}
 }
 
@@ -113,12 +152,10 @@ func TestDecodeRejectsUnknownField(t *testing.T) {
 
 func TestApplyIsDryRunUntilWrite(t *testing.T) {
 	contract := validAssetContract()
-	if err := Approve(&contract, "local-user"); err != nil {
-		t.Fatal(err)
-	}
+	authorizeForTest(t, &contract)
 	dir := t.TempDir()
 	draft := filepath.Join(dir, "draft.json")
-	current := filepath.Join(dir, "Assets", "SpatialContracts", "banner.spatial.json")
+	current := filepath.Join(dir, "Assets", "SpatialContracts", "Assets", contract.Asset.AssetGUID+".spatial.json")
 	if err := Save(draft, contract); err != nil {
 		t.Fatal(err)
 	}
@@ -130,11 +167,107 @@ func TestApplyIsDryRunUntilWrite(t *testing.T) {
 		t.Fatalf("dry run wrote current: %v", err)
 	}
 	result, err = Apply(current, draft, true)
+	if err == nil || !strings.Contains(err.Error(), "authorized local review bridge") {
+		t.Fatalf("public write Apply() result=%+v err=%v", result, err)
+	}
+	result, err = ApplyAuthorized(current, draft, testApprovalVerifier{})
 	if err != nil || !result.Written || !result.Verified {
-		t.Fatalf("write Apply() result=%+v err=%v", result, err)
+		t.Fatalf("ApplyAuthorized() result=%+v err=%v", result, err)
 	}
 	if _, err := Load(current); err != nil {
 		t.Fatalf("written contract invalid: %v", err)
+	}
+}
+
+func TestPublicReviewCannotApprove(t *testing.T) {
+	contract := validAssetContract()
+	if err := Approve(&contract, "arbitrary-reviewer"); err == nil || !strings.Contains(err.Error(), "local review bridge") {
+		t.Fatalf("Approve() error = %v", err)
+	}
+	if err := Review(&contract, StateApproved, "arbitrary-reviewer", nil, ""); err == nil || !strings.Contains(err.Error(), "local review bridge") {
+		t.Fatalf("Review(Approved) error = %v", err)
+	}
+	if contract.State != StateAwaitingHumanReview || contract.Review != nil {
+		t.Fatalf("unauthorized review mutated contract: state=%s review=%#v", contract.State, contract.Review)
+	}
+}
+
+func TestReviewAuthorizedRejectsMissingOrInvalidEvidence(t *testing.T) {
+	contract := validAssetContract()
+	if err := ReviewAuthorized(&contract, "local-user", ApprovalEvidence{}, testApprovalVerifier{}); err == nil || !strings.Contains(err.Error(), "authority, nonce, and proof") {
+		t.Fatalf("empty evidence error = %v", err)
+	}
+	bad := ApprovalEvidence{Authority: "test-bridge", Nonce: "nonce-1", Proof: "forged"}
+	if err := ReviewAuthorized(&contract, "local-user", bad, testApprovalVerifier{}); err == nil || !strings.Contains(err.Error(), "authorization failed") {
+		t.Fatalf("forged evidence error = %v", err)
+	}
+	if contract.State != StateAwaitingHumanReview || contract.Review != nil {
+		t.Fatalf("failed authorization mutated contract: state=%s review=%#v", contract.State, contract.Review)
+	}
+}
+
+func TestGeometryMutationMarksApprovedContractStale(t *testing.T) {
+	contract := validAssetContract()
+	authorizeForTest(t, &contract)
+	contract.Asset.CollisionProxies[0].Center[0] = 0.25
+	Normalize(&contract)
+	if contract.State != StateStale || contract.Technical != nil || contract.Review != nil {
+		t.Fatalf("geometry mutation retained evidence: state=%s technical=%#v review=%#v", contract.State, contract.Technical, contract.Review)
+	}
+}
+
+func TestApplyRejectsIdentityMismatchAndNonCanonicalDestination(t *testing.T) {
+	directory := t.TempDir()
+	currentContract := validAssetContract()
+	authorizeForTest(t, &currentContract)
+	draftContract := validAssetContract()
+	draftContract.Asset.AssetGUID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	draftContract.Asset.AssetPath = "Assets/KayKit/banner-blue.prefab"
+	draftContract.Asset.GeometryHash = ""
+	Normalize(&draftContract)
+	authorizeForTest(t, &draftContract)
+
+	current := filepath.Join(directory, "Assets", "SpatialContracts", "Assets", draftContract.Asset.AssetGUID+".spatial.json")
+	draft := filepath.Join(directory, "draft.json")
+	if err := Save(current, currentContract); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(draft, draftContract); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(current, draft, false); err == nil || !strings.Contains(err.Error(), "identities do not match") {
+		t.Fatalf("identity mismatch Apply() error = %v", err)
+	}
+
+	nonCanonical := filepath.Join(directory, "output", draftContract.Asset.AssetGUID+".spatial.json")
+	if _, err := Apply(nonCanonical, draft, false); err == nil || !strings.Contains(err.Error(), "must be under") {
+		t.Fatalf("non-canonical Apply() error = %v", err)
+	}
+}
+
+func TestApplyAuthorizedRejectsLegacyReviewerStringWithoutEvidence(t *testing.T) {
+	contract := validAssetContract()
+	authorizeForTest(t, &contract)
+	contract.Review.Authorization = nil
+	directory := t.TempDir()
+	draft := filepath.Join(directory, "draft.json")
+	current := filepath.Join(directory, "Assets", "SpatialContracts", "Assets", contract.Asset.AssetGUID+".spatial.json")
+	if err := Save(draft, contract); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyAuthorized(current, draft, testApprovalVerifier{}); err == nil || !strings.Contains(err.Error(), "bridge-verifiable") {
+		t.Fatalf("ApplyAuthorized() error = %v", err)
+	}
+	if _, err := os.Stat(current); !os.IsNotExist(err) {
+		t.Fatalf("unauthorized apply wrote current: %v", err)
+	}
+}
+
+func TestValidateRequiresTechnicalReportHash(t *testing.T) {
+	contract := validAssetContract()
+	contract.Technical.ReportHash = ""
+	if err := Validate(contract); err == nil || !strings.Contains(err.Error(), "technical.report_hash") {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }
 
@@ -142,7 +275,7 @@ func TestInteractionContractSupportedBy(t *testing.T) {
 	contract := Contract{
 		ContractVersion: ContractVersion,
 		ContractType:    TypeInteraction,
-		State:           StateTechnicalPassed,
+		State:           StateAwaitingHumanReview,
 		Interaction: &InteractionContract{
 			SubjectGUID:       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 			TargetKey:         "asset:cccccccccccccccccccccccccccccccc",
@@ -159,8 +292,43 @@ func TestInteractionContractSupportedBy(t *testing.T) {
 		Technical: &TechnicalEvidence{Passed: true, ReportHash: "report"},
 	}
 	Normalize(&contract)
-	if err := Approve(&contract, "local-user"); err != nil {
-		t.Fatalf("Approve() error = %v", err)
+	authorizeForTest(t, &contract)
+}
+
+func TestOverlayApprovedAssetsRequiresGUIDAndDependencyHashAndCopiesContactPolicy(t *testing.T) {
+	contract := validAssetContract()
+	authorizeForTest(t, &contract)
+	root := t.TempDir()
+	if err := Save(filepath.Join(root, "banner.spatial.json"), contract); err != nil {
+		t.Fatal(err)
+	}
+	manifest := bounds.Manifest{Prefabs: []bounds.PrefabBounds{{
+		Path: contract.Asset.AssetPath, GUID: contract.Asset.AssetGUID,
+		Spatial: &bounds.SpatialProfile{DependencyHash: contract.Asset.DependencyHash},
+	}}}
+	applied, err := OverlayApprovedAssets(&manifest, root)
+	if err != nil || applied != 1 {
+		t.Fatalf("OverlayApprovedAssets() applied=%d err=%v", applied, err)
+	}
+	profile := manifest.Prefabs[0].Spatial
+	if !profile.Reviewed || len(profile.Contacts) != 1 || profile.Contacts[0].Kind != "WallMounted" {
+		t.Fatalf("approved contact policy missing: %#v", profile)
+	}
+
+	for name, mutate := range map[string]func(*bounds.PrefabBounds){
+		"guid":             func(prefab *bounds.PrefabBounds) { prefab.GUID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+		"blank dependency": func(prefab *bounds.PrefabBounds) { prefab.Spatial.DependencyHash = "" },
+		"stale dependency": func(prefab *bounds.PrefabBounds) { prefab.Spatial.DependencyHash = "stale" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			prefab := bounds.PrefabBounds{Path: contract.Asset.AssetPath, GUID: contract.Asset.AssetGUID, Spatial: &bounds.SpatialProfile{DependencyHash: contract.Asset.DependencyHash}}
+			mutate(&prefab)
+			candidate := bounds.Manifest{Prefabs: []bounds.PrefabBounds{prefab}}
+			applied, err := OverlayApprovedAssets(&candidate, root)
+			if err != nil || applied != 0 || candidate.Prefabs[0].Spatial.Reviewed {
+				t.Fatalf("unproven overlay applied=%d err=%v profile=%#v", applied, err, candidate.Prefabs[0].Spatial)
+			}
+		})
 	}
 }
 
@@ -168,7 +336,7 @@ func validAssetContract() Contract {
 	contract := Contract{
 		ContractVersion: ContractVersion,
 		ContractType:    TypeAsset,
-		State:           StateTechnicalPassed,
+		State:           StateAwaitingHumanReview,
 		Asset: &AssetSpatialContract{
 			AssetGUID:        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			AssetPath:        "Assets/KayKit/banner.prefab",
@@ -186,4 +354,24 @@ func validAssetContract() Contract {
 	}
 	Normalize(&contract)
 	return contract
+}
+
+type testApprovalVerifier struct{}
+
+func (testApprovalVerifier) VerifyApproval(verification ApprovalVerification) error {
+	if verification.ContractHash == "" || verification.CaptureSetHash == "" || verification.Reviewer == "" {
+		return errors.New("approval binding is incomplete")
+	}
+	if verification.Evidence.Authority != "test-bridge" || verification.Evidence.Nonce != "nonce-1" || verification.Evidence.Proof != "valid-proof" {
+		return errors.New("invalid approval proof")
+	}
+	return nil
+}
+
+func authorizeForTest(t *testing.T, contract *Contract) {
+	t.Helper()
+	evidence := ApprovalEvidence{Authority: "test-bridge", Nonce: "nonce-1", Proof: "valid-proof"}
+	if err := ReviewAuthorized(contract, "local-user", evidence, testApprovalVerifier{}); err != nil {
+		t.Fatalf("ReviewAuthorized() error = %v", err)
+	}
 }

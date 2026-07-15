@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +11,7 @@ import (
 	"github.com/Kubonsang/unity-ctx/internal/spatialcontract"
 )
 
-func TestSpatialCLIHumanApprovalLifecycle(t *testing.T) {
+func TestSpatialCLIKeepsApprovalAndApplyWriteBehindBridge(t *testing.T) {
 	directory := t.TempDir()
 	draft := filepath.Join(directory, "draft.spatial.json")
 	current := filepath.Join(directory, "Assets", "SpatialContracts", "Assets", "0123456789abcdef0123456789abcdef.spatial.json")
@@ -29,12 +30,22 @@ func TestSpatialCLIHumanApprovalLifecycle(t *testing.T) {
 
 	stdout.Reset()
 	stderr.Reset()
-	if code := runSpatial([]string{"review", "--draft", draft, "--decision", "Approved", "--reviewer", "student-01", "--write", "--json"}, stdout, stderr); code != 0 {
-		t.Fatalf("review code=%d stderr=%s", code, stderr.String())
+	if code := runSpatial([]string{"review", "--draft", draft, "--decision", "Approved", "--reviewer", "student-01", "--write", "--json"}, stdout, stderr); code != 1 {
+		t.Fatalf("review code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "local review bridge") {
+		t.Fatalf("unexpected review error %s", stderr.String())
 	}
 	reviewed, err := spatialcontract.Load(draft)
-	if err != nil || reviewed.State != spatialcontract.StateApproved {
-		t.Fatalf("reviewed=%+v err=%v", reviewed, err)
+	if err != nil || reviewed.State != spatialcontract.StateAwaitingHumanReview || reviewed.Review != nil {
+		t.Fatalf("unauthorized review changed draft=%+v err=%v", reviewed, err)
+	}
+	evidence := spatialcontract.ApprovalEvidence{Authority: "test-bridge", Nonce: "nonce-1", Proof: "valid-proof"}
+	if err := spatialcontract.ReviewAuthorized(&reviewed, "student-01", evidence, cliApprovalVerifier{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := spatialcontract.Save(draft, reviewed); err != nil {
+		t.Fatal(err)
 	}
 
 	stdout.Reset()
@@ -54,11 +65,14 @@ func TestSpatialCLIHumanApprovalLifecycle(t *testing.T) {
 
 	stdout.Reset()
 	stderr.Reset()
-	if code := runSpatial([]string{"apply", "--current", current, "--draft", draft, "--write", "--json"}, stdout, stderr); code != 0 {
-		t.Fatalf("apply code=%d stderr=%s", code, stderr.String())
+	if code := runSpatial([]string{"apply", "--current", current, "--draft", draft, "--write", "--json"}, stdout, stderr); code != 1 {
+		t.Fatalf("apply code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	if _, err := spatialcontract.Load(current); err != nil {
-		t.Fatalf("written contract did not validate: %v", err)
+	if !strings.Contains(stderr.String(), "authorized local review bridge") {
+		t.Fatalf("unexpected apply error %s", stderr.String())
+	}
+	if _, err := os.Stat(current); !os.IsNotExist(err) {
+		t.Fatalf("public apply unexpectedly wrote current: %v", err)
 	}
 }
 
@@ -74,13 +88,40 @@ func TestSpatialCLIRejectsApprovalWithTechnicalErrors(t *testing.T) {
 	if code := runSpatial([]string{"review", "--draft", draft, "--decision", "Approved", "--reviewer", "student-01", "--write"}, stdout, stderr); code != 1 {
 		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "technical validation must pass") {
+	if !strings.Contains(stderr.String(), "local review bridge") {
 		t.Fatalf("unexpected stderr %s", stderr.String())
 	}
 }
 
+func TestSpatialCLIRecordsNonApprovalReviewDecision(t *testing.T) {
+	draft := filepath.Join(t.TempDir(), "revision.spatial.json")
+	if err := spatialcontract.Save(draft, validSpatialCLIContract()); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := runSpatial([]string{"review", "--draft", draft, "--decision", "RevisionRequested", "--reviewer", "student-01", "--issues", "contact-gap", "--comment", "Move closer", "--write", "--json"}, stdout, stderr); code != 0 {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	reviewed, err := spatialcontract.Load(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed.State != spatialcontract.StateRevisionRequested || reviewed.Review == nil || reviewed.Review.Decision != spatialcontract.StateRevisionRequested {
+		t.Fatalf("reviewed=%+v", reviewed)
+	}
+}
+
+type cliApprovalVerifier struct{}
+
+func (cliApprovalVerifier) VerifyApproval(verification spatialcontract.ApprovalVerification) error {
+	if verification.Evidence.Proof != "valid-proof" {
+		return errors.New("invalid proof")
+	}
+	return nil
+}
+
 func validSpatialCLIContract() spatialcontract.Contract {
-	return spatialcontract.Contract{
+	contract := spatialcontract.Contract{
 		ContractVersion: spatialcontract.ContractVersion,
 		ContractType:    spatialcontract.TypeAsset,
 		State:           spatialcontract.StateAwaitingHumanReview,
@@ -104,4 +145,6 @@ func validSpatialCLIContract() spatialcontract.Contract {
 		},
 		Technical: &spatialcontract.TechnicalEvidence{Passed: true, ErrorCount: 0, ReportHash: "report-v1"},
 	}
+	spatialcontract.Normalize(&contract)
+	return contract
 }

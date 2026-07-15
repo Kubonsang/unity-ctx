@@ -107,14 +107,41 @@ type TechnicalEvidence struct {
 	ReportHash string `json:"report_hash"`
 }
 
+// ApprovalEvidence is an opaque attestation issued by the local human-review
+// bridge. unity-ctx deliberately does not know how to create this evidence;
+// the embedding bridge owns the nonce and proof verification policy.
+type ApprovalEvidence struct {
+	Authority string `json:"authority"`
+	Nonce     string `json:"nonce"`
+	Proof     string `json:"proof"`
+}
+
+// ApprovalVerification is the exact review decision covered by an
+// ApprovalEvidence value. Verifiers must bind all of these fields to the
+// evidence so a proof cannot be replayed for another contract or capture set.
+type ApprovalVerification struct {
+	ContractHash   string
+	CaptureSetHash string
+	Reviewer       string
+	Evidence       ApprovalEvidence
+}
+
+// ApprovalVerifier is supplied by the trusted local human-review bridge.
+// The public CLI never supplies a verifier and therefore cannot approve or
+// persist an approved contract.
+type ApprovalVerifier interface {
+	VerifyApproval(ApprovalVerification) error
+}
+
 type HumanReview struct {
-	Decision       string   `json:"decision"`
-	ContractHash   string   `json:"contract_hash"`
-	CaptureSetHash string   `json:"capture_set_hash"`
-	Reviewer       string   `json:"reviewer"`
-	IssueTypes     []string `json:"issue_types,omitempty"`
-	Comment        string   `json:"comment,omitempty"`
-	Revision       int      `json:"revision"`
+	Decision       string            `json:"decision"`
+	ContractHash   string            `json:"contract_hash"`
+	CaptureSetHash string            `json:"capture_set_hash"`
+	Reviewer       string            `json:"reviewer"`
+	Authorization  *ApprovalEvidence `json:"authorization,omitempty"`
+	IssueTypes     []string          `json:"issue_types,omitempty"`
+	Comment        string            `json:"comment,omitempty"`
+	Revision       int               `json:"revision"`
 }
 
 type Contract struct {
@@ -172,6 +199,14 @@ func Decode(data []byte) (Contract, error) {
 	if contract.Interaction != nil {
 		providedInteractionHash = contract.Interaction.InteractionHash
 	}
+	if contract.State != "" && contract.State != StateDraft {
+		if contract.Asset != nil && strings.TrimSpace(providedGeometryHash) == "" {
+			return Contract{}, errors.New("invalid spatial contract: non-Draft asset contract requires an embedded geometry_hash")
+		}
+		if contract.Interaction != nil && strings.TrimSpace(providedInteractionHash) == "" {
+			return Contract{}, errors.New("invalid spatial contract: non-Draft interaction contract requires an embedded interaction_hash")
+		}
+	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
@@ -193,6 +228,15 @@ func Decode(data []byte) (Contract, error) {
 }
 
 func Save(path string, contract Contract) error {
+	if contract.State != "" && contract.State != StateDraft {
+		if contract.Asset != nil && strings.TrimSpace(contract.Asset.GeometryHash) == "" {
+			return errors.New("invalid spatial contract: non-Draft asset contract requires an embedded geometry_hash")
+		}
+		if contract.Interaction != nil && strings.TrimSpace(contract.Interaction.InteractionHash) == "" {
+			return errors.New("invalid spatial contract: non-Draft interaction contract requires an embedded interaction_hash")
+		}
+	}
+	contract = cloneContract(contract)
 	Normalize(&contract)
 	if err := Validate(contract); err != nil {
 		return err
@@ -211,6 +255,7 @@ func Normalize(contract *Contract) {
 	if contract == nil {
 		return
 	}
+	previousPayloadHash := payloadHash(contract)
 	if contract.ContractVersion == 0 {
 		contract.ContractVersion = ContractVersion
 	}
@@ -262,12 +307,43 @@ func Normalize(contract *Contract) {
 		i.AngleTolerance = round(i.AngleTolerance)
 		i.InteractionHash = interactionHash(*i)
 	}
+	if currentPayloadHash := payloadHash(contract); previousPayloadHash != "" && previousPayloadHash != currentPayloadHash {
+		invalidateChangedPayload(contract)
+	}
 	if contract.Review != nil {
 		sort.Strings(contract.Review.IssueTypes)
+		contract.Review.Reviewer = strings.TrimSpace(contract.Review.Reviewer)
+		if contract.Review.Authorization != nil {
+			contract.Review.Authorization.Authority = strings.TrimSpace(contract.Review.Authorization.Authority)
+			contract.Review.Authorization.Nonce = strings.TrimSpace(contract.Review.Authorization.Nonce)
+			contract.Review.Authorization.Proof = strings.TrimSpace(contract.Review.Authorization.Proof)
+		}
 		if contract.Review.Revision < 1 {
 			contract.Review.Revision = 1
 		}
 	}
+}
+
+func payloadHash(contract *Contract) string {
+	if contract == nil {
+		return ""
+	}
+	if contract.Asset != nil {
+		return contract.Asset.GeometryHash
+	}
+	if contract.Interaction != nil {
+		return contract.Interaction.InteractionHash
+	}
+	return ""
+}
+
+func invalidateChangedPayload(contract *Contract) {
+	if contract.State == StateDraft && contract.Technical == nil && contract.Review == nil {
+		return
+	}
+	contract.State = StateStale
+	contract.Technical = nil
+	contract.Review = nil
 }
 
 func Validate(contract Contract) error {
@@ -299,33 +375,87 @@ func Validate(contract Contract) error {
 		if contract.Technical.ErrorCount < 0 {
 			return errors.New("invalid spatial contract: technical.error_count must be >= 0")
 		}
+		if strings.TrimSpace(contract.Technical.ReportHash) == "" {
+			return errors.New("invalid spatial contract: technical.report_hash is required")
+		}
 		if contract.Technical.Passed && contract.Technical.ErrorCount != 0 {
 			return errors.New("invalid spatial contract: passed technical evidence requires error_count=0")
 		}
 	}
-	if contract.State == StateApproved {
+	switch contract.State {
+	case StateDraft:
+		if contract.Review != nil {
+			return errors.New("invalid spatial contract: Draft cannot contain human review evidence")
+		}
+	case StateTechnicalPassed, StateAwaitingHumanReview:
+		if contract.Technical == nil || !contract.Technical.Passed || contract.Technical.ErrorCount != 0 {
+			return fmt.Errorf("invalid spatial contract: %s requires passed technical evidence with zero errors", contract.State)
+		}
+		if contract.Review != nil {
+			return fmt.Errorf("invalid spatial contract: %s cannot contain human review evidence", contract.State)
+		}
+		if contract.State == StateAwaitingHumanReview && captureHash(contract) == "" {
+			return errors.New("invalid spatial contract: AwaitingHumanReview requires capture_set_hash")
+		}
+	case StateTechnicalFailed:
+		if contract.Technical == nil || contract.Technical.Passed || contract.Technical.ErrorCount == 0 {
+			return errors.New("invalid spatial contract: TechnicalFailed requires failed technical evidence with errors")
+		}
+		if contract.Review != nil {
+			return errors.New("invalid spatial contract: TechnicalFailed cannot contain human review evidence")
+		}
+	case StateRevisionRequested, StateUnableToJudge:
+		if err := validateCurrentReview(contract, contract.State); err != nil {
+			return err
+		}
+		if contract.Review.Authorization != nil {
+			return fmt.Errorf("invalid spatial contract: %s cannot contain approval authorization", contract.State)
+		}
+	case StateStale:
+		if contract.Technical != nil || contract.Review != nil {
+			return errors.New("invalid spatial contract: Stale cannot retain technical or human review evidence")
+		}
+	case StateApproved:
 		if contract.Technical == nil || !contract.Technical.Passed || contract.Technical.ErrorCount != 0 {
 			return errors.New("invalid spatial contract: Approved requires passed technical evidence with zero errors")
 		}
-		if contract.Review == nil || contract.Review.Decision != StateApproved {
-			return errors.New("invalid spatial contract: Approved requires an Approved human review")
+		if err := validateCurrentReview(contract, StateApproved); err != nil {
+			return err
 		}
-		hash := ContentHash(contract)
-		if contract.Review.ContractHash != hash {
-			return fmt.Errorf("invalid spatial contract: review contract_hash is stale got=%s want=%s", contract.Review.ContractHash, hash)
-		}
-		if contract.Review.CaptureSetHash == "" || contract.Review.CaptureSetHash != captureHash(contract) {
-			return errors.New("invalid spatial contract: review capture_set_hash is stale")
-		}
-		if strings.TrimSpace(contract.Review.Reviewer) == "" {
-			return errors.New("invalid spatial contract: Approved requires review.reviewer")
+		// Legacy approved records remain readable for migration. Any new
+		// authorized approval contains all three fields, and partial evidence is
+		// always invalid. ApplyAuthorized additionally requires and verifies it.
+		if authorization := contract.Review.Authorization; authorization != nil {
+			if authorization.Authority == "" || authorization.Nonce == "" || authorization.Proof == "" {
+				return errors.New("invalid spatial contract: approval authorization requires authority, nonce, and proof")
+			}
 		}
 	}
 	return nil
 }
 
+func validateCurrentReview(contract Contract, decision string) error {
+	if contract.Review == nil || contract.Review.Decision != decision {
+		return fmt.Errorf("invalid spatial contract: %s requires a matching human review", decision)
+	}
+	if contract.Review.Revision < 1 {
+		return errors.New("invalid spatial contract: review.revision must be >= 1")
+	}
+	hash := ContentHash(contract)
+	if contract.Review.ContractHash != hash {
+		return fmt.Errorf("invalid spatial contract: review contract_hash is stale got=%s want=%s", contract.Review.ContractHash, hash)
+	}
+	if contract.Review.CaptureSetHash == "" || contract.Review.CaptureSetHash != captureHash(contract) {
+		return errors.New("invalid spatial contract: review capture_set_hash is stale")
+	}
+	if strings.TrimSpace(contract.Review.Reviewer) == "" {
+		return fmt.Errorf("invalid spatial contract: %s requires review.reviewer", decision)
+	}
+	return nil
+}
+
 func Approve(contract *Contract, reviewer string) error {
-	return Review(contract, StateApproved, reviewer, nil, "")
+	return errors.New("human approval requires authorization from the local review bridge")
 }
 
 func Review(contract *Contract, decision, reviewer string, issues []string, comment string) error {
@@ -336,36 +466,122 @@ func Review(contract *Contract, decision, reviewer string, issues []string, comm
 	if decision != StateApproved && decision != StateRevisionRequested && decision != StateUnableToJudge {
 		return errors.New("human review decision must be Approved, RevisionRequested, or UnableToJudge")
 	}
+	if decision == StateApproved {
+		return errors.New("human approval requires authorization from the local review bridge")
+	}
+	return recordReview(contract, decision, reviewer, issues, comment, nil)
+}
+
+// ReviewAuthorized records an Approved decision only after a trusted local
+// bridge has verified its human-review evidence. This API is intentionally not
+// wired to the public CLI.
+func ReviewAuthorized(contract *Contract, reviewer string, evidence ApprovalEvidence, verifier ApprovalVerifier) error {
+	if contract == nil {
+		return errors.New("contract is nil")
+	}
+	Normalize(contract)
+	if verifier == nil {
+		return errors.New("human approval requires a bridge approval verifier")
+	}
+	evidence.Authority = strings.TrimSpace(evidence.Authority)
+	evidence.Nonce = strings.TrimSpace(evidence.Nonce)
+	evidence.Proof = strings.TrimSpace(evidence.Proof)
+	if evidence.Authority == "" || evidence.Nonce == "" || evidence.Proof == "" {
+		return errors.New("human approval evidence requires authority, nonce, and proof")
+	}
+	if contract.State != StateAwaitingHumanReview {
+		return fmt.Errorf("human approval requires %s state, got %s", StateAwaitingHumanReview, contract.State)
+	}
 	if strings.TrimSpace(reviewer) == "" {
 		return errors.New("human review requires reviewer")
 	}
-	if decision == StateApproved && (contract.Technical == nil || !contract.Technical.Passed || contract.Technical.ErrorCount != 0) {
+	if contract.Technical == nil || !contract.Technical.Passed || contract.Technical.ErrorCount != 0 {
 		return errors.New("technical validation must pass before human approval")
 	}
 	capture := captureHash(*contract)
 	if capture == "" {
 		return errors.New("capture_set_hash is required before human approval")
 	}
-	contract.State = decision
-	contract.Review = &HumanReview{
-		Decision:       decision,
+	verification := ApprovalVerification{
 		ContractHash:   ContentHash(*contract),
 		CaptureSetHash: capture,
 		Reviewer:       strings.TrimSpace(reviewer),
+		Evidence:       evidence,
+	}
+	if err := verifier.VerifyApproval(verification); err != nil {
+		return fmt.Errorf("human approval authorization failed: %w", err)
+	}
+	return recordReview(contract, StateApproved, reviewer, nil, "", &evidence)
+}
+
+func recordReview(contract *Contract, decision, reviewer string, issues []string, comment string, authorization *ApprovalEvidence) error {
+	if contract.State != StateAwaitingHumanReview {
+		return fmt.Errorf("human review requires %s state, got %s", StateAwaitingHumanReview, contract.State)
+	}
+	if strings.TrimSpace(reviewer) == "" {
+		return errors.New("human review requires reviewer")
+	}
+	capture := captureHash(*contract)
+	if capture == "" {
+		return errors.New("capture_set_hash is required before human review")
+	}
+	candidate := cloneContract(*contract)
+	candidate.State = decision
+	candidate.Review = &HumanReview{
+		Decision:       decision,
+		ContractHash:   ContentHash(candidate),
+		CaptureSetHash: capture,
+		Reviewer:       strings.TrimSpace(reviewer),
+		Authorization:  authorization,
 		IssueTypes:     append([]string(nil), issues...),
 		Comment:        strings.TrimSpace(comment),
 		Revision:       1,
 	}
-	return Validate(*contract)
+	if err := Validate(candidate); err != nil {
+		return err
+	}
+	*contract = candidate
+	return nil
 }
 
 func ContentHash(contract Contract) string {
+	contract = cloneContract(contract)
 	Normalize(&contract)
 	contract.State = ""
 	contract.Review = nil
 	data, _ := json.Marshal(contract)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func cloneContract(contract Contract) Contract {
+	copy := contract
+	if contract.Asset != nil {
+		asset := *contract.Asset
+		asset.CollisionProxies = append([]OBB(nil), contract.Asset.CollisionProxies...)
+		asset.ClearanceProxies = append([]OBB(nil), contract.Asset.ClearanceProxies...)
+		asset.Frames = append([]ContactFrame(nil), contract.Asset.Frames...)
+		asset.Contacts = append([]ContactRequirement(nil), contract.Asset.Contacts...)
+		copy.Asset = &asset
+	}
+	if contract.Interaction != nil {
+		interaction := *contract.Interaction
+		copy.Interaction = &interaction
+	}
+	if contract.Technical != nil {
+		technical := *contract.Technical
+		copy.Technical = &technical
+	}
+	if contract.Review != nil {
+		review := *contract.Review
+		review.IssueTypes = append([]string(nil), contract.Review.IssueTypes...)
+		if contract.Review.Authorization != nil {
+			authorization := *contract.Review.Authorization
+			review.Authorization = &authorization
+		}
+		copy.Review = &review
+	}
+	return copy
 }
 
 func Diff(currentPath, draftPath string) (DiffResult, error) {
@@ -393,21 +609,133 @@ func Diff(currentPath, draftPath string) (DiffResult, error) {
 }
 
 func Apply(currentPath, draftPath string, write bool) (ApplyResult, error) {
-	diff, err := Diff(currentPath, draftPath)
+	if write {
+		return ApplyResult{}, errors.New("spatial apply --write is unavailable in the public CLI; use the authorized local review bridge")
+	}
+	result, _, err := prepareApply(currentPath, draftPath)
+	return result, err
+}
+
+// ApplyAuthorized writes an approved draft only after the trusted local bridge
+// re-verifies the exact human approval evidence stored with the review. The
+// public CLI exposes only Apply's read-only dry run.
+func ApplyAuthorized(currentPath, draftPath string, verifier ApprovalVerifier) (ApplyResult, error) {
+	result, draft, err := prepareApply(currentPath, draftPath)
 	if err != nil {
 		return ApplyResult{}, err
 	}
-	draft, err := Load(draftPath)
-	if err != nil {
+	if err := verifyAuthorizedApproval(draft, verifier); err != nil {
 		return ApplyResult{}, err
 	}
-	if draft.State != StateApproved {
-		return ApplyResult{}, errors.New("spatial apply requires an Approved human-reviewed draft")
-	}
-	result := ApplyResult{Status: "DRY_RUN", Current: currentPath, Draft: draftPath, ContractHash: diff.ContractHash, Changed: diff.Changed, Verified: true}
-	if !write || !diff.Changed {
+	if !result.Changed {
+		result.Status = "UNCHANGED"
 		return result, nil
 	}
+	return writeAppliedContract(result, currentPath, draft)
+}
+
+func prepareApply(currentPath, draftPath string) (ApplyResult, Contract, error) {
+	draft, err := Load(draftPath)
+	if err != nil {
+		return ApplyResult{}, Contract{}, err
+	}
+	if draft.State != StateApproved {
+		return ApplyResult{}, Contract{}, errors.New("spatial apply requires an Approved human-reviewed draft")
+	}
+	if err := validateApplyIdentity(currentPath, draft); err != nil {
+		return ApplyResult{}, Contract{}, err
+	}
+	diff, err := Diff(currentPath, draftPath)
+	if err != nil {
+		return ApplyResult{}, Contract{}, err
+	}
+	result := ApplyResult{Status: "DRY_RUN", Current: currentPath, Draft: draftPath, ContractHash: diff.ContractHash, Changed: diff.Changed, Verified: true}
+	return result, draft, nil
+}
+
+func verifyAuthorizedApproval(contract Contract, verifier ApprovalVerifier) error {
+	if verifier == nil {
+		return errors.New("spatial apply requires a bridge approval verifier")
+	}
+	if contract.Review == nil || contract.Review.Authorization == nil {
+		return errors.New("spatial apply requires bridge-verifiable human approval evidence")
+	}
+	verification := ApprovalVerification{
+		ContractHash:   ContentHash(contract),
+		CaptureSetHash: captureHash(contract),
+		Reviewer:       contract.Review.Reviewer,
+		Evidence:       *contract.Review.Authorization,
+	}
+	if err := verifier.VerifyApproval(verification); err != nil {
+		return fmt.Errorf("spatial apply approval authorization failed: %w", err)
+	}
+	return nil
+}
+
+func validateApplyIdentity(currentPath string, draft Contract) error {
+	if err := validateCanonicalDestination(currentPath, draft); err != nil {
+		return err
+	}
+	current, err := Load(currentPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if !sameIdentity(current, draft) {
+		return errors.New("spatial apply current and draft contract identities do not match")
+	}
+	return nil
+}
+
+func validateCanonicalDestination(path string, contract Contract) error {
+	normalized := strings.ToLower(filepath.ToSlash(filepath.Clean(path)))
+	var marker string
+	var validName func(string) bool
+	switch contract.ContractType {
+	case TypeAsset:
+		marker = "assets/spatialcontracts/assets/"
+		expected := strings.ToLower(contract.Asset.AssetGUID) + ".spatial.json"
+		validName = func(name string) bool { return name == expected }
+	case TypeInteraction:
+		marker = "assets/spatialcontracts/interactions/"
+		prefix := strings.ToLower(contract.Interaction.SubjectGUID) + "__"
+		validName = func(name string) bool {
+			return strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".interaction.json")
+		}
+	default:
+		return errors.New("spatial apply requires an asset or interaction contract")
+	}
+	index := strings.LastIndex(normalized, marker)
+	if index < 0 {
+		return fmt.Errorf("spatial apply destination must be under %s", marker)
+	}
+	name := normalized[index+len(marker):]
+	if name == "" || strings.Contains(name, "/") || !validName(name) {
+		return errors.New("spatial apply destination filename does not match the draft contract identity")
+	}
+	return nil
+}
+
+func sameIdentity(current, draft Contract) bool {
+	if current.ContractType != draft.ContractType {
+		return false
+	}
+	switch draft.ContractType {
+	case TypeAsset:
+		return current.Asset != nil && draft.Asset != nil && current.Asset.AssetGUID == draft.Asset.AssetGUID
+	case TypeInteraction:
+		return current.Interaction != nil && draft.Interaction != nil &&
+			current.Interaction.SubjectGUID == draft.Interaction.SubjectGUID &&
+			current.Interaction.TargetKey == draft.Interaction.TargetKey &&
+			current.Interaction.Relation == draft.Interaction.Relation
+	default:
+		return false
+	}
+}
+
+func writeAppliedContract(result ApplyResult, currentPath string, draft Contract) (ApplyResult, error) {
 	data, err := encode(draft)
 	if err != nil {
 		return ApplyResult{}, err
@@ -481,6 +809,9 @@ func OverlayApprovedAssets(manifest *bounds.Manifest, root string) (int, error) 
 			return err
 		}
 		if contract.ContractType == TypeAsset && contract.State == StateApproved {
+			if _, exists := contracts[contract.Asset.AssetPath]; exists {
+				return fmt.Errorf("duplicate approved spatial contracts for asset path %s", contract.Asset.AssetPath)
+			}
 			contracts[contract.Asset.AssetPath] = contract
 		}
 		return nil
@@ -499,7 +830,10 @@ func OverlayApprovedAssets(manifest *bounds.Manifest, root string) (int, error) 
 			continue
 		}
 		asset := contract.Asset
-		if prefab.Spatial != nil && prefab.Spatial.DependencyHash != "" && asset.DependencyHash != prefab.Spatial.DependencyHash {
+		if prefab.GUID == "" || !strings.EqualFold(prefab.GUID, asset.AssetGUID) {
+			continue
+		}
+		if prefab.Spatial == nil || prefab.Spatial.DependencyHash == "" || asset.DependencyHash != prefab.Spatial.DependencyHash {
 			continue
 		}
 		profile := &bounds.SpatialProfile{
@@ -521,7 +855,17 @@ func OverlayApprovedAssets(manifest *bounds.Manifest, root string) (int, error) 
 				profile.BottomContact = converted
 			case "back":
 				profile.BackContact = converted
+			case "top":
+				profile.TopContact = converted
 			}
+		}
+		for _, requirement := range asset.Contacts {
+			profile.Contacts = append(profile.Contacts, bounds.ContactRequirement{
+				ID: requirement.ID, Kind: requirement.Kind, FrameID: requirement.FrameID,
+				Target: requirement.Target, MinimumGap: requirement.MinimumGap,
+				MaximumGap: requirement.MaximumGap, MaximumPenetration: requirement.MaximumPenetration,
+				MinimumSupport: requirement.MinimumSupport, DirectionAlignment: requirement.DirectionAlignment,
+			})
 		}
 		prefab.Spatial = profile
 		applied++
