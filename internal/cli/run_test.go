@@ -2497,6 +2497,31 @@ func TestSceneSuggestRejectsInvalidAlign(t *testing.T) {
 		"--near",
 		"1000",
 		"--align",
+		"ceiling",
+	)
+
+	if result.exitCode != 2 {
+		t.Fatalf("exit code mismatch: got %d want 2", result.exitCode)
+	}
+	if result.stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", result.stdout)
+	}
+	if result.stderr != "ERROR suggest supports only --align floor|grid|wall\n" {
+		t.Fatalf("stderr mismatch: got %q", result.stderr)
+	}
+}
+
+func TestSceneSuggestWallRequiresSurfaceID(t *testing.T) {
+	result := runCLI(
+		t,
+		"scene",
+		"suggest",
+		"testdata/scenes/simple_scene.unity",
+		"--manifest",
+		"testdata/manifests/simple_scene.bounds.json",
+		"--prefab",
+		"Assets/Prefabs/chair.prefab",
+		"--align",
 		"wall",
 	)
 
@@ -2506,7 +2531,7 @@ func TestSceneSuggestRejectsInvalidAlign(t *testing.T) {
 	if result.stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", result.stdout)
 	}
-	if result.stderr != "ERROR suggest supports only --align floor|grid\n" {
+	if result.stderr != "ERROR suggest --align wall requires --surface-id\n" {
 		t.Fatalf("stderr mismatch: got %q", result.stderr)
 	}
 }
