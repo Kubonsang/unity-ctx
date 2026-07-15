@@ -102,6 +102,75 @@ func TestRunReportsCommittedContractAndBackupWhenReceiptFails(t *testing.T) {
 	}
 }
 
+func TestRunReportsReceiptedPostcheckFailure(t *testing.T) {
+	project := t.TempDir()
+	contract := awaitingContract()
+	draft := filepath.Join(project, "Library", "SpatialDrafts", "banner.json")
+	if err := spatialcontract.Save(draft, contract); err != nil {
+		t.Fatal(err)
+	}
+	current, err := spatialcontract.CanonicalContractPath(project, contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := Request{
+		ProtocolVersion: ProtocolVersion, Action: spatialcontract.ApprovalActionApproveApply,
+		ProjectRoot: project, CurrentPath: current, CurrentHash: spatialcontract.CurrentHashAbsent, DraftPath: draft, Reviewer: "local-user",
+		Grant: spatialcontract.ApprovalEvidence{Authority: "test", Nonce: "0123456789abcdef0123456789abcdef", Proof: "valid"},
+	}
+	input, _ := json.Marshal(request)
+	var output, errorOutput bytes.Buffer
+	code := Run(bytes.NewReader(input), &output, &errorOutput, Config{Verifier: bridgeVerifier{}, Consumer: receiptedFailureConsumer{}})
+	var response Response
+	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if code != 1 || response.OK || !response.Written || response.Status != "WRITE_COMMITTED_RECEIPTED_POSTCHECK_FAILED" || response.CurrentPath != current {
+		t.Fatalf("receipted failure response=%+v code=%d stderr=%s", response, code, errorOutput.String())
+	}
+}
+
+func TestRunPreservesUnchangedReceiptedPostcheckStatus(t *testing.T) {
+	project := t.TempDir()
+	contract := awaitingContract()
+	draft := filepath.Join(project, "Library", "SpatialDrafts", "banner.json")
+	if err := spatialcontract.Save(draft, contract); err != nil {
+		t.Fatal(err)
+	}
+	current, err := spatialcontract.CanonicalContractPath(project, contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved := contract
+	if err := spatialcontract.ReviewAuthorized(&approved, "local-user", spatialcontract.ApprovalEvidence{
+		Authority: "fixture", Nonce: "fixture-nonce", Proof: "fixture-proof",
+	}, permissiveReviewVerifier{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := spatialcontract.Save(current, approved); err != nil {
+		t.Fatal(err)
+	}
+	diff, err := spatialcontract.Diff(current, draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := Request{
+		ProtocolVersion: ProtocolVersion, Action: spatialcontract.ApprovalActionApproveApply,
+		ProjectRoot: project, CurrentPath: current, CurrentHash: diff.CurrentHash, DraftPath: draft, Reviewer: "local-user",
+		Grant: spatialcontract.ApprovalEvidence{Authority: "test", Nonce: "0123456789abcdef0123456789abcdef", Proof: "valid"},
+	}
+	input, _ := json.Marshal(request)
+	var output, errorOutput bytes.Buffer
+	code := Run(bytes.NewReader(input), &output, &errorOutput, Config{Verifier: bridgeVerifier{}, Consumer: receiptedFailureConsumer{}})
+	var response Response
+	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if code != 1 || response.OK || response.Written || response.Status != "UNCHANGED_RECEIPTED_POSTCHECK_FAILED" || response.CurrentPath != current {
+		t.Fatalf("unchanged receipted response=%+v code=%d stderr=%s", response, code, errorOutput.String())
+	}
+}
+
 func TestRunRejectsWrongActionAndNonCanonicalDestination(t *testing.T) {
 	project := t.TempDir()
 	draft := filepath.Join(project, "Library", "draft.json")
@@ -246,6 +315,20 @@ func (failingAfterApplyConsumer) ConsumeApprovalGrant(_ spatialcontract.Approval
 		return err
 	}
 	return errors.New("receipt sync failed")
+}
+
+type bridgeReceiptCommittedError struct{ err error }
+
+func (err *bridgeReceiptCommittedError) Error() string          { return err.err.Error() }
+func (err *bridgeReceiptCommittedError) ReceiptCommitted() bool { return true }
+
+type receiptedFailureConsumer struct{}
+
+func (receiptedFailureConsumer) ConsumeApprovalGrant(_ spatialcontract.ApprovalVerification, apply func() error) error {
+	if err := apply(); err != nil {
+		return err
+	}
+	return &bridgeReceiptCommittedError{err: errors.New("post-receipt verification failed")}
 }
 
 func recordBridgeAssetApproval(t *testing.T, project string, ledger *reviewgrant.Ledger, privateKey ed25519.PrivateKey, now time.Time, guid, label, nonce string) {

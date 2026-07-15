@@ -30,6 +30,15 @@ func TestDirectoryGuardSupportsDurableChildPublication(t *testing.T) {
 	if err := guard.VerifyPath(directory); err != nil {
 		t.Fatal(err)
 	}
+	resolved, err := guard.ResolvePath("probe.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedInfo, err := os.Lstat(resolved)
+	guardedInfo, guardedErr := os.Lstat(path)
+	if err != nil || guardedErr != nil || !os.SameFile(resolvedInfo, guardedInfo) {
+		t.Fatalf("resolved guarded path does not identify the published child: resolved=%s err=%v guarded_err=%v", resolved, err, guardedErr)
+	}
 	if runtime.GOOS == "windows" {
 		if err := os.Rename(directory, directory+"-moved"); err == nil {
 			t.Fatal("Windows directory guard allowed an ancestor rename while the transaction was active")

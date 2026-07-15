@@ -131,8 +131,8 @@ func Run(input io.Reader, output, errorOutput io.Writer, config Config) int {
 	}
 	result, err := spatialcontract.ApproveAndApplyAuthorizedWithGeometry(projectRoot, currentPath, draftPath, request.CurrentHash, request.Reviewer, request.Grant, geometry, verifier, consumer)
 	if err != nil {
-		if result.Written {
-			response := Response{OK: false, Status: result.Status, CurrentPath: result.Current, Backup: result.Backup, ContractHash: result.ContractHash, Written: true, Error: err.Error()}
+		if result.Written || result.Backup != "" || result.Status != "" {
+			response := Response{OK: false, Status: result.Status, CurrentPath: result.Current, Backup: result.Backup, ContractHash: result.ContractHash, Written: result.Written, Error: err.Error()}
 			if encodeErr := json.NewEncoder(output).Encode(response); encodeErr != nil {
 				_, _ = fmt.Fprintf(errorOutput, "ERROR encode committed bridge response: %v\n", encodeErr)
 				return 1

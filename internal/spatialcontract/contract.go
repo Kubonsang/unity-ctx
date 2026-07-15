@@ -169,6 +169,15 @@ type ApprovalGrantConsumer interface {
 	ConsumeApprovalGrant(ApprovalVerification, func() error) error
 }
 
+type receiptCommittedMarker interface {
+	ReceiptCommitted() bool
+}
+
+func receiptWasCommitted(err error) bool {
+	var marker receiptCommittedMarker
+	return errors.As(err, &marker) && marker.ReceiptCommitted()
+}
+
 // ApprovedContractVerification is used when an Approved contract is consumed
 // after the one-shot approval operation (for example by a detailed scan). The
 // verifier is expected to consult the trusted bridge's external approval
@@ -270,8 +279,10 @@ type ApplyResult struct {
 
 var guidPattern = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
 
+const maxSpatialContractFileSize int64 = 4 * 1024 * 1024
+
 func Load(path string) (Contract, error) {
-	data, err := os.ReadFile(path)
+	data, err := readStableSpatialContractFile(path)
 	if err != nil {
 		return Contract{}, err
 	}
@@ -338,6 +349,9 @@ func Save(path string, contract Contract) error {
 	data, err := encode(contract)
 	if err != nil {
 		return err
+	}
+	if int64(len(data)) > maxSpatialContractFileSize {
+		return fmt.Errorf("spatial contract exceeds the %d byte file limit", maxSpatialContractFileSize)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -816,6 +830,12 @@ func ApproveAndApplyAuthorizedWithGeometry(projectRoot, currentPath, draftPath, 
 	if consumer == nil {
 		return ApplyResult{}, errors.New("atomic spatial approval requires a consume-once grant ledger")
 	}
+	// Fail before a verifier or consume-once ledger sees the grant on builds
+	// that cannot keep the destination topology stable during publication.
+	// In particular, an unsupported platform must never burn a valid nonce.
+	if !durablefs.SecurePublicationSupported() {
+		return ApplyResult{}, errors.New("atomic spatial approval is unsupported on this operating system because secure publication is unavailable")
+	}
 	draft, err := Load(draftPath)
 	if err != nil {
 		return ApplyResult{}, err
@@ -892,6 +912,19 @@ func ApproveAndApplyAuthorizedWithGeometry(projectRoot, currentPath, draftPath, 
 	if err := verifier.VerifyApproval(verification); err != nil {
 		return ApplyResult{}, fmt.Errorf("human approval authorization failed: %w", err)
 	}
+	// Create the canonical parent component-by-component beneath guarded
+	// ancestors before the one-shot grant is consumed. Re-check both identity
+	// and the signed baseline afterwards so directory setup cannot widen the
+	// authorization or hide a concurrent contract write.
+	if err := durablefs.EnsureDirectoryTree(filepath.Dir(currentPath), 0o755, durablefs.SyncDirectory); err != nil {
+		return ApplyResult{}, fmt.Errorf("prepare guarded spatial apply destination: %w", err)
+	}
+	if err := validateCanonicalDestination(projectRoot, currentPath, draft); err != nil {
+		return ApplyResult{}, err
+	}
+	if err := verifyCurrentBaseline(currentPath, draft, expectedCurrentHash); err != nil {
+		return ApplyResult{}, err
+	}
 
 	approved := cloneContract(draft)
 	if err := recordReview(&approved, StateApproved, reviewer, nil, ""); err != nil {
@@ -910,17 +943,24 @@ func ApproveAndApplyAuthorizedWithGeometry(projectRoot, currentPath, draftPath, 
 		sum := sha256.Sum256(approvedData)
 		expectedAppliedHash = hex.EncodeToString(sum[:])
 	}
-	var transactionGuard *durablefs.DirectoryGuard
+	transactionGuard, err := durablefs.GuardDirectoryTree(projectRoot, filepath.Dir(currentPath))
+	if err != nil {
+		return ApplyResult{}, fmt.Errorf("guard spatial apply destination before consuming approval: %w", err)
+	}
+	defer transactionGuard.Close()
 	verification.RevalidateApplied = func() error {
-		if transactionGuard != nil {
-			if err := transactionGuard.VerifyPath(filepath.Dir(currentPath)); err != nil {
-				return fmt.Errorf("APPLY_SOURCE_CHANGED guarded destination changed: %w", err)
+		if geometry.RevalidateCurrent != nil {
+			if err := geometry.RevalidateCurrent(); err != nil {
+				return fmt.Errorf("SUPPORT_CONTRACT_STALE: dependency geometry changed during approval: %w", err)
 			}
+		}
+		if err := transactionGuard.VerifyPath(filepath.Dir(currentPath)); err != nil {
+			return fmt.Errorf("APPLY_SOURCE_CHANGED guarded destination changed: %w", err)
 		}
 		if err := validateCanonicalDestination(projectRoot, currentPath, approved); err != nil {
 			return fmt.Errorf("APPLY_SOURCE_CHANGED applied destination is no longer canonical: %w", err)
 		}
-		actual, current, err := currentBaseline(currentPath, approved)
+		actual, current, err := currentBaseline(transactionGuard.Path(filepath.Base(currentPath)), approved)
 		if err != nil {
 			return fmt.Errorf("APPLY_SOURCE_CHANGED inspect applied contract: %w", err)
 		}
@@ -930,6 +970,9 @@ func ApproveAndApplyAuthorizedWithGeometry(projectRoot, currentPath, draftPath, 
 		semanticHash, err := ContentHashChecked(*current)
 		if err != nil || semanticHash != result.ContractHash || current.State != StateApproved || current.Review == nil || current.Review.Decision != StateApproved || current.Review.Reviewer != reviewer || current.Review.CaptureSetHash != captureHash(approved) {
 			return errors.New("APPLY_SOURCE_CHANGED applied contract no longer matches the approved evidence")
+		}
+		if err := transactionGuard.VerifyPath(filepath.Dir(currentPath)); err != nil {
+			return fmt.Errorf("APPLY_SOURCE_CHANGED guarded destination changed after verification: %w", err)
 		}
 		return nil
 	}
@@ -952,11 +995,24 @@ func ApproveAndApplyAuthorizedWithGeometry(projectRoot, currentPath, draftPath, 
 			return nil
 		}
 		var writeErr error
-		applied, writeErr = writeAppliedContract(result, projectRoot, currentPath, approved, expectedCurrentHash, func(guard *durablefs.DirectoryGuard) {
-			transactionGuard = guard
-		})
+		applied, writeErr = writeAppliedContract(result, projectRoot, currentPath, approved, expectedCurrentHash, transactionGuard)
 		return writeErr
 	})
+	consumerSucceeded := consumeErr == nil
+	if applied.Backup != "" {
+		name := filepath.Base(applied.Backup)
+		resolved, resolveErr := transactionGuard.ResolvePath(name)
+		stableInfo, stableErr := os.Lstat(transactionGuard.Path(name))
+		resolvedInfo, resolvedErr := os.Lstat(resolved)
+		if resolveErr == nil && stableErr == nil && resolvedErr == nil && stableInfo.Mode().IsRegular() && resolvedInfo.Mode().IsRegular() && os.SameFile(stableInfo, resolvedInfo) {
+			applied.Backup = resolved
+		} else {
+			applied.Backup = ""
+			if !applied.Written {
+				applied.Status = "APPLY_FAILED_RECOVERY_LOCATION_UNCERTAIN"
+			}
+		}
+	}
 	if transactionGuard != nil {
 		if closeErr := transactionGuard.Close(); consumeErr == nil && closeErr != nil {
 			consumeErr = fmt.Errorf("close guarded spatial apply destination: %w", closeErr)
@@ -964,8 +1020,26 @@ func ApproveAndApplyAuthorizedWithGeometry(projectRoot, currentPath, draftPath, 
 	}
 	if consumeErr != nil {
 		if applied.Written {
+			if !applied.Verified {
+				applied.Status = "WRITE_COMMITTED_UNVERIFIED"
+				return applied, fmt.Errorf("atomic spatial approval published the contract but could not verify the committed state: %w", consumeErr)
+			}
+			if consumerSucceeded || receiptWasCommitted(consumeErr) {
+				applied.Status = "WRITE_COMMITTED_RECEIPTED_POSTCHECK_FAILED"
+				return applied, fmt.Errorf("atomic spatial approval committed the contract and receipt but a post-commit check failed: %w", consumeErr)
+			}
 			applied.Status = "WRITE_COMMITTED_UNRECEIPTED"
 			return applied, fmt.Errorf("atomic spatial approval committed the contract but did not complete its receipt: %w", consumeErr)
+		}
+		if applied.Backup != "" {
+			return applied, fmt.Errorf("atomic spatial approval failed after claiming the signed baseline; use the reported recovery path: %w", consumeErr)
+		}
+		if strings.HasPrefix(applied.Status, "APPLY_FAILED_") {
+			return applied, fmt.Errorf("atomic spatial approval failed after claiming the signed baseline and its recovery location is uncertain: %w", consumeErr)
+		}
+		if (consumerSucceeded || receiptWasCommitted(consumeErr)) && applied.Current != "" {
+			applied.Status = "UNCHANGED_RECEIPTED_POSTCHECK_FAILED"
+			return applied, fmt.Errorf("atomic spatial approval receipt was committed for an unchanged contract but a post-commit check failed: %w", consumeErr)
 		}
 		return ApplyResult{}, fmt.Errorf("atomic spatial approval failed: %w", consumeErr)
 	}
@@ -998,23 +1072,12 @@ func sha256Hex(value string) bool {
 // edits are still protected by the approval compare-and-swap. A missing file
 // is represented by CurrentHashAbsent rather than an empty, unsigned value.
 func currentBaseline(path string, expectedIdentity Contract) (string, *Contract, error) {
-	before, err := os.Lstat(path)
+	data, err := readStableSpatialContractFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return CurrentHashAbsent, nil, nil
 	}
 	if err != nil {
 		return "", nil, err
-	}
-	if !before.Mode().IsRegular() {
-		return "", nil, errors.New("current spatial contract is not a regular file")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", nil, err
-	}
-	after, err := os.Lstat(path)
-	if err != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) {
-		return "", nil, errors.New("current spatial contract changed while reading its baseline")
 	}
 	current, err := Decode(data)
 	if err != nil {
@@ -1250,7 +1313,8 @@ func validateDestinationAncestor(projectRoot, destination string) error {
 		info, statErr := os.Lstat(current)
 		if errors.Is(statErr, fs.ErrNotExist) {
 			// Once a component does not exist, later components cannot contain a
-			// pre-existing reparse point. MkdirAll will create ordinary directories.
+			// pre-existing reparse point. The guarded directory-tree creator will
+			// build and re-open each missing component before grant consumption.
 			break
 		}
 		if statErr != nil {
@@ -1284,11 +1348,11 @@ type appliedWriteHooks struct {
 	afterEvacuate func(currentPath, backupPath string) error
 	beforePublish func(currentPath string) error
 	syncDirectory func(string) error
-	retainGuard   func(*durablefs.DirectoryGuard)
+	guard         *durablefs.DirectoryGuard
 }
 
-func writeAppliedContract(result ApplyResult, projectRoot, currentPath string, draft Contract, expectedCurrentHash string, retainGuard func(*durablefs.DirectoryGuard)) (ApplyResult, error) {
-	return writeAppliedContractWithHooks(result, projectRoot, currentPath, draft, expectedCurrentHash, appliedWriteHooks{retainGuard: retainGuard})
+func writeAppliedContract(result ApplyResult, projectRoot, currentPath string, draft Contract, expectedCurrentHash string, guard *durablefs.DirectoryGuard) (ApplyResult, error) {
+	return writeAppliedContractWithHooks(result, projectRoot, currentPath, draft, expectedCurrentHash, appliedWriteHooks{guard: guard})
 }
 
 // writeAppliedContractWithHooks performs a raw-file compare-and-swap. The
@@ -1301,20 +1365,20 @@ func writeAppliedContractWithHooks(result ApplyResult, projectRoot, currentPath 
 	if err != nil {
 		return ApplyResult{}, err
 	}
-	directory := filepath.Dir(currentPath)
-	if err := os.MkdirAll(directory, 0o755); err != nil {
-		return ApplyResult{}, err
+	if int64(len(data)) > maxSpatialContractFileSize {
+		return ApplyResult{}, fmt.Errorf("spatial contract exceeds the %d byte file limit", maxSpatialContractFileSize)
 	}
+	directory := filepath.Dir(currentPath)
 	if err := validateCanonicalDestination(projectRoot, currentPath, draft); err != nil {
 		return ApplyResult{}, err
 	}
-	guard, err := durablefs.GuardDirectoryTree(projectRoot, directory)
-	if err != nil {
-		return ApplyResult{}, fmt.Errorf("guard spatial apply destination directory: %w", err)
-	}
-	if hooks.retainGuard != nil {
-		hooks.retainGuard(guard)
-	} else {
+	guard := hooks.guard
+	if guard == nil {
+		var err error
+		guard, err = durablefs.GuardDirectoryTree(projectRoot, directory)
+		if err != nil {
+			return ApplyResult{}, fmt.Errorf("guard spatial apply destination directory: %w", err)
+		}
 		defer guard.Close()
 	}
 	if err := validateCanonicalDestination(projectRoot, currentPath, draft); err != nil {
@@ -1359,6 +1423,17 @@ func writeAppliedContractWithHooks(result ApplyResult, projectRoot, currentPath 
 		if backup == "" {
 			return nil
 		}
+		actual, _, err := currentBaseline(backup, draft)
+		if err != nil || actual != expectedCurrentHash {
+			if err != nil {
+				return fmt.Errorf("signed baseline backup changed before restore: %w", err)
+			}
+			return fmt.Errorf("signed baseline backup hash changed before restore got=%s want=%s", actual, expectedCurrentHash)
+		}
+		backupInfo, err := os.Lstat(backup)
+		if err != nil || !backupInfo.Mode().IsRegular() {
+			return errors.New("signed baseline backup identity is unavailable before restore")
+		}
 		if err := os.Link(backup, guardedCurrent); err != nil {
 			if errors.Is(err, fs.ErrExist) {
 				return errors.New("destination was replaced while restoring the signed baseline")
@@ -1368,10 +1443,47 @@ func writeAppliedContractWithHooks(result ApplyResult, projectRoot, currentPath 
 		if err := syncDirectory(directory); err != nil {
 			return fmt.Errorf("sync restored spatial baseline: %w", err)
 		}
+		restored, _, err := currentBaseline(guardedCurrent, draft)
+		currentInfo, infoErr := os.Lstat(guardedCurrent)
+		if err != nil || infoErr != nil || restored != expectedCurrentHash || !os.SameFile(backupInfo, currentInfo) {
+			return errors.New("restored spatial baseline could not be verified against the signed hash and backup identity")
+		}
 		return nil
 	}
 
 	backup := ""
+	refreshRecoveryPath := func() bool {
+		if backup == "" {
+			return true
+		}
+		resolved, err := guard.ResolvePath(filepath.Base(backup))
+		if err != nil {
+			result.Backup = ""
+			return false
+		}
+		stableInfo, stableErr := os.Lstat(backup)
+		resolvedInfo, resolvedErr := os.Lstat(resolved)
+		if stableErr != nil || resolvedErr != nil || !stableInfo.Mode().IsRegular() || !resolvedInfo.Mode().IsRegular() || !os.SameFile(stableInfo, resolvedInfo) {
+			result.Backup = ""
+			return false
+		}
+		result.Backup = resolved
+		return true
+	}
+	failedAfterClaim := func(restoreErr error) ApplyResult {
+		result.Written = false
+		result.Verified = false
+		if !refreshRecoveryPath() {
+			result.Status = "APPLY_FAILED_RECOVERY_LOCATION_UNCERTAIN"
+			return result
+		}
+		if restoreErr == nil {
+			result.Status = "APPLY_FAILED_BASELINE_RESTORED"
+		} else {
+			result.Status = "APPLY_FAILED_BACKUP_PRESERVED"
+		}
+		return result
+	}
 	if expectedCurrentHash != CurrentHashAbsent {
 		reserved, reserveErr := os.CreateTemp(guardedDirectory, "."+filepath.Base(currentPath)+".bak-*")
 		if reserveErr != nil {
@@ -1392,20 +1504,24 @@ func writeAppliedContractWithHooks(result ApplyResult, projectRoot, currentPath 
 		result.Backup = logicalBackup
 		if err := syncDirectory(directory); err != nil {
 			restoreErr := restoreBackup(backup)
-			return ApplyResult{}, fmt.Errorf("spatial apply backup durability is uncertain (backup=%s restore=%v): %w", backup, restoreErr, err)
+			failed := failedAfterClaim(restoreErr)
+			return failed, fmt.Errorf("spatial apply backup durability is uncertain (backup=%s restore=%v): %w", failed.Backup, restoreErr, err)
 		}
 		actual, _, baselineErr := currentBaseline(backup, draft)
 		if baselineErr != nil || actual != expectedCurrentHash {
 			restoreErr := restoreBackup(backup)
 			if baselineErr != nil {
-				return ApplyResult{}, fmt.Errorf("APPLY_SOURCE_CHANGED claimed current contract is invalid (backup=%s restore=%v): %w", logicalBackup, restoreErr, baselineErr)
+				failed := failedAfterClaim(restoreErr)
+				return failed, fmt.Errorf("APPLY_SOURCE_CHANGED claimed current contract is invalid (backup=%s restore=%v): %w", failed.Backup, restoreErr, baselineErr)
 			}
-			return ApplyResult{}, fmt.Errorf("APPLY_SOURCE_CHANGED claimed current_hash mismatch got=%s want=%s backup=%s restore=%v", actual, expectedCurrentHash, logicalBackup, restoreErr)
+			failed := failedAfterClaim(restoreErr)
+			return failed, fmt.Errorf("APPLY_SOURCE_CHANGED claimed current_hash mismatch got=%s want=%s backup=%s restore=%v", actual, expectedCurrentHash, failed.Backup, restoreErr)
 		}
 		if hooks.afterEvacuate != nil {
 			if err := hooks.afterEvacuate(currentPath, logicalBackup); err != nil {
 				restoreErr := restoreBackup(backup)
-				return ApplyResult{}, fmt.Errorf("spatial apply test hook failed (restore=%v): %w", restoreErr, err)
+				failed := failedAfterClaim(restoreErr)
+				return failed, fmt.Errorf("spatial apply test hook failed (backup=%s restore=%v): %w", failed.Backup, restoreErr, err)
 			}
 		}
 	} else if _, err := os.Lstat(guardedCurrent); err == nil {
@@ -1417,40 +1533,69 @@ func writeAppliedContractWithHooks(result ApplyResult, projectRoot, currentPath 
 	if hooks.beforePublish != nil {
 		if err := hooks.beforePublish(currentPath); err != nil {
 			restoreErr := restoreBackup(backup)
+			if result.Backup != "" {
+				failed := failedAfterClaim(restoreErr)
+				return failed, fmt.Errorf("spatial apply test hook failed (backup=%s restore=%v): %w", failed.Backup, restoreErr, err)
+			}
 			return ApplyResult{}, fmt.Errorf("spatial apply test hook failed (restore=%v): %w", restoreErr, err)
 		}
 	}
 	if err := validateCanonicalDestination(projectRoot, currentPath, draft); err != nil {
 		restoreErr := restoreBackup(backup)
-		return ApplyResult{}, fmt.Errorf("spatial apply destination changed before publish (backup=%s restore=%v): %w", backup, restoreErr, err)
+		if result.Backup != "" {
+			failed := failedAfterClaim(restoreErr)
+			return failed, fmt.Errorf("spatial apply destination changed before publish (backup=%s restore=%v): %w", failed.Backup, restoreErr, err)
+		}
+		return ApplyResult{}, fmt.Errorf("spatial apply destination changed before publish (restore=%v): %w", restoreErr, err)
 	}
 	if err := guard.VerifyPath(directory); err != nil {
 		restoreErr := restoreBackup(backup)
-		return ApplyResult{}, fmt.Errorf("spatial apply destination directory changed before publish (backup=%s restore=%v): %w", result.Backup, restoreErr, err)
+		if result.Backup != "" {
+			failed := failedAfterClaim(restoreErr)
+			return failed, fmt.Errorf("spatial apply destination directory changed before publish (backup=%s restore=%v): %w", failed.Backup, restoreErr, err)
+		}
+		return ApplyResult{}, fmt.Errorf("spatial apply destination directory changed before publish (restore=%v): %w", restoreErr, err)
 	}
 	if err := os.Link(tempPath, guardedCurrent); err != nil {
 		restoreErr := restoreBackup(backup)
 		if errors.Is(err, fs.ErrExist) {
-			return ApplyResult{}, fmt.Errorf("APPLY_SOURCE_CHANGED destination was created before publish (backup=%s restore=%v)", backup, restoreErr)
+			if result.Backup != "" {
+				failed := failedAfterClaim(restoreErr)
+				return failed, fmt.Errorf("APPLY_SOURCE_CHANGED destination was created before publish (backup=%s restore=%v)", failed.Backup, restoreErr)
+			}
+			return ApplyResult{}, fmt.Errorf("APPLY_SOURCE_CHANGED destination was created before publish (restore=%v)", restoreErr)
 		}
-		return ApplyResult{}, fmt.Errorf("publish spatial contract without replacement (backup=%s restore=%v): %w", backup, restoreErr, err)
+		if result.Backup != "" {
+			failed := failedAfterClaim(restoreErr)
+			return failed, fmt.Errorf("publish spatial contract without replacement (backup=%s restore=%v): %w", failed.Backup, restoreErr, err)
+		}
+		return ApplyResult{}, fmt.Errorf("publish spatial contract without replacement (restore=%v): %w", restoreErr, err)
 	}
 	result.Status = "WRITE_COMMITTED_UNVERIFIED"
 	result.Written = true
+	result.Verified = false
+	committedFailure := func() ApplyResult {
+		_ = refreshRecoveryPath()
+		return result
+	}
 	if err := syncDirectory(directory); err != nil {
-		return result, fmt.Errorf("spatial apply was published but directory durability is uncertain (backup=%s): %w", result.Backup, err)
+		failed := committedFailure()
+		return failed, fmt.Errorf("spatial apply was published but directory durability is uncertain (backup=%s): %w", failed.Backup, err)
 	}
 
 	publishedInfo, err := os.Lstat(guardedCurrent)
 	if err != nil || !publishedInfo.Mode().IsRegular() || !os.SameFile(tempInfo, publishedInfo) {
-		return result, fmt.Errorf("spatial apply verification failed: published file identity changed (backup=%s)", result.Backup)
+		failed := committedFailure()
+		return failed, fmt.Errorf("spatial apply verification failed: published file identity changed (backup=%s)", failed.Backup)
 	}
-	publishedData, err := os.ReadFile(guardedCurrent)
+	publishedData, err := readStableSpatialContractFile(guardedCurrent)
 	if err != nil {
-		return result, fmt.Errorf("spatial apply verification failed (backup=%s): %w", result.Backup, err)
+		failed := committedFailure()
+		return failed, fmt.Errorf("spatial apply verification failed (backup=%s): %w", failed.Backup, err)
 	}
 	if !bytes.Equal(publishedData, data) {
-		return result, fmt.Errorf("spatial apply verification failed: published bytes changed (backup=%s)", result.Backup)
+		failed := committedFailure()
+		return failed, fmt.Errorf("spatial apply verification failed: published bytes changed (backup=%s)", failed.Backup)
 	}
 	verified, verifyErr := Decode(publishedData)
 	verifiedHash := ""
@@ -1459,19 +1604,59 @@ func writeAppliedContractWithHooks(result ApplyResult, projectRoot, currentPath 
 	}
 	if verifyErr != nil || verifiedHash != result.ContractHash {
 		if verifyErr != nil {
-			return result, fmt.Errorf("spatial apply verification failed (backup=%s): %w", result.Backup, verifyErr)
+			failed := committedFailure()
+			return failed, fmt.Errorf("spatial apply verification failed (backup=%s): %w", failed.Backup, verifyErr)
 		}
-		return result, fmt.Errorf("spatial apply verification failed: contract hash mismatch (backup=%s)", result.Backup)
+		failed := committedFailure()
+		return failed, fmt.Errorf("spatial apply verification failed: contract hash mismatch (backup=%s)", failed.Backup)
 	}
 	if err := validateCanonicalDestination(projectRoot, currentPath, verified); err != nil {
-		return result, fmt.Errorf("spatial apply destination changed after publish (backup=%s): %w", result.Backup, err)
+		failed := committedFailure()
+		return failed, fmt.Errorf("spatial apply destination changed after publish (backup=%s): %w", failed.Backup, err)
 	}
 	if err := guard.VerifyPath(directory); err != nil {
-		return result, fmt.Errorf("spatial apply destination directory changed after publish (backup=%s): %w", result.Backup, err)
+		failed := committedFailure()
+		return failed, fmt.Errorf("spatial apply destination directory changed after publish (backup=%s): %w", failed.Backup, err)
 	}
 	result.Status = "WRITE"
 	result.Written = true
+	result.Verified = true
 	return result, nil
+}
+
+func readStableSpatialContractFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxSpatialContractFileSize {
+		return nil, fmt.Errorf("spatial contract must be a non-empty regular file no larger than %d bytes", maxSpatialContractFileSize)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		_ = file.Close()
+		return nil, errors.New("spatial contract changed before it was opened")
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, maxSpatialContractFileSize+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	if int64(len(data)) > maxSpatialContractFileSize {
+		return nil, fmt.Errorf("spatial contract exceeds the %d byte file limit", maxSpatialContractFileSize)
+	}
+	after, err := os.Lstat(path)
+	if err != nil || !after.Mode().IsRegular() || !os.SameFile(opened, after) {
+		return nil, errors.New("spatial contract changed while it was read")
+	}
+	return data, nil
 }
 
 func OverlayApprovedAssets(manifest *bounds.Manifest, root string) (int, error) {

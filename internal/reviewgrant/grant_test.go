@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Kubonsang/unity-ctx/internal/durablefs"
 	"github.com/Kubonsang/unity-ctx/internal/spatialcontract"
 )
 
@@ -384,6 +385,102 @@ func TestLedgerRevalidatesAppliedStateBeforeAndAfterReceipt(t *testing.T) {
 	}
 }
 
+func TestLedgerMarksPostReceiptFailureAsCommitted(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ledger, privateKey := signedTestLedger(t, now)
+	verification := signedVerification(t, privateKey, now)
+	revalidations := 0
+	verification.RevalidateApplied = func() error {
+		revalidations++
+		if revalidations == 2 {
+			return errors.New("APPLY_SOURCE_CHANGED after receipt")
+		}
+		return nil
+	}
+	err := ledger.ConsumeApprovalGrant(verification, func() error { return nil })
+	var committed interface{ ReceiptCommitted() bool }
+	if err == nil || !errors.As(err, &committed) || !committed.ReceiptCommitted() {
+		t.Fatalf("post-receipt failure was not typed as committed: %v", err)
+	}
+	entries, readErr := os.ReadDir(filepath.Join(ledger.Root, "approvals"))
+	if readErr != nil || len(entries) != 1 {
+		t.Fatalf("committed receipt is missing: entries=%d err=%v", len(entries), readErr)
+	}
+}
+
+func TestLedgerDoesNotPinAuthorityForMalformedDependencyShape(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ledger, privateKey := signedTestLedger(t, now)
+	verification := signedVerification(t, privateKey, now)
+	verification.DependencyDestinations = []string{filepath.Join(t.TempDir(), "unexpected.spatial.json")}
+	err := ledger.ConsumeApprovalGrant(verification, func() error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "asset approval grant cannot lock") {
+		t.Fatalf("malformed dependency shape error = %v", err)
+	}
+	pin := filepath.Join(ledger.Root, "authorities", verification.Evidence.Authority+".json")
+	if _, statErr := os.Stat(pin); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("malformed request pinned its authority: %v", statErr)
+	}
+}
+
+func TestExistingAuthorityPinVerificationIsReadOnly(t *testing.T) {
+	ledger := &Ledger{Root: t.TempDir(), syncDirectory: func(string) error {
+		return errors.New("read-only pin verification attempted a directory sync")
+	}}
+	authority := "local-review-v2"
+	keyHash := strings.Repeat("a", 64)
+	directory := filepath.Join(ledger.Root, "authorities")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(authorityPinRecord{Version: ledgerVersion, Authority: authority, KeyHash: keyHash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, authority+".json"), append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.verifyAuthorityPinned(authority, keyHash); err != nil {
+		t.Fatalf("existing authority pin verification performed a write: %v", err)
+	}
+}
+
+func TestReadOnlyAuthorityVerificationCannotBootstrapMissingPin(t *testing.T) {
+	ledger := &Ledger{Root: t.TempDir(), syncDirectory: func(string) error {
+		return errors.New("read-only verification attempted a write")
+	}}
+	err := ledger.verifyAuthorityPinned("local-review-v2", strings.Repeat("a", 64))
+	if err == nil || !strings.Contains(err.Error(), "pin is missing") {
+		t.Fatalf("missing pin verification error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(ledger.Root, "authorities")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("read-only verification created an authority directory: %v", statErr)
+	}
+}
+
+func TestExistingAuthorityPinMustBeResyncedForGrantConsumption(t *testing.T) {
+	requireSecurePublication(t)
+	ledger := &Ledger{Root: t.TempDir(), syncDirectory: func(string) error {
+		return errors.New("injected authority directory sync failure")
+	}}
+	authority := "local-review-v2"
+	keyHash := strings.Repeat("a", 64)
+	directory := filepath.Join(ledger.Root, "authorities")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(authorityPinRecord{Version: ledgerVersion, Authority: authority, KeyHash: keyHash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, authority+".json"), append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.ensureAuthorityPinned(authority, keyHash); err == nil || !strings.Contains(err.Error(), "sync failure") {
+		t.Fatalf("grant consumption trusted an authority pin with uncertain parent durability: %v", err)
+	}
+}
+
 func TestLedgerDoesNotWriteReceiptWhenAppliedStateChanged(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	ledger, privateKey := signedTestLedger(t, now)
@@ -490,6 +587,38 @@ func TestDestinationLockReaderRejectsOversizedFile(t *testing.T) {
 	}
 }
 
+func TestApprovalRecordMatchRejectsSymlinkAndOversizedFile(t *testing.T) {
+	record := approvalRecord{
+		Version: ledgerVersion, Action: spatialcontract.ApprovalActionApproveApply,
+		Authority: "local-review", AuthorityKeyHash: strings.Repeat("a", 64), Nonce: strings.Repeat("n", 24),
+		ExpiresUnix: 1_800_000_100, ContractHash: strings.Repeat("b", 64), CurrentHash: spatialcontract.CurrentHashAbsent,
+		CaptureSetHash: "capture", Reviewer: "local-user", ContractPath: filepath.Join(t.TempDir(), "contract.json"), Proof: strings.Repeat("p", 64),
+	}
+	directory := t.TempDir()
+	oversized := filepath.Join(directory, "oversized.json")
+	if err := os.WriteFile(oversized, bytes.Repeat([]byte{'x'}, 64*1024+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := approvalRecordMatches(oversized, record); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("oversized receipt match error = %v", err)
+	}
+	target := filepath.Join(directory, "target.json")
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(directory, "receipt-link.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink creation is unavailable for this Windows account: %v", err)
+	}
+	if _, err := approvalRecordMatches(link, record); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("symlink receipt match error = %v", err)
+	}
+}
+
 func TestLedgerRejectsLostLeaseBeforeReceipt(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	ledger, privateKey := signedTestLedger(t, now)
@@ -552,6 +681,45 @@ func TestReleaseDestinationLockDoesNotRemoveSuccessorWithSameNonce(t *testing.T)
 	}
 }
 
+func TestReleaseDestinationLockDoesNotRemoveReplacementWithCopiedRecord(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ledger, _ := signedTestLedger(t, now)
+	ledger.syncDirectory = func(string) error { return nil }
+	held, err := ledger.acquireDestinationLock(filepath.Join(t.TempDir(), "contract.json"), strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(held.record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(held.path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(held.path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replacementInfo, err := os.Lstat(held.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(replacementInfo, held.info) {
+		t.Fatal("replacement fixture unexpectedly reused the acquired lock identity")
+	}
+	(&destinationLockLease{locks: []heldDestinationLock{held}, syncDirectory: ledger.syncDirectoryFunc()}).Release()
+	after, err := os.Lstat(held.path)
+	if err != nil || !os.SameFile(after, replacementInfo) {
+		t.Fatalf("old owner mutated byte-identical replacement lock: err=%v", err)
+	}
+}
+
+func TestRefuseExistingDestinationLockSignalsVanishedRace(t *testing.T) {
+	err := refuseExistingDestinationLock(filepath.Join(t.TempDir(), "vanished.lock"), strings.Repeat("a", 64), time.Now())
+	if !errors.Is(err, errLockVanished) {
+		t.Fatalf("vanished lock race error = %v", err)
+	}
+}
+
 func TestLedgerDoesNotApplyWhenNonceDirectorySyncFails(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	ledger, privateKey := signedTestLedger(t, now)
@@ -588,6 +756,10 @@ func TestLedgerReportsUncertainReceiptDurability(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "receipt durability is uncertain") || !applied {
 		t.Fatalf("receipt sync failure applied=%v err=%v", applied, err)
 	}
+	var committed interface{ ReceiptCommitted() bool }
+	if errors.As(err, &committed) {
+		t.Fatalf("uncertain receipt durability was incorrectly marked committed: %v", err)
+	}
 	entries, readErr := os.ReadDir(filepath.Join(ledger.Root, "approvals"))
 	if readErr != nil || len(entries) != 1 {
 		t.Fatalf("uncertain receipt was removed: entries=%d err=%v", len(entries), readErr)
@@ -616,6 +788,7 @@ func TestDefaultRootsIgnoreCallerControlledCacheEnvironment(t *testing.T) {
 
 func signedTestLedger(t *testing.T, now time.Time) (*Ledger, ed25519.PrivateKey) {
 	t.Helper()
+	requireSecurePublication(t)
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -625,6 +798,13 @@ func signedTestLedger(t *testing.T, now time.Time) (*Ledger, ed25519.PrivateKey)
 		t.Fatal(err)
 	}
 	return &Ledger{Root: t.TempDir(), AuthorityRoot: authorityRoot, Now: func() time.Time { return now }}, privateKey
+}
+
+func requireSecurePublication(t *testing.T) {
+	t.Helper()
+	if !durablefs.SecurePublicationSupported() {
+		t.Skip("secure approval publication is supported only on Linux and Windows")
+	}
 }
 
 func writeDestinationLockFixture(t *testing.T, ledger *Ledger, destination, nonceHash string, created time.Time) string {

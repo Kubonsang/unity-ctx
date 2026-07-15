@@ -5,14 +5,15 @@ package durablefs
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 )
 
-// DirectoryGuard holds every directory from the volume root to the target
+// DirectoryGuard holds every directory from the trusted root to the target
 // without FILE_SHARE_DELETE. Windows then refuses rename/delete/junction swaps
-// until the approval transaction closes these handles.
+// inside that trust boundary until the approval transaction closes the handles.
 type DirectoryGuard struct {
 	directory string
 	handles   []syscall.Handle
@@ -31,12 +32,14 @@ func GuardDirectoryTree(root, directory string) (*DirectoryGuard, error) {
 	if !pathWithinWindows(root, directory) {
 		return nil, errors.New("guarded directory escapes its trusted root")
 	}
-	volume := filepath.VolumeName(directory)
-	if volume == "" {
+	if filepath.VolumeName(directory) == "" || !strings.EqualFold(filepath.VolumeName(root), filepath.VolumeName(directory)) {
 		return nil, errors.New("guarded Windows directory requires an absolute volume path")
 	}
-	current := volume + string(filepath.Separator)
-	relative := strings.TrimPrefix(directory, current)
+	current := filepath.Clean(root)
+	relative, err := filepath.Rel(current, directory)
+	if err != nil {
+		return nil, err
+	}
 	components := []string{current}
 	for _, component := range strings.Split(relative, string(filepath.Separator)) {
 		if component == "" {
@@ -67,9 +70,12 @@ func openGuardedDirectory(path string) (syscall.Handle, syscall.ByHandleFileInfo
 	if err != nil {
 		return 0, syscall.ByHandleFileInformation{}, err
 	}
+	// Request only directory-listing access, rather than GENERIC_READ. This is
+	// the narrowest access used here that also makes the no-FILE_SHARE_DELETE
+	// lease block directory rename and deletion on supported Windows versions.
 	handle, err := syscall.CreateFile(
 		name,
-		syscall.GENERIC_READ,
+		syscall.FILE_LIST_DIRECTORY,
 		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE,
 		nil,
 		syscall.OPEN_EXISTING,
@@ -136,7 +142,28 @@ func (guard *DirectoryGuard) Close() error {
 	return firstErr
 }
 
+func (guard *DirectoryGuard) ResolvePath(name string) (string, error) {
+	if guard == nil || len(guard.handles) == 0 {
+		return "", errors.New("guarded destination directory handle is invalid")
+	}
+	return filepath.Join(guard.directory, filepath.Base(name)), nil
+}
+
 func pathWithinWindows(root, candidate string) bool {
 	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(candidate))
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
 }
+
+func pathHasReparsePoint(path string, _ os.FileInfo) (bool, error) {
+	name, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return false, err
+	}
+	attributes, err := syscall.GetFileAttributes(name)
+	if err != nil {
+		return false, err
+	}
+	return attributes&syscall.FILE_ATTRIBUTE_REPARSE_POINT != 0, nil
+}
+
+func securePublicationSupported() bool { return true }

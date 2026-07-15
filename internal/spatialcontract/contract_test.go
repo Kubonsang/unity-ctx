@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/Kubonsang/unity-ctx/internal/bounds"
+	"github.com/Kubonsang/unity-ctx/internal/durablefs"
 )
 
 func TestAssetContractRoundTripApprovalAndStableSave(t *testing.T) {
@@ -613,6 +614,7 @@ func TestApplyAuthorizedRejectsLegacyReviewerStringWithoutEvidence(t *testing.T)
 }
 
 func TestApproveAndApplyAuthorizedConsumesGrantAndDoesNotPersistProof(t *testing.T) {
+	requireSecurePublication(t)
 	contract := validAssetContract()
 	directory := t.TempDir()
 	draft := filepath.Join(directory, "Library", "SpatialDrafts", "banner.json")
@@ -638,7 +640,57 @@ func TestApproveAndApplyAuthorizedConsumesGrantAndDoesNotPersistProof(t *testing
 	}
 }
 
+func TestApproveAndApplyReportsReceiptedPostcheckFailure(t *testing.T) {
+	requireSecurePublication(t)
+	contract := validAssetContract()
+	project := t.TempDir()
+	draft := filepath.Join(project, "Library", "SpatialDrafts", "banner.json")
+	current, err := CanonicalContractPath(project, contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(draft, contract); err != nil {
+		t.Fatal(err)
+	}
+	evidence := ApprovalEvidence{Authority: "test-bridge", Nonce: "nonce-1", Proof: "valid-proof"}
+	result, err := ApproveAndApplyAuthorized(project, current, draft, CurrentHashAbsent, "local-user", evidence, testApprovalVerifier{}, testReceiptedFailureConsumer{})
+	if err == nil || result.Status != "WRITE_COMMITTED_RECEIPTED_POSTCHECK_FAILED" || !result.Written || !result.Verified {
+		t.Fatalf("receipted postcheck result=%+v err=%v", result, err)
+	}
+}
+
+func TestApproveAndApplyReportsUnchangedReceiptedPostcheckFailure(t *testing.T) {
+	requireSecurePublication(t)
+	draftContract := validAssetContract()
+	approved := cloneContract(draftContract)
+	if err := recordReview(&approved, StateApproved, "local-user", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	project := t.TempDir()
+	draft := filepath.Join(project, "Library", "SpatialDrafts", "banner.json")
+	current, err := CanonicalContractPath(project, draftContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(draft, draftContract); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(current, approved); err != nil {
+		t.Fatal(err)
+	}
+	baseline, _, err := currentBaseline(current, draftContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := ApprovalEvidence{Authority: "test-bridge", Nonce: "nonce-1", Proof: "valid-proof"}
+	result, err := ApproveAndApplyAuthorized(project, current, draft, baseline, "local-user", evidence, testApprovalVerifier{}, testReceiptedFailureConsumer{})
+	if err == nil || result.Status != "UNCHANGED_RECEIPTED_POSTCHECK_FAILED" || result.Written || !result.Verified || result.Current != current {
+		t.Fatalf("unchanged receipted postcheck result=%+v err=%v", result, err)
+	}
+}
+
 func TestApproveAndApplyAuthorizedConsumesGrantBeforeCallbackBaselineRecheck(t *testing.T) {
+	requireSecurePublication(t)
 	directory := t.TempDir()
 	draft := filepath.Join(directory, "Library", "SpatialDrafts", "banner.json")
 	contract := validAssetContract()
@@ -668,6 +720,7 @@ func TestApproveAndApplyAuthorizedConsumesGrantBeforeCallbackBaselineRecheck(t *
 }
 
 func TestWriteAppliedContractCASDoesNotReplaceConcurrentAbsentDestination(t *testing.T) {
+	requireSecurePublication(t)
 	project := t.TempDir()
 	approved := validAssetContract()
 	if err := recordReview(&approved, StateApproved, "local-user", nil, ""); err != nil {
@@ -675,6 +728,9 @@ func TestWriteAppliedContractCASDoesNotReplaceConcurrentAbsentDestination(t *tes
 	}
 	current, err := CanonicalContractPath(project, approved)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(current), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	result, err := prepareApprovedWrite(project, current, "draft.json", approved)
@@ -698,6 +754,7 @@ func TestWriteAppliedContractCASDoesNotReplaceConcurrentAbsentDestination(t *tes
 }
 
 func TestWriteAppliedContractCASPreservesCompetitorAndSignedBackup(t *testing.T) {
+	requireSecurePublication(t)
 	project := t.TempDir()
 	baselineContract := validAssetContract()
 	current, err := CanonicalContractPath(project, baselineContract)
@@ -728,8 +785,12 @@ func TestWriteAppliedContractCASPreservesCompetitorAndSignedBackup(t *testing.T)
 		syncDirectory: func(string) error { return nil },
 		afterEvacuate: func(path, _ string) error { return Save(path, competitor) },
 	}
-	if _, err := writeAppliedContractWithHooks(result, project, current, approved, hex.EncodeToString(baselineHash[:]), hooks); err == nil || !strings.Contains(err.Error(), "APPLY_SOURCE_CHANGED") {
+	failed, err := writeAppliedContractWithHooks(result, project, current, approved, hex.EncodeToString(baselineHash[:]), hooks)
+	if err == nil || !strings.Contains(err.Error(), "APPLY_SOURCE_CHANGED") {
 		t.Fatalf("claimed destination race error = %v", err)
+	}
+	if failed.Backup == "" || strings.Contains(filepath.ToSlash(failed.Backup), "/proc/self/fd/") || failed.Status != "APPLY_FAILED_BACKUP_PRESERVED" {
+		t.Fatalf("claimed destination race did not return a usable recovery path: %+v", failed)
 	}
 	got, err := Load(current)
 	if err != nil || got.Asset.DependencyHash != competitor.Asset.DependencyHash {
@@ -746,6 +807,7 @@ func TestWriteAppliedContractCASPreservesCompetitorAndSignedBackup(t *testing.T)
 }
 
 func TestWriteAppliedContractCASPublishesAndVerifiesBothHashes(t *testing.T) {
+	requireSecurePublication(t)
 	project := t.TempDir()
 	baselineContract := validAssetContract()
 	current, err := CanonicalContractPath(project, baselineContract)
@@ -786,7 +848,50 @@ func TestWriteAppliedContractCASPublishesAndVerifiesBothHashes(t *testing.T) {
 	}
 }
 
+func TestWriteAppliedContractRefusesToRestoreModifiedBackup(t *testing.T) {
+	requireSecurePublication(t)
+	project := t.TempDir()
+	baseline := validAssetContract()
+	current, err := CanonicalContractPath(project, baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(current, baseline); err != nil {
+		t.Fatal(err)
+	}
+	baselineData, err := os.ReadFile(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineHash := sha256.Sum256(baselineData)
+	approved := cloneContract(baseline)
+	if err := recordReview(&approved, StateApproved, "local-user", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	result, err := prepareApprovedWrite(project, current, "draft.json", approved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks := appliedWriteHooks{
+		syncDirectory: func(string) error { return nil },
+		afterEvacuate: func(_, backup string) error {
+			if err := os.WriteFile(backup, []byte("tampered backup\n"), 0o600); err != nil {
+				return err
+			}
+			return errors.New("injected failure after backup tamper")
+		},
+	}
+	failed, err := writeAppliedContractWithHooks(result, project, current, approved, hex.EncodeToString(baselineHash[:]), hooks)
+	if err == nil || failed.Status != "APPLY_FAILED_BACKUP_PRESERVED" || failed.Backup == "" {
+		t.Fatalf("modified backup restore result=%+v err=%v", failed, err)
+	}
+	if _, statErr := os.Stat(current); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("modified backup was restored as the signed baseline: %v", statErr)
+	}
+}
+
 func TestWriteAppliedContractReportsCommittedResultAfterPublishSyncFailure(t *testing.T) {
+	requireSecurePublication(t)
 	project := t.TempDir()
 	approved := validAssetContract()
 	if err := recordReview(&approved, StateApproved, "local-user", nil, ""); err != nil {
@@ -794,6 +899,9 @@ func TestWriteAppliedContractReportsCommittedResultAfterPublishSyncFailure(t *te
 	}
 	current, err := CanonicalContractPath(project, approved)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(current), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	result, err := prepareApprovedWrite(project, current, "draft.json", approved)
@@ -809,7 +917,7 @@ func TestWriteAppliedContractReportsCommittedResultAfterPublishSyncFailure(t *te
 		return nil
 	}}
 	applied, err := writeAppliedContractWithHooks(result, project, current, approved, CurrentHashAbsent, hooks)
-	if err == nil || !strings.Contains(err.Error(), "durability is uncertain") || !applied.Written || applied.Status != "WRITE_COMMITTED_UNVERIFIED" || applied.Current != current {
+	if err == nil || !strings.Contains(err.Error(), "durability is uncertain") || !applied.Written || applied.Verified || applied.Status != "WRITE_COMMITTED_UNVERIFIED" || applied.Current != current {
 		t.Fatalf("post-publish failure result=%+v err=%v", applied, err)
 	}
 	loaded, loadErr := Load(current)
@@ -823,6 +931,24 @@ func TestValidateRequiresTechnicalReportHash(t *testing.T) {
 	contract.Technical.ReportHash = ""
 	if err := Validate(contract); err == nil || !strings.Contains(err.Error(), "technical.report_hash") {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestLoadRejectsOversizedSpatialContractBeforeReadingIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized.spatial.json")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxSpatialContractFileSize + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "no larger than") {
+		t.Fatalf("oversized spatial contract error = %v", err)
 	}
 }
 
@@ -851,6 +977,7 @@ func TestInteractionContractSupportedBy(t *testing.T) {
 }
 
 func TestApproveAndApplyAuthorizedInteractionRequiresGeometryBindings(t *testing.T) {
+	requireSecurePublication(t)
 	contract := Contract{
 		ContractVersion: ContractVersion,
 		ContractType:    TypeInteraction,
@@ -885,6 +1012,56 @@ func TestApproveAndApplyAuthorizedInteractionRequiresGeometryBindings(t *testing
 	consumer := &testOneShotConsumer{}
 	if _, err := ApproveAndApplyAuthorizedWithGeometry(project, current, draft, CurrentHashAbsent, "local-user", evidence, geometry, testApprovalVerifier{}, consumer); err != nil {
 		t.Fatalf("geometry-bound interaction approval failed: %v", err)
+	}
+}
+
+func TestInteractionGeometryIsRevalidatedBeforeReceipt(t *testing.T) {
+	requireSecurePublication(t)
+	contract := Contract{
+		ContractVersion: ContractVersion,
+		ContractType:    TypeInteraction,
+		State:           StateAwaitingHumanReview,
+		Interaction: &InteractionContract{
+			SubjectGUID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", TargetKey: "asset:cccccccccccccccccccccccccccccccc", Relation: "SupportedBy",
+			SubjectFrame: "bottom", TargetFrame: "top", RelativeRotation: Quat{0, 0, 0, 1},
+			PositionTolerance: Vec3{.1, .01, .1}, AngleTolerance: 10, CollisionPolicy: "contact-only",
+			Revision: 1, CaptureSetHash: "capture-interaction",
+		},
+		Technical: &TechnicalEvidence{Passed: true, ErrorCount: 0, ReportHash: "report-interaction"},
+	}
+	Normalize(&contract)
+	project := t.TempDir()
+	draft := filepath.Join(project, "Library", "interaction.json")
+	current, err := CanonicalContractPath(project, contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(draft, contract); err != nil {
+		t.Fatal(err)
+	}
+	revalidations := 0
+	geometry := ApprovalGeometryBindings{
+		SubjectGeometryHash: strings.Repeat("a", 64), TargetGeometryHash: strings.Repeat("b", 64),
+		DependencyDestinations: []string{filepath.Join(project, "subject.spatial.json"), filepath.Join(project, "target.spatial.json")},
+		RevalidateCurrent: func() error {
+			revalidations++
+			if revalidations >= 2 {
+				return errors.New("dependency changed after apply")
+			}
+			return nil
+		},
+	}
+	evidence := ApprovalEvidence{Authority: "test-bridge", Nonce: "nonce-1", Proof: "valid-proof"}
+	result, err := ApproveAndApplyAuthorizedWithGeometry(project, current, draft, CurrentHashAbsent, "local-user", evidence, geometry, testApprovalVerifier{}, testRevalidatingConsumer{})
+	if err == nil || !strings.Contains(err.Error(), "SUPPORT_CONTRACT_STALE") || revalidations != 2 || !result.Written || result.Status != "WRITE_COMMITTED_UNRECEIPTED" {
+		t.Fatalf("geometry revalidation result=%+v count=%d err=%v", result, revalidations, err)
+	}
+}
+
+func requireSecurePublication(t *testing.T) {
+	t.Helper()
+	if !durablefs.SecurePublicationSupported() {
+		t.Skip("secure approval publication is supported only on Linux and Windows")
 	}
 }
 
@@ -967,6 +1144,33 @@ func (testApprovalVerifier) VerifyApproval(verification ApprovalVerification) er
 type testOneShotConsumer struct {
 	used        map[string]bool
 	beforeApply func()
+}
+
+type testReceiptCommittedError struct{ err error }
+
+func (err *testReceiptCommittedError) Error() string          { return err.err.Error() }
+func (err *testReceiptCommittedError) Unwrap() error          { return err.err }
+func (err *testReceiptCommittedError) ReceiptCommitted() bool { return true }
+
+type testReceiptedFailureConsumer struct{}
+
+func (testReceiptedFailureConsumer) ConsumeApprovalGrant(_ ApprovalVerification, apply func() error) error {
+	if err := apply(); err != nil {
+		return err
+	}
+	return &testReceiptCommittedError{err: errors.New("post-receipt verification failed")}
+}
+
+type testRevalidatingConsumer struct{}
+
+func (testRevalidatingConsumer) ConsumeApprovalGrant(verification ApprovalVerification, apply func() error) error {
+	if err := apply(); err != nil {
+		return err
+	}
+	if verification.RevalidateApplied == nil {
+		return errors.New("applied-state revalidation callback is missing")
+	}
+	return verification.RevalidateApplied()
 }
 
 func (consumer *testOneShotConsumer) ConsumeApprovalGrant(verification ApprovalVerification, apply func() error) error {
