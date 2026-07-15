@@ -1,6 +1,7 @@
 package spatialcontract
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,6 +43,57 @@ func TestApprovedContractRejectsChangedCaptureHash(t *testing.T) {
 	Normalize(&contract)
 	if err := Validate(contract); err == nil || !strings.Contains(err.Error(), "contract_hash is stale") {
 		t.Fatalf("Validate() error = %v, want stale review", err)
+	}
+}
+
+func TestNegativeZeroHashMatchesApprovedTableVector(t *testing.T) {
+	negativeZero := math.Copysign(0, -1)
+	contract := Contract{
+		ContractVersion: ContractVersion,
+		ContractType:    TypeAsset,
+		State:           StateApproved,
+		Asset: &AssetSpatialContract{
+			AssetGUID:      "a3fa97880303a42f48b512df88e92628",
+			AssetPath:      "Assets/KayKit_DungeonRemastered_1.1_SOURCE/Assets/fbx(unity)/table_medium.fbx",
+			DependencyHash: "283f72daa9e5a3be1a1ef522e9b5d527",
+			Units:          "meter",
+			Forward:        Vec3{0, 0, 1},
+			Up:             Vec3{0, 1, 0},
+			PivotOffset:    Vec3{negativeZero, 0.5, 0},
+			CollisionProxies: []OBB{{
+				ID:       "renderer-0",
+				Center:   Vec3{negativeZero, 0.5, 0},
+				Size:     Vec3{2, 1, 2},
+				Rotation: Quat{0, 0, 0, 1},
+			}},
+			Frames: []ContactFrame{
+				{ID: "back", Point: Vec3{negativeZero, 0.5, -1}, Normal: Vec3{0, 0, -1}, Tangent: Vec3{1, 0, 0}, Size: [2]float64{2, 1.000001}},
+				{ID: "bottom", Point: Vec3{negativeZero, negativeZero, 0}, Normal: Vec3{0, -1, 0}, Tangent: Vec3{1, 0, 0}, Size: [2]float64{2, 2}},
+				{ID: "top", Point: Vec3{negativeZero, 1, 0}, Normal: Vec3{0, 1, 0}, Tangent: Vec3{1, 0, 0}, Size: [2]float64{2, 2}},
+			},
+			Contacts: []ContactRequirement{{
+				ID: "floor", Kind: "FloorSupported", FrameID: "bottom", Target: "surface:floor",
+				MaximumGap: 0.01, MinimumSupport: 0.6, DirectionAlignment: 0.95,
+			}},
+			Revision:       1,
+			CaptureSetHash: "f30da4a06f6652089688e95fbe19919f8b42783bb446f9874486ad91aebfe2a4",
+		},
+		Technical: &TechnicalEvidence{
+			Passed: true, ErrorCount: 0,
+			ReportHash: "685b1cfc6d78dc1e9fab3abca0c9fd947d5e75d89e0045a069be3651b8119bb7",
+		},
+	}
+	Normalize(&contract)
+	if !math.Signbit(contract.Asset.PivotOffset[0]) {
+		t.Fatal("Normalize() erased IEEE-754 negative zero")
+	}
+	const geometryHash = "03ef438f92d4be2408a85f88cecd0f57f4d67ee826dce2b711740bfe19ade10b"
+	if contract.Asset.GeometryHash != geometryHash {
+		t.Fatalf("geometry hash = %s, want %s", contract.Asset.GeometryHash, geometryHash)
+	}
+	const contractHash = "595585303e6629aa7f9d6755e91d5e2c2aae59f5ac51e6798caaf4b9a4fa447e"
+	if got := ContentHash(contract); got != contractHash {
+		t.Fatalf("content hash = %s, want %s", got, contractHash)
 	}
 }
 
