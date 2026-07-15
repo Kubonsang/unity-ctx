@@ -214,12 +214,7 @@ func decodePlacePrefabPlan(data []byte) (PlacePrefabPlan, error) {
 	}
 
 	for _, rawAppend := range raw.Appends {
-		plan.Appends = append(plan.Appends, AppendIntent{
-			Op:       rawAppend.Op,
-			ClassID:  rawAppend.ClassID,
-			FileID:   rawAppend.FileID,
-			TypeName: rawAppend.TypeName,
-		})
+		plan.Appends = append(plan.Appends, AppendIntent(rawAppend))
 	}
 
 	return plan, nil

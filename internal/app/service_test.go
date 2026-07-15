@@ -2825,21 +2825,6 @@ func TestSetAssetSupportsIDSelection(t *testing.T) {
 	}
 }
 
-func copyFixtureFile(t *testing.T, source, name string) string {
-	t.Helper()
-
-	data, err := os.ReadFile(source)
-	if err != nil {
-		t.Fatalf("ReadFile() source error = %v", err)
-	}
-
-	path := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-	return path
-}
-
 func TestIndexReportsStaleSnapshotAndRewritesOutput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "scene.unity")
 	initialContent := "" +

@@ -458,11 +458,20 @@ func recoverStaleDestinationLock(lockPath, destinationHash, contenderNonceHash s
 		}
 		return err
 	}
+	now := time.Now()
 	record, err := readDestinationLock(lockPath)
-	if err != nil || record.Version != ledgerVersion || record.DestinationHash != destinationHash || !hashPattern(record.NonceHash) || record.CreatedUnix <= 0 {
+	if err != nil {
+		// os.O_CREATE|os.O_EXCL publishes the lock name before its JSON record is
+		// fully written. A concurrent contender may observe that short window;
+		// treat any fresh partial record as an active writer, not corruption.
+		if now.Sub(info.ModTime()) <= staleDestinationLockAge {
+			return errors.New("approval destination is already being committed")
+		}
 		return errors.New("approval destination lock is invalid and requires manual recovery")
 	}
-	now := time.Now()
+	if record.Version != ledgerVersion || record.DestinationHash != destinationHash || !hashPattern(record.NonceHash) || record.CreatedUnix <= 0 {
+		return errors.New("approval destination lock is invalid and requires manual recovery")
+	}
 	if now.Sub(info.ModTime()) <= staleDestinationLockAge || now.Sub(time.Unix(record.CreatedUnix, 0)) <= staleDestinationLockAge {
 		return errors.New("approval destination is already being committed")
 	}

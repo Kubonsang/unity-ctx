@@ -276,6 +276,30 @@ func TestLedgerRefusesFreshDestinationLockWithoutConsumingGrant(t *testing.T) {
 	}
 }
 
+func TestLedgerTreatsFreshIncompleteDestinationLockAsActiveWriter(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ledger, privateKey := signedTestLedger(t, now)
+	verification := signedVerification(t, privateKey, now)
+	destinationHash := digest(canonicalPathKey(verification.Destination))
+	lockDir := filepath.Join(ledger.Root, "locks")
+	if err := os.MkdirAll(lockDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(lockDir, destinationHash+".lock")
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	applied := false
+	err := ledger.ConsumeApprovalGrant(verification, func() error { applied = true; return nil })
+	if err == nil || !strings.Contains(err.Error(), "already being committed") {
+		t.Fatalf("fresh incomplete destination lock error = %v", err)
+	}
+	if applied {
+		t.Fatal("fresh incomplete destination lock allowed the apply callback")
+	}
+}
+
 func TestDefaultRootsIgnoreCallerControlledCacheEnvironment(t *testing.T) {
 	poisoned := filepath.Join(t.TempDir(), "caller-controlled")
 	t.Setenv("LOCALAPPDATA", poisoned)

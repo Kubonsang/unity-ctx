@@ -3770,7 +3770,7 @@ func buildCLI(t *testing.T) string {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("build cli: %v: %s", err, fmt.Sprintf("%s", stderr.String()))
+		t.Fatalf("build cli: %v: %s", err, stderr.String())
 	}
 
 	return binary

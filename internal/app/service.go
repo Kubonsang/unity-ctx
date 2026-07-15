@@ -2142,6 +2142,13 @@ func (s *Service) Diff(namespace, path string, view core.View, jsonOut bool, arg
 		result.Body = fmt.Sprintf("ERROR %v", err)
 		return result, 1
 	}
+	if envelope.SchemaVersion == scenepatch.FileSchemaVersionV2 {
+		if err := validateSceneFileKind(path); err != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR %v", err)
+			return result, 1
+		}
+	}
 	if !sameManifestSceneReference(path, envelope.File) {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR patch scene mismatch file=%s patch_file=%s", path, envelope.File)
@@ -2214,6 +2221,13 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR %v", err)
 		return result, 1
+	}
+	if envelope.SchemaVersion == scenepatch.FileSchemaVersionV2 {
+		if err := validateSceneFileKind(path); err != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR %v", err)
+			return result, 1
+		}
 	}
 	if !sameManifestSceneReference(path, envelope.File) {
 		result.Status = "ERROR"
