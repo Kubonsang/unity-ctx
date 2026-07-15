@@ -88,6 +88,86 @@ func TestContentHashAndSaveDoNotMutateCaller(t *testing.T) {
 	}
 }
 
+func TestFloat32OverflowFailsClosedBeforeApprovalHashes(t *testing.T) {
+	assetCases := map[string]func(*AssetSpatialContract){
+		"pivot offset": func(asset *AssetSpatialContract) { asset.PivotOffset[0] = 1e39 },
+		"obb center":   func(asset *AssetSpatialContract) { asset.CollisionProxies[0].Center[0] = 1e39 },
+		"frame point":  func(asset *AssetSpatialContract) { asset.Frames[0].Point[0] = 1e39 },
+		"frame size":   func(asset *AssetSpatialContract) { asset.Frames[0].Size[0] = 1e39 },
+		"contact gap":  func(asset *AssetSpatialContract) { asset.Contacts[0].MaximumGap = 1e39 },
+	}
+	for name, mutate := range assetCases {
+		t.Run(name, func(t *testing.T) {
+			contract := validAssetContract()
+			mutate(contract.Asset)
+			Normalize(&contract)
+			if err := Validate(contract); err == nil || !strings.Contains(err.Error(), "invalid spatial contract") {
+				t.Fatalf("Validate() overflow error = %v", err)
+			}
+			if hash, err := ContentHashChecked(contract); err == nil || hash != "" {
+				t.Fatalf("ContentHashChecked() hash=%q err=%v", hash, err)
+			}
+			if hash, err := ProposalHashChecked(contract); err == nil || hash != "" {
+				t.Fatalf("ProposalHashChecked() hash=%q err=%v", hash, err)
+			}
+			if ContentHash(contract) != "" || ProposalHash(contract) != "" {
+				t.Fatal("invalid overflow payload produced an authorizable compatibility hash")
+			}
+		})
+	}
+
+	interactionCases := map[string]func(*InteractionContract){
+		"relative position": func(value *InteractionContract) { value.RelativePosition[0] = 1e39 },
+		"angle tolerance":   func(value *InteractionContract) { value.AngleTolerance = 1e39 },
+	}
+	for name, mutate := range interactionCases {
+		t.Run("interaction "+name, func(t *testing.T) {
+			contract := validInteractionContractForOverflowTest()
+			mutate(contract.Interaction)
+			Normalize(&contract)
+			if err := Validate(contract); err == nil {
+				t.Fatal("Validate() accepted interaction float32 overflow")
+			}
+			if hash, err := ContentHashChecked(contract); err == nil || hash != "" {
+				t.Fatalf("ContentHashChecked() hash=%q err=%v", hash, err)
+			}
+		})
+	}
+}
+
+func TestDecodeRejectsFiniteFloat64ThatOverflowsUnityFloat32(t *testing.T) {
+	contract := validAssetContract()
+	contract.State = StateDraft
+	contract.Technical = nil
+	contract.Review = nil
+	contract.Asset.GeometryHash = ""
+	contract.Asset.CollisionProxies[0].Center[0] = 1e39
+	data, err := json.Marshal(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decode(data); err == nil || !strings.Contains(err.Error(), "center must be finite") {
+		t.Fatalf("Decode() overflow error = %v", err)
+	}
+}
+
+func validInteractionContractForOverflowTest() Contract {
+	contract := Contract{
+		ContractVersion: ContractVersion,
+		ContractType:    TypeInteraction,
+		State:           StateAwaitingHumanReview,
+		Interaction: &InteractionContract{
+			SubjectGUID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", TargetKey: "asset:cccccccccccccccccccccccccccccccc", Relation: "SupportedBy",
+			SubjectFrame: "bottom", TargetFrame: "top", RelativeRotation: Quat{0, 0, 0, 1},
+			PositionTolerance: Vec3{.1, .01, .1}, AngleTolerance: 10, CollisionPolicy: "contact-only",
+			Revision: 1, CaptureSetHash: "capture-interaction",
+		},
+		Technical: &TechnicalEvidence{Passed: true, ErrorCount: 0, ReportHash: "report-interaction"},
+	}
+	Normalize(&contract)
+	return contract
+}
+
 func TestProposalHashExcludesCaptureAndEmbeddedPayloadHashes(t *testing.T) {
 	contract := validAssetContract()
 	base := ProposalHash(contract)

@@ -199,9 +199,13 @@ func ApprovedVerification(contract Contract, contractPath string) (ApprovedContr
 	if err != nil {
 		return ApprovedContractVerification{}, err
 	}
+	contractHash, err := ContentHashChecked(contract)
+	if err != nil {
+		return ApprovedContractVerification{}, err
+	}
 	return ApprovedContractVerification{
 		ContractType:   contract.ContractType,
-		ContractHash:   ContentHash(contract),
+		ContractHash:   contractHash,
 		CaptureSetHash: captureHash(contract),
 		Reviewer:       contract.Review.Reviewer,
 		ContractPath:   filepath.Clean(absolute),
@@ -529,7 +533,10 @@ func validateCurrentReview(contract Contract, decision string) error {
 	if contract.Review.Revision < 1 {
 		return errors.New("invalid spatial contract: review.revision must be >= 1")
 	}
-	hash := ContentHash(contract)
+	hash, err := ContentHashChecked(contract)
+	if err != nil {
+		return fmt.Errorf("invalid spatial contract: canonical contract hash: %w", err)
+	}
 	if contract.Review.ContractHash != hash {
 		return fmt.Errorf("invalid spatial contract: review contract_hash is stale got=%s want=%s", contract.Review.ContractHash, hash)
 	}
@@ -592,9 +599,13 @@ func ReviewAuthorized(contract *Contract, reviewer string, evidence ApprovalEvid
 	if capture == "" {
 		return errors.New("capture_set_hash is required before human approval")
 	}
+	contractHash, err := ContentHashChecked(*contract)
+	if err != nil {
+		return fmt.Errorf("human approval canonical contract hash: %w", err)
+	}
 	verification := ApprovalVerification{
 		Action:         ApprovalActionReview,
-		ContractHash:   ContentHash(*contract),
+		ContractHash:   contractHash,
 		CaptureSetHash: capture,
 		Reviewer:       strings.TrimSpace(reviewer),
 		Evidence:       evidence,
@@ -620,9 +631,13 @@ func recordReview(contract *Contract, decision, reviewer string, issues []string
 	}
 	candidate := cloneContract(*contract)
 	candidate.State = decision
+	contractHash, err := ContentHashChecked(candidate)
+	if err != nil {
+		return fmt.Errorf("human review canonical contract hash: %w", err)
+	}
 	candidate.Review = &HumanReview{
 		Decision:       decision,
-		ContractHash:   ContentHash(candidate),
+		ContractHash:   contractHash,
 		CaptureSetHash: capture,
 		Reviewer:       strings.TrimSpace(reviewer),
 		IssueTypes:     append([]string(nil), issues...),
@@ -636,21 +651,27 @@ func recordReview(contract *Contract, decision, reviewer string, issues []string
 	return nil
 }
 
-func ContentHash(contract Contract) string {
+func ContentHashChecked(contract Contract) (string, error) {
 	contract = cloneContract(contract)
 	Normalize(&contract)
 	contract.State = ""
 	contract.Review = nil
-	data, _ := marshalCanonical(contract)
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	return canonicalHash(contract)
+}
+
+// ContentHash is the compatibility form used by already-validated callers.
+// Invalid/non-canonical payloads return an empty, non-authorizable value rather
+// than collapsing onto the SHA-256 of partial encoder output.
+func ContentHash(contract Contract) string {
+	hash, _ := ContentHashChecked(contract)
+	return hash
 }
 
 // ProposalHash identifies the reviewable asset or interaction payload without
 // capture evidence or its recursively derived embedded hash. Capture manifests
 // can bind this value before capture_set_hash exists, and recapturing identical
 // geometry does not manufacture a different proposal identity.
-func ProposalHash(contract Contract) string {
+func ProposalHashChecked(contract Contract) (string, error) {
 	contract = cloneContract(contract)
 	Normalize(&contract)
 	contract.State = ""
@@ -674,9 +695,14 @@ func ProposalHash(contract Contract) string {
 		Domain: "unity-ctx-spatial-proposal-v1", ContractVersion: contract.ContractVersion,
 		ContractType: contract.ContractType, Asset: contract.Asset, Interaction: contract.Interaction,
 	}
-	data, _ := marshalCanonical(payload)
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	return canonicalHash(payload)
+}
+
+// ProposalHash is the compatibility form used by already-validated callers.
+// Invalid/non-canonical payloads fail closed with an empty value.
+func ProposalHash(contract Contract) string {
+	hash, _ := ProposalHashChecked(contract)
+	return hash
 }
 
 func cloneContract(contract Contract) Contract {
@@ -714,9 +740,17 @@ func Diff(currentPath, draftPath string) (DiffResult, error) {
 	if err != nil {
 		return DiffResult{}, err
 	}
+	contractHash, err := ContentHashChecked(draft)
+	if err != nil {
+		return DiffResult{}, err
+	}
+	proposalHash, err := ProposalHashChecked(draft)
+	if err != nil {
+		return DiffResult{}, err
+	}
 	result := DiffResult{
 		Status: "OK", Current: currentPath, Draft: draftPath,
-		ContractType: draft.ContractType, ContractHash: ContentHash(draft), ProposalHash: ProposalHash(draft),
+		ContractType: draft.ContractType, ContractHash: contractHash, ProposalHash: proposalHash,
 	}
 	if draft.Asset != nil {
 		result.AssetGUID = draft.Asset.AssetGUID
@@ -837,9 +871,13 @@ func ApproveAndApplyAuthorizedWithGeometry(projectRoot, currentPath, draftPath, 
 	if err != nil {
 		return ApplyResult{}, err
 	}
+	contractHash, err := ContentHashChecked(draft)
+	if err != nil {
+		return ApplyResult{}, fmt.Errorf("atomic spatial approval canonical contract hash: %w", err)
+	}
 	verification := ApprovalVerification{
 		Action:                 ApprovalActionApproveApply,
-		ContractHash:           ContentHash(draft),
+		ContractHash:           contractHash,
 		CurrentHash:            expectedCurrentHash,
 		CaptureSetHash:         captureHash(draft),
 		Reviewer:               reviewer,
@@ -980,7 +1018,11 @@ func prepareApprovedWrite(projectRoot, currentPath, draftPath string, approved C
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return ApplyResult{}, err
 	}
-	return ApplyResult{Status: status, Current: currentPath, Draft: draftPath, ContractHash: ContentHash(approved), Changed: changed, Verified: true}, nil
+	contractHash, err := ContentHashChecked(approved)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	return ApplyResult{Status: status, Current: currentPath, Draft: draftPath, ContractHash: contractHash, Changed: changed, Verified: true}, nil
 }
 
 func validateApplyIdentity(projectRoot, currentPath string, draft Contract) error {
@@ -1223,7 +1265,11 @@ func writeAppliedContract(result ApplyResult, currentPath string, draft Contract
 		return ApplyResult{}, err
 	}
 	verified, verifyErr := Load(currentPath)
-	if verifyErr != nil || ContentHash(verified) != result.ContractHash {
+	verifiedHash := ""
+	if verifyErr == nil {
+		verifiedHash, verifyErr = ContentHashChecked(verified)
+	}
+	if verifyErr != nil || verifiedHash != result.ContractHash {
 		_ = os.Remove(currentPath)
 		if result.Backup != "" {
 			_ = os.Rename(backup, currentPath)
@@ -1354,6 +1400,9 @@ func validateAsset(asset AssetSpatialContract) error {
 	if !unitVector(asset.Forward) || !unitVector(asset.Up) || math.Abs(dot(asset.Forward, asset.Up)) > 0.001 {
 		return errors.New("invalid spatial contract: asset forward/up must be normalized and orthogonal")
 	}
+	if !finiteVec(asset.PivotOffset) {
+		return errors.New("invalid spatial contract: asset pivot_offset must be finite")
+	}
 	if asset.Revision < 1 || len(asset.CollisionProxies) == 0 || len(asset.Frames) == 0 || len(asset.Contacts) == 0 {
 		return errors.New("invalid spatial contract: asset requires revision, collision proxies, frames, and contacts")
 	}
@@ -1369,7 +1418,7 @@ func validateAsset(asset AssetSpatialContract) error {
 			return errors.New("invalid spatial contract: frame IDs must be non-empty and unique")
 		}
 		frameIDs[frame.ID] = true
-		if !unitVector(frame.Normal) || !unitVector(frame.Tangent) || math.Abs(dot(frame.Normal, frame.Tangent)) > 0.001 || frame.Size[0] <= 0 || frame.Size[1] <= 0 {
+		if !finiteVec(frame.Point) || !unitVector(frame.Normal) || !unitVector(frame.Tangent) || math.Abs(dot(frame.Normal, frame.Tangent)) > 0.001 || !finite(frame.Size[0]) || !finite(frame.Size[1]) || frame.Size[0] <= 0 || frame.Size[1] <= 0 {
 			return fmt.Errorf("invalid spatial contract: frame %q has invalid basis or size", frame.ID)
 		}
 	}
@@ -1385,11 +1434,15 @@ func validateAsset(asset AssetSpatialContract) error {
 		if !validContactKind(contact.Kind) || strings.TrimSpace(contact.Target) == "" {
 			return fmt.Errorf("invalid spatial contract: contact %q has unsupported kind or target", contact.ID)
 		}
-		if contact.MinimumGap < 0 || contact.MaximumGap < contact.MinimumGap || contact.MaximumPenetration < 0 || contact.MinimumSupport < 0 || contact.MinimumSupport > 1 || contact.DirectionAlignment < 0 || contact.DirectionAlignment > 1 {
+		if !finite(contact.MinimumGap) || !finite(contact.MaximumGap) || !finite(contact.MaximumPenetration) || !finite(contact.MinimumSupport) || !finite(contact.DirectionAlignment) || contact.MinimumGap < 0 || contact.MaximumGap < contact.MinimumGap || contact.MaximumPenetration < 0 || contact.MinimumSupport < 0 || contact.MinimumSupport > 1 || contact.DirectionAlignment < 0 || contact.DirectionAlignment > 1 {
 			return fmt.Errorf("invalid spatial contract: contact %q has invalid tolerances", contact.ID)
 		}
 	}
-	if asset.GeometryHash != assetHash(asset) {
+	expectedHash, err := assetHashChecked(asset)
+	if err != nil {
+		return fmt.Errorf("invalid spatial contract: canonical asset hash: %w", err)
+	}
+	if !sha256Hex(asset.GeometryHash) || asset.GeometryHash != expectedHash {
 		return errors.New("invalid spatial contract: asset.geometry_hash does not match geometry")
 	}
 	if strings.TrimSpace(asset.CaptureSetHash) == "" {
@@ -1408,15 +1461,22 @@ func validateInteraction(interaction InteractionContract) error {
 	if strings.TrimSpace(interaction.SubjectFrame) == "" || strings.TrimSpace(interaction.TargetFrame) == "" || !unitQuat(interaction.RelativeRotation) {
 		return errors.New("invalid spatial contract: interaction frames and normalized relative rotation are required")
 	}
+	if !finiteVec(interaction.RelativePosition) {
+		return errors.New("invalid spatial contract: interaction relative_position must be finite")
+	}
 	for _, value := range interaction.PositionTolerance {
 		if value < 0 || !finite(value) {
 			return errors.New("invalid spatial contract: interaction position_tolerance must be finite and >= 0")
 		}
 	}
-	if interaction.AngleTolerance < 0 || interaction.AngleTolerance > 180 || interaction.CollisionPolicy == "" || interaction.Revision < 1 || interaction.CaptureSetHash == "" {
+	if !finite(interaction.AngleTolerance) || interaction.AngleTolerance < 0 || interaction.AngleTolerance > 180 || interaction.CollisionPolicy == "" || interaction.Revision < 1 || interaction.CaptureSetHash == "" {
 		return errors.New("invalid spatial contract: interaction tolerances, collision_policy, revision, and capture_set_hash are required")
 	}
-	if interaction.InteractionHash != interactionHash(interaction) {
+	expectedHash, err := interactionHashChecked(interaction)
+	if err != nil {
+		return fmt.Errorf("invalid spatial contract: canonical interaction hash: %w", err)
+	}
+	if !sha256Hex(interaction.InteractionHash) || interaction.InteractionHash != expectedHash {
 		return errors.New("invalid spatial contract: interaction.interaction_hash does not match interaction")
 	}
 	return nil
@@ -1431,17 +1491,23 @@ func encode(contract Contract) ([]byte, error) {
 }
 
 func assetHash(asset AssetSpatialContract) string {
+	hash, _ := assetHashChecked(asset)
+	return hash
+}
+
+func assetHashChecked(asset AssetSpatialContract) (string, error) {
 	asset.GeometryHash = ""
-	data, _ := marshalCanonical(asset)
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	return canonicalHash(asset)
 }
 
 func interactionHash(interaction InteractionContract) string {
+	hash, _ := interactionHashChecked(interaction)
+	return hash
+}
+
+func interactionHashChecked(interaction InteractionContract) (string, error) {
 	interaction.InteractionHash = ""
-	data, _ := marshalCanonical(interaction)
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	return canonicalHash(interaction)
 }
 
 func captureHash(contract Contract) string {
@@ -1502,6 +1568,9 @@ func validateOBBs(boxes []OBB, field string) error {
 			return fmt.Errorf("invalid spatial contract: %s IDs must be non-empty and unique", field)
 		}
 		seen[box.ID] = true
+		if !finiteVec(box.Center) {
+			return fmt.Errorf("invalid spatial contract: %s[%s] center must be finite", field, box.ID)
+		}
 		for _, value := range box.Size {
 			if value <= 0 || !finite(value) {
 				return fmt.Errorf("invalid spatial contract: %s[%s] size must be finite and > 0", field, box.ID)
@@ -1540,6 +1609,15 @@ func round(value float64) float64 {
 	// MidpointRounding.AwayFromZero step.
 	value = float64(float32(value))
 	return math.Round(value*1_000_000) / 1_000_000
+}
+
+func canonicalHash(value any) (string, error) {
+	data, err := marshalCanonical(value)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func marshalCanonical(value any) ([]byte, error) {
@@ -1624,6 +1702,10 @@ func restoreUnityLineSeparators(data []byte) []byte {
 }
 
 func finite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
+
+func finiteVec(value Vec3) bool {
+	return finite(value[0]) && finite(value[1]) && finite(value[2])
+}
 
 func unitVector(value Vec3) bool {
 	length := dot(value, value)
