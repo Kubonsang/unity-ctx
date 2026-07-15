@@ -645,6 +645,125 @@ func TestApproveAndApplyAuthorizedConsumesGrantBeforeCallbackBaselineRecheck(t *
 	}
 }
 
+func TestWriteAppliedContractCASDoesNotReplaceConcurrentAbsentDestination(t *testing.T) {
+	project := t.TempDir()
+	approved := validAssetContract()
+	if err := recordReview(&approved, StateApproved, "local-user", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	current, err := CanonicalContractPath(project, approved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := prepareApprovedWrite(project, current, "draft.json", approved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	competitor := validAssetContract()
+	competitor.Asset.DependencyHash = "concurrent-writer"
+	Normalize(&competitor)
+	hooks := appliedWriteHooks{
+		syncDirectory: func(string) error { return nil },
+		beforePublish: func(path string) error { return Save(path, competitor) },
+	}
+	if _, err := writeAppliedContractWithHooks(result, project, current, approved, CurrentHashAbsent, hooks); err == nil || !strings.Contains(err.Error(), "APPLY_SOURCE_CHANGED") {
+		t.Fatalf("absent destination race error = %v", err)
+	}
+	got, err := Load(current)
+	if err != nil || got.Asset.DependencyHash != competitor.Asset.DependencyHash || got.State == StateApproved {
+		t.Fatalf("concurrent destination was replaced: dependency=%q state=%q err=%v", got.Asset.DependencyHash, got.State, err)
+	}
+}
+
+func TestWriteAppliedContractCASPreservesCompetitorAndSignedBackup(t *testing.T) {
+	project := t.TempDir()
+	baselineContract := validAssetContract()
+	current, err := CanonicalContractPath(project, baselineContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(current, baselineContract); err != nil {
+		t.Fatal(err)
+	}
+	baselineBytes, err := os.ReadFile(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineHash := sha256.Sum256(baselineBytes)
+
+	approved := cloneContract(baselineContract)
+	if err := recordReview(&approved, StateApproved, "local-user", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	result, err := prepareApprovedWrite(project, current, "draft.json", approved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	competitor := validAssetContract()
+	competitor.Asset.DependencyHash = "arrived-after-claim"
+	Normalize(&competitor)
+	hooks := appliedWriteHooks{
+		syncDirectory: func(string) error { return nil },
+		afterEvacuate: func(path, _ string) error { return Save(path, competitor) },
+	}
+	if _, err := writeAppliedContractWithHooks(result, project, current, approved, hex.EncodeToString(baselineHash[:]), hooks); err == nil || !strings.Contains(err.Error(), "APPLY_SOURCE_CHANGED") {
+		t.Fatalf("claimed destination race error = %v", err)
+	}
+	got, err := Load(current)
+	if err != nil || got.Asset.DependencyHash != competitor.Asset.DependencyHash {
+		t.Fatalf("concurrent destination was replaced: dependency=%q err=%v", got.Asset.DependencyHash, err)
+	}
+	backups, err := filepath.Glob(filepath.Join(filepath.Dir(current), "."+filepath.Base(current)+".bak-*"))
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("signed baseline backup count=%d err=%v", len(backups), err)
+	}
+	backupBytes, err := os.ReadFile(backups[0])
+	if err != nil || !bytes.Equal(backupBytes, baselineBytes) {
+		t.Fatalf("signed baseline backup changed: err=%v", err)
+	}
+}
+
+func TestWriteAppliedContractCASPublishesAndVerifiesBothHashes(t *testing.T) {
+	project := t.TempDir()
+	baselineContract := validAssetContract()
+	current, err := CanonicalContractPath(project, baselineContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(current, baselineContract); err != nil {
+		t.Fatal(err)
+	}
+	baselineBytes, err := os.ReadFile(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineHash := sha256.Sum256(baselineBytes)
+	approved := cloneContract(baselineContract)
+	if err := recordReview(&approved, StateApproved, "local-user", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	result, err := prepareApprovedWrite(project, current, "draft.json", approved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied, err := writeAppliedContractWithHooks(result, project, current, approved, hex.EncodeToString(baselineHash[:]), appliedWriteHooks{syncDirectory: func(string) error { return nil }})
+	if err != nil || !applied.Written || applied.Backup == "" {
+		t.Fatalf("guarded write result=%+v err=%v", applied, err)
+	}
+	backupBytes, err := os.ReadFile(applied.Backup)
+	if err != nil || !bytes.Equal(backupBytes, baselineBytes) {
+		t.Fatalf("backup does not contain signed raw baseline: err=%v", err)
+	}
+	written, err := Load(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writtenHash, err := ContentHashChecked(written)
+	if err != nil || writtenHash != result.ContractHash || written.State != StateApproved {
+		t.Fatalf("published contract hash=%q state=%q err=%v", writtenHash, written.State, err)
+	}
+}
+
 func TestValidateRequiresTechnicalReportHash(t *testing.T) {
 	contract := validAssetContract()
 	contract.Technical.ReportHash = ""
