@@ -242,17 +242,26 @@ func TestLedgerConsumeRejectsUnverifiedGrant(t *testing.T) {
 	}
 }
 
-func TestLedgerRecoversOnlySafelyStaleDestinationLock(t *testing.T) {
+func TestLedgerNeverReclaimsAgedDestinationLock(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	ledger, privateKey := signedTestLedger(t, now)
 	verification := signedVerification(t, privateKey, now)
 	lockPath := writeDestinationLockFixture(t, ledger, verification.Destination, strings.Repeat("f", 64), time.Now().Add(-staleDestinationLockAge-time.Minute))
 	applied := false
-	if err := ledger.ConsumeApprovalGrant(verification, func() error { applied = true; return nil }); err != nil || !applied {
-		t.Fatalf("stale destination lock recovery applied=%v err=%v", applied, err)
+	if err := ledger.ConsumeApprovalGrant(verification, func() error { applied = true; return nil }); err == nil || !strings.Contains(err.Error(), "requires manual recovery") {
+		t.Fatalf("aged destination lock error=%v", err)
 	}
-	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("destination lock remained after successful recovery: %v", err)
+	if applied {
+		t.Fatal("aged destination lock allowed the apply callback")
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("aged destination lock was reclaimed: %v", err)
+	}
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.ConsumeApprovalGrant(verification, func() error { applied = true; return nil }); err != nil || !applied {
+		t.Fatalf("manual lock recovery consumed the grant: applied=%v err=%v", applied, err)
 	}
 }
 
@@ -300,6 +309,110 @@ func TestLedgerTreatsFreshIncompleteDestinationLockAsActiveWriter(t *testing.T) 
 	}
 }
 
+func TestLedgerRejectsLostLeaseBeforeReceipt(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ledger, privateKey := signedTestLedger(t, now)
+	ledger.syncDirectory = func(string) error { return nil }
+	verification := signedVerification(t, privateKey, now)
+	destinationHash := digest(canonicalPathKey(verification.Destination))
+	lockPath := filepath.Join(ledger.Root, "locks", destinationHash+".lock")
+	applied := false
+	err := ledger.ConsumeApprovalGrant(verification, func() error {
+		applied = true
+		successor := destinationLockRecord{
+			Version: ledgerVersion, DestinationHash: destinationHash,
+			NonceHash: digest("successor"), LeaseID: strings.Repeat("d", 64), CreatedUnix: time.Now().Unix(),
+		}
+		data, marshalErr := json.Marshal(successor)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if removeErr := os.Remove(lockPath); removeErr != nil {
+			return removeErr
+		}
+		return os.WriteFile(lockPath, append(data, '\n'), 0o600)
+	})
+	if err == nil || !strings.Contains(err.Error(), "lock ownership was lost") || !applied {
+		t.Fatalf("lost lease applied=%v err=%v", applied, err)
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("successor lock was removed by the old owner: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(ledger.Root, "approvals"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("lost lease created an approval receipt: entries=%d err=%v", len(entries), err)
+	}
+}
+
+func TestReleaseDestinationLockDoesNotRemoveSuccessorWithSameNonce(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ledger, _ := signedTestLedger(t, now)
+	ledger.syncDirectory = func(string) error { return nil }
+	held, err := ledger.acquireDestinationLock(filepath.Join(t.TempDir(), "contract.json"), strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	successor := held.record
+	successor.LeaseID = strings.Repeat("b", 64)
+	data, err := json.Marshal(successor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(held.path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(held.path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	(&destinationLockLease{locks: []heldDestinationLock{held}, syncDirectory: ledger.syncDirectoryFunc()}).Release()
+	got, err := readDestinationLock(held.path)
+	if err != nil || got.LeaseID != successor.LeaseID {
+		t.Fatalf("old owner removed successor lock: lease=%q err=%v", got.LeaseID, err)
+	}
+}
+
+func TestLedgerDoesNotApplyWhenNonceDirectorySyncFails(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ledger, privateKey := signedTestLedger(t, now)
+	ledger.syncDirectory = func(path string) error {
+		if filepath.Base(path) == "consumed" {
+			return errors.New("injected consumed directory sync failure")
+		}
+		return nil
+	}
+	verification := signedVerification(t, privateKey, now)
+	applied := false
+	err := ledger.ConsumeApprovalGrant(verification, func() error { applied = true; return nil })
+	if err == nil || !strings.Contains(err.Error(), "nonce durability is uncertain") || applied {
+		t.Fatalf("nonce sync failure applied=%v err=%v", applied, err)
+	}
+	nonceHash := digest(verification.Evidence.Authority + "\x00" + verification.Evidence.Nonce)
+	if _, err := os.Stat(filepath.Join(ledger.Root, "consumed", nonceHash+".json")); err != nil {
+		t.Fatalf("uncertain nonce marker was removed: %v", err)
+	}
+}
+
+func TestLedgerReportsUncertainReceiptDurability(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ledger, privateKey := signedTestLedger(t, now)
+	ledger.syncDirectory = func(path string) error {
+		if filepath.Base(path) == "approvals" {
+			return errors.New("injected approvals directory sync failure")
+		}
+		return nil
+	}
+	verification := signedVerification(t, privateKey, now)
+	applied := false
+	err := ledger.ConsumeApprovalGrant(verification, func() error { applied = true; return nil })
+	if err == nil || !strings.Contains(err.Error(), "receipt durability is uncertain") || !applied {
+		t.Fatalf("receipt sync failure applied=%v err=%v", applied, err)
+	}
+	entries, readErr := os.ReadDir(filepath.Join(ledger.Root, "approvals"))
+	if readErr != nil || len(entries) != 1 {
+		t.Fatalf("uncertain receipt was removed: entries=%d err=%v", len(entries), readErr)
+	}
+}
+
 func TestDefaultRootsIgnoreCallerControlledCacheEnvironment(t *testing.T) {
 	poisoned := filepath.Join(t.TempDir(), "caller-controlled")
 	t.Setenv("LOCALAPPDATA", poisoned)
@@ -342,7 +455,8 @@ func writeDestinationLockFixture(t *testing.T, ledger *Ledger, destination, nonc
 	}
 	path := filepath.Join(lockDir, destinationHash+".lock")
 	data, err := json.Marshal(destinationLockRecord{
-		Version: ledgerVersion, DestinationHash: destinationHash, NonceHash: nonceHash, CreatedUnix: created.Unix(),
+		Version: ledgerVersion, DestinationHash: destinationHash, NonceHash: nonceHash,
+		LeaseID: strings.Repeat("e", 64), CreatedUnix: created.Unix(),
 	})
 	if err != nil {
 		t.Fatal(err)

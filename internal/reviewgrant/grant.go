@@ -2,6 +2,7 @@ package reviewgrant
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -21,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Kubonsang/unity-ctx/internal/durablefs"
 	"github.com/Kubonsang/unity-ctx/internal/spatialcontract"
 )
 
@@ -46,6 +48,7 @@ type Ledger struct {
 	Root          string
 	AuthorityRoot string
 	Now           func() time.Time
+	syncDirectory func(string) error
 }
 
 type approvalRecord struct {
@@ -92,7 +95,18 @@ type destinationLockRecord struct {
 	Version         int    `json:"version"`
 	DestinationHash string `json:"destination_hash"`
 	NonceHash       string `json:"nonce_hash"`
+	LeaseID         string `json:"lease_id"`
 	CreatedUnix     int64  `json:"created_unix"`
+}
+
+type heldDestinationLock struct {
+	path   string
+	record destinationLockRecord
+}
+
+type destinationLockLease struct {
+	locks         []heldDestinationLock
+	syncDirectory func(string) error
 }
 
 func DefaultAuthorityRoot() (string, error) {
@@ -244,11 +258,14 @@ func (ledger *Ledger) ConsumeApprovalGrant(value spatialcontract.ApprovalVerific
 	lockDestinations := make([]string, 0, len(value.DependencyDestinations)+1)
 	lockDestinations = append(lockDestinations, value.DependencyDestinations...)
 	lockDestinations = append(lockDestinations, record.ContractPath)
-	releaseDestination, err := ledger.acquireDestinationLocks(lockDestinations, nonceHash)
+	destinationLease, err := ledger.acquireDestinationLocks(lockDestinations, nonceHash)
 	if err != nil {
 		return err
 	}
-	defer releaseDestination()
+	defer destinationLease.Release()
+	if err := destinationLease.AssertOwned(); err != nil {
+		return err
+	}
 	approvalDir := filepath.Join(ledger.Root, "approvals")
 	if err := os.MkdirAll(approvalDir, 0o700); err != nil {
 		return err
@@ -263,23 +280,15 @@ func (ledger *Ledger) ConsumeApprovalGrant(value spatialcontract.ApprovalVerific
 		return err
 	}
 	marker := filepath.Join(consumedDir, nonceHash+".json")
-	file, err := os.OpenFile(marker, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
+	markerRecord := consumedRecord{Version: ledgerVersion, Action: value.Action, Authority: value.Evidence.Authority, NonceHash: nonceHash, ContractHash: record.ContractHash, CurrentHash: strings.ToLower(value.CurrentHash)}
+	if err := writeJSONExclusiveDurably(marker, markerRecord, 0o600, ledger.syncDirectoryFunc()); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return errors.New("approval grant nonce has already been consumed")
 		}
-		return err
+		return fmt.Errorf("approval grant nonce durability is uncertain and requires manual recovery: %w", err)
 	}
-	encoder := json.NewEncoder(file)
-	encoder.SetEscapeHTML(false)
-	writeErr := encoder.Encode(consumedRecord{Version: ledgerVersion, Action: value.Action, Authority: value.Evidence.Authority, NonceHash: nonceHash, ContractHash: record.ContractHash, CurrentHash: strings.ToLower(value.CurrentHash)})
-	closeErr := file.Close()
-	if writeErr != nil || closeErr != nil {
-		_ = os.Remove(marker)
-		if writeErr != nil {
-			return writeErr
-		}
-		return closeErr
+	if err := destinationLease.AssertOwned(); err != nil {
+		return err
 	}
 	// The nonce reservation remains consumed even when the write fails, but no
 	// durable approval record may exist until the contract write and reload/hash
@@ -287,10 +296,16 @@ func (ledger *Ledger) ConsumeApprovalGrant(value spatialcontract.ApprovalVerific
 	if err := apply(); err != nil {
 		return err
 	}
+	if err := destinationLease.AssertOwned(); err != nil {
+		return err
+	}
 	if approvalExists {
 		return nil
 	}
-	return writeRecordExclusiveOrEqual(approvalPath, record)
+	if err := writeRecordExclusiveOrEqual(approvalPath, record, ledger.syncDirectoryFunc()); err != nil {
+		return fmt.Errorf("approval receipt durability is uncertain: %w", err)
+	}
+	return destinationLease.AssertOwned()
 }
 
 func (ledger *Ledger) VerifyApprovedContract(value spatialcontract.ApprovedContractVerification) error {
@@ -375,49 +390,31 @@ func (ledger *Ledger) authorityRoot() (string, error) {
 	return DefaultAuthorityRoot()
 }
 
-func (ledger *Ledger) acquireDestinationLock(destination, nonceHash string) (func(), error) {
+func (ledger *Ledger) acquireDestinationLock(destination, nonceHash string) (heldDestinationLock, error) {
 	destinationHash := digest(canonicalPathKey(destination))
 	lockDir := filepath.Join(ledger.Root, "locks")
 	if err := os.MkdirAll(lockDir, 0o700); err != nil {
-		return nil, err
+		return heldDestinationLock{}, err
 	}
 	lockPath := filepath.Join(lockDir, destinationHash+".lock")
-	for attempt := 0; attempt < 3; attempt++ {
-		record := destinationLockRecord{
-			Version: ledgerVersion, DestinationHash: destinationHash, NonceHash: nonceHash,
-			CreatedUnix: time.Now().UTC().Unix(),
-		}
-		file, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
-			data, marshalErr := json.Marshal(record)
-			if marshalErr == nil {
-				data = append(data, '\n')
-				_, marshalErr = file.Write(data)
-			}
-			if marshalErr == nil {
-				marshalErr = file.Sync()
-			}
-			closeErr := file.Close()
-			if marshalErr != nil || closeErr != nil {
-				_ = os.Remove(lockPath)
-				if marshalErr != nil {
-					return nil, marshalErr
-				}
-				return nil, closeErr
-			}
-			return func() { releaseDestinationLock(lockPath, record) }, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, err
-		}
-		if err := recoverStaleDestinationLock(lockPath, destinationHash, nonceHash); err != nil {
-			return nil, err
-		}
+	leaseID, err := newLeaseID()
+	if err != nil {
+		return heldDestinationLock{}, err
 	}
-	return nil, errors.New("approval destination is already being committed")
+	record := destinationLockRecord{
+		Version: ledgerVersion, DestinationHash: destinationHash, NonceHash: nonceHash,
+		LeaseID: leaseID, CreatedUnix: time.Now().UTC().Unix(),
+	}
+	if err := writeJSONExclusiveDurably(lockPath, record, 0o600, ledger.syncDirectoryFunc()); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return heldDestinationLock{}, refuseExistingDestinationLock(lockPath, destinationHash, time.Now())
+		}
+		return heldDestinationLock{}, fmt.Errorf("approval destination lock durability is uncertain and requires manual recovery: %w", err)
+	}
+	return heldDestinationLock{path: lockPath, record: record}, nil
 }
 
-func (ledger *Ledger) acquireDestinationLocks(destinations []string, nonceHash string) (func(), error) {
+func (ledger *Ledger) acquireDestinationLocks(destinations []string, nonceHash string) (*destinationLockLease, error) {
 	unique := make(map[string]string, len(destinations))
 	keys := make([]string, 0, len(destinations))
 	for _, destination := range destinations {
@@ -432,25 +429,19 @@ func (ledger *Ledger) acquireDestinationLocks(destinations []string, nonceHash s
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	releases := make([]func(), 0, len(keys))
+	lease := &destinationLockLease{locks: make([]heldDestinationLock, 0, len(keys)), syncDirectory: ledger.syncDirectoryFunc()}
 	for _, key := range keys {
-		release, err := ledger.acquireDestinationLock(unique[key], nonceHash)
+		held, err := ledger.acquireDestinationLock(unique[key], nonceHash)
 		if err != nil {
-			for index := len(releases) - 1; index >= 0; index-- {
-				releases[index]()
-			}
+			lease.Release()
 			return nil, err
 		}
-		releases = append(releases, release)
+		lease.locks = append(lease.locks, held)
 	}
-	return func() {
-		for index := len(releases) - 1; index >= 0; index-- {
-			releases[index]()
-		}
-	}, nil
+	return lease, nil
 }
 
-func recoverStaleDestinationLock(lockPath, destinationHash, contenderNonceHash string) error {
+func refuseExistingDestinationLock(lockPath, destinationHash string, now time.Time) error {
 	info, err := os.Lstat(lockPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -458,7 +449,6 @@ func recoverStaleDestinationLock(lockPath, destinationHash, contenderNonceHash s
 		}
 		return err
 	}
-	now := time.Now()
 	record, err := readDestinationLock(lockPath)
 	if err != nil {
 		// os.O_CREATE|os.O_EXCL publishes the lock name before its JSON record is
@@ -469,37 +459,48 @@ func recoverStaleDestinationLock(lockPath, destinationHash, contenderNonceHash s
 		}
 		return errors.New("approval destination lock is invalid and requires manual recovery")
 	}
-	if record.Version != ledgerVersion || record.DestinationHash != destinationHash || !hashPattern(record.NonceHash) || record.CreatedUnix <= 0 {
+	if record.Version != ledgerVersion || record.DestinationHash != destinationHash || !hashPattern(record.NonceHash) || !hashPattern(record.LeaseID) || record.CreatedUnix <= 0 {
 		return errors.New("approval destination lock is invalid and requires manual recovery")
 	}
 	if now.Sub(info.ModTime()) <= staleDestinationLockAge || now.Sub(time.Unix(record.CreatedUnix, 0)) <= staleDestinationLockAge {
 		return errors.New("approval destination is already being committed")
 	}
-	quarantine := lockPath + ".stale-" + contenderNonceHash[:16]
-	if err := os.Rename(lockPath, quarantine); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("recover stale approval destination lock: %w", err)
-	}
-	quarantinedInfo, err := os.Lstat(quarantine)
-	quarantinedRecord, recordErr := readDestinationLock(quarantine)
-	if err != nil || recordErr != nil || quarantinedInfo.Size() != info.Size() || !quarantinedInfo.ModTime().Equal(info.ModTime()) || quarantinedRecord != record {
-		if _, currentErr := os.Lstat(lockPath); errors.Is(currentErr, os.ErrNotExist) {
-			_ = os.Rename(quarantine, lockPath)
-		}
-		return errors.New("approval destination lock changed during stale-lock recovery")
-	}
-	if err := os.Remove(quarantine); err != nil {
-		return fmt.Errorf("remove stale approval destination lock: %w", err)
-	}
-	return nil
+	return errors.New("approval destination lock is old and requires manual recovery")
 }
 
 func releaseDestinationLock(path string, expected destinationLockRecord) {
 	record, err := readDestinationLock(path)
-	if err == nil && record.Version == expected.Version && record.DestinationHash == expected.DestinationHash && record.NonceHash == expected.NonceHash {
+	if err == nil && record == expected {
 		_ = os.Remove(path)
+	}
+}
+
+func (lease *destinationLockLease) AssertOwned() error {
+	if lease == nil {
+		return errors.New("approval destination lock lease is missing")
+	}
+	for _, held := range lease.locks {
+		record, err := readDestinationLock(held.path)
+		if err != nil || record != held.record {
+			return errors.New("approval destination lock ownership was lost; manual recovery is required")
+		}
+	}
+	return nil
+}
+
+func (lease *destinationLockLease) Release() {
+	if lease == nil {
+		return
+	}
+	for index := len(lease.locks) - 1; index >= 0; index-- {
+		held := lease.locks[index]
+		before, err := os.Lstat(held.path)
+		releaseDestinationLock(held.path, held.record)
+		if err == nil {
+			if _, afterErr := os.Lstat(held.path); errors.Is(afterErr, os.ErrNotExist) && before.Mode().IsRegular() && lease.syncDirectory != nil {
+				_ = lease.syncDirectory(filepath.Dir(held.path))
+			}
+		}
 	}
 }
 
@@ -519,6 +520,60 @@ func readDestinationLock(path string) (destinationLockRecord, error) {
 		return destinationLockRecord{}, errors.New("destination lock contains trailing JSON content")
 	}
 	return record, nil
+}
+
+func (ledger *Ledger) syncDirectoryFunc() func(string) error {
+	if ledger != nil && ledger.syncDirectory != nil {
+		return ledger.syncDirectory
+	}
+	return durablefs.SyncDirectory
+}
+
+func newLeaseID() (string, error) {
+	value := make([]byte, sha256.Size)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("create approval destination lease: %w", err)
+	}
+	return hex.EncodeToString(value), nil
+}
+
+func writeJSONExclusiveDurably(path string, value any, mode os.FileMode, syncDirectory func(string) error) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return writeBytesExclusiveDurably(path, append(data, '\n'), mode, syncDirectory)
+}
+
+func writeBytesExclusiveDurably(path string, data []byte, mode os.FileMode, syncDirectory func(string) error) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	written := 0
+	for written < len(data) {
+		count, writeErr := file.Write(data[written:])
+		written += count
+		if writeErr != nil {
+			_ = file.Close()
+			return writeErr
+		}
+		if count == 0 {
+			_ = file.Close()
+			return io.ErrShortWrite
+		}
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if syncDirectory == nil {
+		return errors.New("durable ledger write requires directory sync")
+	}
+	return syncDirectory(filepath.Dir(path))
 }
 
 func approvalRecordFromVerification(value spatialcontract.ApprovalVerification) approvalRecord {
@@ -607,29 +662,25 @@ func decodeSignature(value string) ([]byte, error) {
 	return nil, errors.New("approval grant proof is not an Ed25519 signature")
 }
 
-func writeRecordExclusiveOrEqual(path string, record approvalRecord) error {
+func writeRecordExclusiveOrEqual(path string, record approvalRecord, syncDirectory func(string) error) error {
 	data, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err == nil {
-		if _, writeErr := file.Write(data); writeErr != nil {
-			file.Close()
-			_ = os.Remove(path)
-			return writeErr
-		}
-		return file.Close()
-	}
-	if !errors.Is(err, os.ErrExist) {
+	if err := writeBytesExclusiveDurably(path, data, 0o600, syncDirectory); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrExist) {
 		return err
 	}
 	existing, readErr := os.ReadFile(path)
 	if readErr != nil || string(existing) != string(data) {
 		return errors.New("approval ledger already contains a conflicting contract record")
 	}
-	return nil
+	if syncDirectory == nil {
+		return errors.New("durable ledger write requires directory sync")
+	}
+	return syncDirectory(filepath.Dir(path))
 }
 
 func approvalRecordMatches(path string, record approvalRecord) (bool, error) {
