@@ -19,6 +19,12 @@ const (
 	ResolverVersion    = 1
 	MaximumItemCount   = 12
 	MaximumStackHeight = 3
+	// MaximumEdgeMarginMeters keeps the canonical number inside the plain
+	// decimal range shared by Go's JSON encoder and Unity's formatter. It is
+	// deliberately generous for a tabletop/surface arrangement while rejecting
+	// non-physical values that would otherwise be written with an exponent.
+	MaximumEdgeMarginMeters = 100
+	MaximumIDLength         = 128
 )
 
 type Preset string
@@ -68,23 +74,28 @@ func Load(path string) (Spec, error) {
 	return Decode(data)
 }
 
+// LoadForHash loads and validates a spec while intentionally ignoring an
+// embedded spec_hash. It is used by the read-only hash command so callers can
+// calculate the replacement for a stale hash without weakening validation.
+func LoadForHash(path string) (Spec, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Spec{}, err
+	}
+	return DecodeForHash(data)
+}
+
 // Decode rejects unknown fields and trailing JSON, normalizes stable fields,
 // and verifies a supplied spec_hash. A missing hash is populated so authoring
 // tools can validate drafts before persisting their normalized form.
 func Decode(data []byte) (Spec, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	var spec Spec
-	if err := decoder.Decode(&spec); err != nil {
-		return Spec{}, fmt.Errorf("invalid surface arrangement: %w", err)
+	spec, err := decodeDocument(data)
+	if err != nil {
+		return Spec{}, err
 	}
 	providedHash := strings.TrimSpace(spec.SpecHash)
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return Spec{}, errors.New("invalid surface arrangement: unexpected trailing JSON content")
-		}
-		return Spec{}, fmt.Errorf("invalid surface arrangement: %w", err)
+	if err := validateFields(spec); err != nil {
+		return Spec{}, err
 	}
 	Normalize(&spec)
 	if providedHash != "" && providedHash != spec.SpecHash {
@@ -92,6 +103,41 @@ func Decode(data []byte) (Spec, error) {
 	}
 	if err := Validate(spec); err != nil {
 		return Spec{}, err
+	}
+	return spec, nil
+}
+
+// DecodeForHash is the strict parsing path for recomputing a spec hash. It
+// applies every schema and portability check to the raw values, but replaces
+// (rather than verifies) the embedded spec_hash.
+func DecodeForHash(data []byte) (Spec, error) {
+	spec, err := decodeDocument(data)
+	if err != nil {
+		return Spec{}, err
+	}
+	if err := validateFields(spec); err != nil {
+		return Spec{}, err
+	}
+	Normalize(&spec)
+	if err := Validate(spec); err != nil {
+		return Spec{}, err
+	}
+	return spec, nil
+}
+
+func decodeDocument(data []byte) (Spec, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var spec Spec
+	if err := decoder.Decode(&spec); err != nil {
+		return Spec{}, fmt.Errorf("invalid surface arrangement: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return Spec{}, errors.New("invalid surface arrangement: unexpected trailing JSON content")
+		}
+		return Spec{}, fmt.Errorf("invalid surface arrangement: %w", err)
 	}
 	return spec, nil
 }
@@ -107,6 +153,19 @@ func Normalize(spec *Spec) {
 }
 
 func Validate(spec Spec) error {
+	if err := validateFields(spec); err != nil {
+		return err
+	}
+	if spec.SpecHash == "" || spec.SpecHash != ContentHash(spec) {
+		return errors.New("invalid surface arrangement: spec_hash does not match normalized content")
+	}
+	return nil
+}
+
+// validateFields intentionally runs before normalization. This prevents
+// slightly invalid raw values (for example 1.0000004) from being rounded into
+// the accepted range by a parser before the schema sees them.
+func validateFields(spec Spec) error {
 	if spec.SurfaceArrangementVersion != Version {
 		return fmt.Errorf("invalid surface arrangement: surface_arrangement_version must be %d", Version)
 	}
@@ -116,7 +175,16 @@ func Validate(spec Spec) error {
 	if spec.ArrangementID == "" || spec.TargetElementID == "" || spec.TargetFrameID == "" {
 		return errors.New("invalid surface arrangement: arrangement_id, target_element_id, and target_frame_id are required")
 	}
-	if !validPreset(spec.Preset) {
+	if err := validatePortableField("arrangement_id", spec.ArrangementID); err != nil {
+		return err
+	}
+	if err := validatePortableField("target_element_id", spec.TargetElementID); err != nil {
+		return err
+	}
+	if err := validatePortableField("target_frame_id", spec.TargetFrameID); err != nil {
+		return err
+	}
+	if !validPreset(Preset(strings.TrimSpace(string(spec.Preset)))) {
 		return fmt.Errorf("invalid surface arrangement: preset must be %q, %q, or %q", PresetNeat, PresetInUse, PresetScattered)
 	}
 	if len(spec.Members) == 0 || len(spec.Members) > MaximumItemCount {
@@ -126,13 +194,18 @@ func Validate(spec Spec) error {
 	minimumTotal, maximumTotal := 0, 0
 	positiveWeight := false
 	for index, member := range spec.Members {
-		if member.DescriptorID == "" || member.AffinityGroup == "" {
+		descriptorID := strings.TrimSpace(member.DescriptorID)
+		affinityGroup := strings.TrimSpace(member.AffinityGroup)
+		if descriptorID == "" || affinityGroup == "" {
 			return fmt.Errorf("invalid surface arrangement: members[%d] requires descriptor_id and affinity_group", index)
 		}
-		if seen[member.DescriptorID] {
-			return fmt.Errorf("invalid surface arrangement: duplicate member descriptor_id %q", member.DescriptorID)
+		if !portableID(descriptorID) || !portableID(affinityGroup) {
+			return fmt.Errorf("invalid surface arrangement: members[%d] descriptor_id and affinity_group must be portable ASCII IDs", index)
 		}
-		seen[member.DescriptorID] = true
+		if seen[descriptorID] {
+			return fmt.Errorf("invalid surface arrangement: duplicate member descriptor_id %q", descriptorID)
+		}
+		seen[descriptorID] = true
 		if member.MinimumCount < 0 || member.MaximumCount < 1 || member.MinimumCount > member.MaximumCount || member.MaximumCount > MaximumItemCount {
 			return fmt.Errorf("invalid surface arrangement: member %q counts must satisfy 0 <= minimum_count <= maximum_count <= %d and maximum_count >= 1", member.DescriptorID, MaximumItemCount)
 		}
@@ -152,8 +225,8 @@ func Validate(spec Spec) error {
 	if !unitInterval(spec.Amount) || !unitInterval(spec.Orderliness) || !unitInterval(spec.Grouping) || !unitInterval(spec.Stacking) {
 		return errors.New("invalid surface arrangement: amount, orderliness, grouping, and stacking must be finite and between 0 and 1")
 	}
-	if !finite(spec.EdgeMargin) || spec.EdgeMargin < 0 {
-		return errors.New("invalid surface arrangement: edge_margin must be finite and >= 0")
+	if !finite(spec.EdgeMargin) || spec.EdgeMargin < 0 || spec.EdgeMargin > MaximumEdgeMarginMeters {
+		return fmt.Errorf("invalid surface arrangement: edge_margin must be finite and between 0 and %d meters", MaximumEdgeMarginMeters)
 	}
 	if spec.MaxStackHeight < 1 || spec.MaxStackHeight > MaximumStackHeight {
 		return fmt.Errorf("invalid surface arrangement: max_stack_height must be between 1 and %d", MaximumStackHeight)
@@ -161,15 +234,13 @@ func Validate(spec Spec) error {
 	if spec.SeedOffset < 0 {
 		return errors.New("invalid surface arrangement: seed_offset must be non-negative")
 	}
-	if spec.SpecHash == "" || spec.SpecHash != ContentHash(spec) {
-		return errors.New("invalid surface arrangement: spec_hash does not match normalized content")
-	}
 	return nil
 }
 
 // ContentHash is the SHA-256 of normalized compact JSON with spec_hash blank,
 // matching the established Spatial Contract hashing convention.
 func ContentHash(spec Spec) string {
+	spec = canonicalCopy(spec)
 	spec.SpecHash = ""
 	canonicalizeWithoutHash(&spec)
 	data, _ := json.Marshal(spec)
@@ -179,6 +250,7 @@ func ContentHash(spec Spec) string {
 
 // Marshal returns stable, normalized, indented JSON terminated by a newline.
 func Marshal(spec Spec) ([]byte, error) {
+	spec = canonicalCopy(spec)
 	Normalize(&spec)
 	if err := Validate(spec); err != nil {
 		return nil, err
@@ -188,6 +260,11 @@ func Marshal(spec Spec) ([]byte, error) {
 		return nil, err
 	}
 	return append(data, '\n'), nil
+}
+
+func canonicalCopy(spec Spec) Spec {
+	spec.Members = append([]Member(nil), spec.Members...)
+	return spec
 }
 
 func canonicalizeWithoutHash(spec *Spec) {
@@ -225,6 +302,32 @@ func unitInterval(value float64) bool {
 
 func finite(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func portableID(value string) bool {
+	if len(value) == 0 || len(value) > MaximumIDLength {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') {
+			continue
+		}
+		if index > 0 && (character == '.' || character == '_' || character == ':' || character == '-') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validatePortableField(name, value string) error {
+	if portableID(strings.TrimSpace(value)) {
+		return nil
+	}
+	return fmt.Errorf("invalid surface arrangement: %s must be a portable ASCII ID (1-%d letters, digits, '.', '_', ':', or '-')", name, MaximumIDLength)
 }
 
 func round(value float64) float64 {

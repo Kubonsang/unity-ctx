@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -44,6 +46,33 @@ func TestArrangementHashAndTopLevelDispatch(t *testing.T) {
 	want := "OK file=" + arrangementFixture + " spec_hash=" + arrangementGoldenHash + "\n"
 	if stdout.String() != want {
 		t.Fatalf("stdout=%q want=%q", stdout.String(), want)
+	}
+}
+
+func TestArrangementHashRecomputesStaleHashWithoutWeakeningValidate(t *testing.T) {
+	data, err := os.ReadFile(arrangementFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := strings.Replace(string(data), arrangementGoldenHash, strings.Repeat("0", 64), 1)
+	path := filepath.Join(t.TempDir(), "stale.json")
+	if err := os.WriteFile(path, []byte(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := runArrangement([]string{"validate", path}, stdout, stderr); code != 1 || !strings.Contains(stderr.String(), "spec_hash does not match") {
+		t.Fatalf("validate code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runArrangement([]string{"hash", path}, stdout, stderr); code != 0 {
+		t.Fatalf("hash code=%d stderr=%q", code, stderr.String())
+	}
+	want := "OK file=" + path + " spec_hash=" + arrangementGoldenHash + "\n"
+	if stdout.String() != want || stderr.Len() != 0 {
+		t.Fatalf("hash stdout=%q want=%q stderr=%q", stdout.String(), want, stderr.String())
 	}
 }
 

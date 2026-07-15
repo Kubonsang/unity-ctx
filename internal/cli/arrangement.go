@@ -56,7 +56,7 @@ func runArrangementHash(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return 2
 	}
-	spec, err := surfacearrangement.Load(path)
+	spec, err := surfacearrangement.LoadForHash(path)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "ERROR %v\n", err)
 		return 1

@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -24,7 +25,10 @@ func TestMarshalMatchesNormalizedGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != string(want) {
+	// The checked-out fixture may use CRLF on Windows; Marshal deliberately
+	// emits stable LF JSON on every platform.
+	normalizedWant := strings.ReplaceAll(string(want), "\r\n", "\n")
+	if string(data) != normalizedWant {
 		t.Fatalf("normalized output differs from golden\ngot:\n%s\nwant:\n%s", data, want)
 	}
 }
@@ -46,6 +50,27 @@ func TestLoadGoldenAndHashAreStable(t *testing.T) {
 	Normalize(&reordered)
 	if reordered.SpecHash != goldenHash {
 		t.Fatalf("equivalent normalized input changed hash: %s", reordered.SpecHash)
+	}
+}
+
+func TestContentHashAndMarshalDoNotMutateMembers(t *testing.T) {
+	spec := validSpec()
+	spec.ArrangementID = "  archive-reading-table  "
+	spec.Members = append([]Member(nil), spec.Members...)
+	spec.Members[0], spec.Members[2] = spec.Members[2], spec.Members[0]
+	spec.Members[0].DescriptorID = "  candle-lit  "
+	want := spec
+	want.Members = append([]Member(nil), spec.Members...)
+
+	_ = ContentHash(spec)
+	if !reflect.DeepEqual(spec, want) {
+		t.Fatalf("ContentHash mutated caller\ngot:  %#v\nwant: %#v", spec, want)
+	}
+	if _, err := Marshal(spec); err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if !reflect.DeepEqual(spec, want) {
+		t.Fatalf("Marshal mutated caller\ngot:  %#v\nwant: %#v", spec, want)
 	}
 }
 
@@ -85,6 +110,7 @@ func TestValidateRejectsOutOfRangeValues(t *testing.T) {
 		{"slider", func(s *Spec) { s.Grouping = 1.01 }, "amount, orderliness"},
 		{"non-finite slider", func(s *Spec) { s.Stacking = math.Inf(1) }, "amount, orderliness"},
 		{"edge margin", func(s *Spec) { s.EdgeMargin = -0.001 }, "edge_margin"},
+		{"unbounded edge margin", func(s *Spec) { s.EdgeMargin = MaximumEdgeMarginMeters + 1 }, "edge_margin"},
 		{"stack height", func(s *Spec) { s.MaxStackHeight = 4 }, "max_stack_height"},
 		{"negative seed offset", func(s *Spec) { s.SeedOffset = -1 }, "seed_offset must be non-negative"},
 		{"member count", func(s *Spec) { s.Members[0].MinimumCount = 4 }, "counts must satisfy"},
@@ -102,6 +128,78 @@ func TestValidateRejectsOutOfRangeValues(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want containing %q", err, test.message)
 			}
 		})
+	}
+}
+
+func TestDecodeAndValidateRejectRawValuesBeforeRounding(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Spec)
+		message string
+	}{
+		{"slider just above one", func(s *Spec) { s.Amount = 1.0000004 }, "amount, orderliness"},
+		{"negative edge margin near zero", func(s *Spec) { s.EdgeMargin = -0.0000004 }, "edge_margin"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			spec := validSpec()
+			test.mutate(&spec)
+			spec.SpecHash = ""
+			if err := Validate(spec); err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("Validate(raw) error = %v, want containing %q", err, test.message)
+			}
+			data, err := json.Marshal(spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Decode(data); err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("Decode(raw) error = %v, want containing %q", err, test.message)
+			}
+			if _, err := DecodeForHash(data); err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("DecodeForHash(raw) error = %v, want containing %q", err, test.message)
+			}
+		})
+	}
+}
+
+func TestSharedPortableSchemaFixture(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "arrangements", "portable_schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		SchemaVersion           int      `json:"schema_version"`
+		MaximumEdgeMarginMeters float64  `json:"maximum_edge_margin_meters"`
+		MaximumIDLength         int      `json:"maximum_id_length"`
+		ValidIDs                []string `json:"valid_ids"`
+		InvalidIDs              []string `json:"invalid_ids"`
+	}
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.SchemaVersion != Version || fixture.MaximumEdgeMarginMeters != MaximumEdgeMarginMeters || fixture.MaximumIDLength != MaximumIDLength {
+		t.Fatalf("portable schema fixture constants do not match implementation: %#v", fixture)
+	}
+	for _, id := range fixture.ValidIDs {
+		if !portableID(id) {
+			t.Errorf("portableID(%q) = false, want true", id)
+		}
+	}
+	for _, id := range fixture.InvalidIDs {
+		if portableID(id) {
+			t.Errorf("portableID(%q) = true, want false", id)
+		}
+	}
+
+	spec := validSpec()
+	spec.Members[0].DescriptorID = "book-📖"
+	if err := Validate(spec); err == nil || !strings.Contains(err.Error(), "portable ASCII IDs") {
+		t.Fatalf("Validate(unicode ID) error = %v", err)
+	}
+	spec = validSpec()
+	spec.EdgeMargin = 1e30
+	if err := Validate(spec); err == nil || !strings.Contains(err.Error(), "edge_margin") {
+		t.Fatalf("Validate(exponent-sized margin) error = %v", err)
 	}
 }
 
