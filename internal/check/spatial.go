@@ -290,9 +290,6 @@ func transformProfile(profile *bounds.SpatialProfile, position bounds.Vec3, rota
 	}
 	return result
 }
-func aabbOBB(box bounds.AABB) worldOBB {
-	return worldOBB{center: box.Center, extents: mul(box.Size, .5), axes: [3]bounds.Vec3{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}
-}
 func intersectsAny(a, b []worldOBB) bool {
 	for _, left := range a {
 		for _, right := range b {
