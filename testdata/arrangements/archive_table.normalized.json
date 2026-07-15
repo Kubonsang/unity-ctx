@@ -1,0 +1,39 @@
+{
+  "surface_arrangement_version": 1,
+  "arrangement_id": "archive-reading-table",
+  "target_element_id": "support-10-reading-table",
+  "target_frame_id": "top",
+  "members": [
+    {
+      "descriptor_id": "book-brown",
+      "minimum_count": 2,
+      "maximum_count": 3,
+      "selection_weight": 1,
+      "affinity_group": "books"
+    },
+    {
+      "descriptor_id": "book-grey",
+      "minimum_count": 1,
+      "maximum_count": 2,
+      "selection_weight": 0.8,
+      "affinity_group": "books"
+    },
+    {
+      "descriptor_id": "candle-lit",
+      "minimum_count": 1,
+      "maximum_count": 1,
+      "selection_weight": 0.65,
+      "affinity_group": "light"
+    }
+  ],
+  "preset": "InUse",
+  "amount": 0.55,
+  "orderliness": 0.45,
+  "grouping": 0.75,
+  "stacking": 0.55,
+  "edge_margin": 0.08,
+  "max_stack_height": 3,
+  "seed_offset": 17,
+  "resolver_version": 1,
+  "spec_hash": "8914a0165a43fa8b1c2f21933fdd9723d45dc9b179102031d439ea2c206d8679"
+}

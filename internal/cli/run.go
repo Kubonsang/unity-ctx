@@ -50,6 +50,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runSpatial(args[1:], stdout, stderr)
 	}
 
+	if len(args) >= 1 && args[0] == "arrangement" {
+		return runArrangement(args[1:], stdout, stderr)
+	}
+
 	if msg, code, stop := diagnoseShape(args); stop {
 		_, _ = io.WriteString(stderr, msg+"\n")
 		return code

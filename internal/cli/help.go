@@ -62,6 +62,14 @@ func wantsHelp(args []string) bool {
 // helpText returns per-command help when command is known, otherwise the
 // general usage overview.
 func helpText(namespace, command string) string {
+	if namespace == "arrangement" {
+		switch command {
+		case "validate":
+			return "unity-ctx arrangement validate <file> [--json]\n  strictly validate and normalize a Surface Arrangement v1 spec\n"
+		case "hash":
+			return "unity-ctx arrangement hash <file> [--json]\n  print the stable normalized Surface Arrangement v1 spec hash\n"
+		}
+	}
 	if spec, ok := commandSpecs[command]; ok {
 		ns := namespace
 		if ns == "" || !knownNamespaces[ns] {
@@ -94,11 +102,12 @@ func generalUsage() string {
 	b.WriteString("unity-ctx — token-safe Unity scene/prefab/asset interface for AI agents\n\n")
 	b.WriteString("usage: unity-ctx <namespace> <command> <file> [flags]\n")
 	b.WriteString("       unity-ctx meta guid <file> [--project DIR]\n")
+	b.WriteString("       unity-ctx arrangement validate|hash <file> [--json]\n")
 	b.WriteString("       unity-ctx mcp                          # MCP server over stdio\n\n")
 	b.WriteString("namespaces: scene | prefab | asset\n\n")
 	b.WriteString("read commands:  " + strings.Join(read, " ") + "\n")
 	b.WriteString("write commands: " + strings.Join(write, " ") + "\n")
-	b.WriteString("other:          impact (prefab)  meta guid  mcp\n\n")
+	b.WriteString("other:          arrangement validate|hash  impact (prefab)  meta guid  mcp\n\n")
 	b.WriteString("Run 'unity-ctx <namespace> <command> --help' for command-specific usage.\n")
 	return b.String()
 }
