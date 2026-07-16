@@ -350,7 +350,22 @@ func TestBuildManifestFromEditorPayloadRejectsInvalidTrimmedPaths(t *testing.T) 
 					},
 				},
 			},
-			want: "invalid editor export: prefabs[0].path must be an Assets path ending in .prefab",
+			want: "invalid editor export: prefabs[0].path " + editorGameObjectAssetPathRequirement,
+		},
+		{
+			name: "prefab unsupported GameObject asset extension",
+			payload: EditorPayload{
+				Scene:   "Assets/Scenes/SimpleScene.unity",
+				Objects: []EditorObjectBounds{},
+				Prefabs: []EditorPrefabBounds{
+					{
+						Path:   "Assets/Models/chair.mat",
+						Center: [3]float64{0.0, 0.5, 0.0},
+						Size:   [3]float64{0.8, 1.0, 0.8},
+					},
+				},
+			},
+			want: "invalid editor export: prefabs[0].path " + editorGameObjectAssetPathRequirement,
 		},
 		{
 			name: "prefab empty after trim",
@@ -378,6 +393,107 @@ func TestBuildManifestFromEditorPayloadRejectsInvalidTrimmedPaths(t *testing.T) 
 
 			if err.Error() != tc.want {
 				t.Fatalf("error mismatch: got %q want %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildManifestFromEditorPayloadAcceptsFBXGameObjectAsset(t *testing.T) {
+	payload := EditorPayload{
+		Scene:   "Assets/Scenes/SimpleScene.unity",
+		Objects: []EditorObjectBounds{},
+		Prefabs: []EditorPrefabBounds{
+			{
+				Path:   "Assets/KayKit/Models/bookcase.fbx",
+				Center: [3]float64{0, 1, 0},
+				Size:   [3]float64{1, 2, 0.5},
+			},
+		},
+	}
+
+	manifest, err := BuildManifestFromPayload(payload)
+	if err != nil {
+		t.Fatalf("BuildManifestFromPayload() error = %v", err)
+	}
+	if got := manifest.Prefabs[0].Path; got != "Assets/KayKit/Models/bookcase.fbx" {
+		t.Fatalf("prefab path mismatch: got %q", got)
+	}
+}
+
+func TestEditorGameObjectAssetExtensionAllowlist(t *testing.T) {
+	for _, extension := range []string{".prefab", ".fbx", ".dae", ".3ds", ".dxf", ".obj", ".skp", ".blend", ".max", ".ma", ".mb", ".FBX"} {
+		path := "Assets/Models/asset" + extension
+		if err := validateEditorPrefabPath(path, 0); err != nil {
+			t.Errorf("validateEditorPrefabPath(%q) error = %v", path, err)
+		}
+	}
+	for _, extension := range []string{".mat", ".png", ".asset", ""} {
+		path := "Assets/Models/asset" + extension
+		if err := validateEditorPrefabPath(path, 0); err == nil {
+			t.Errorf("validateEditorPrefabPath(%q) error = nil, want unsupported extension", path)
+		}
+	}
+}
+
+func TestBuildDetailedEditorScanSnippetUsesColliderFirstWithRendererFallback(t *testing.T) {
+	snippet := buildDetailedEditorScanSnippet(
+		"Assets/Scenes/Room.unity",
+		[]string{"Assets/Prefabs/Torch.prefab", "Assets/KayKit/Models/Bookcase.fbx"},
+	)
+
+	for _, required := range []string{
+		"transform.GetComponents<Collider>()",
+		"return transform.GetComponents<Renderer>()",
+		"root.GetComponentsInChildren<Collider>(true)",
+		"root.GetComponentsInChildren<Renderer>(true)",
+		"var components = colliders.Length > 0 ? colliders : renderers;",
+		"source = colliderBacked ? \"collider\" : \"renderer-bounds\"",
+		"aggregateComponents(components)",
+		"new System.Collections.Generic.HashSet<int>",
+		"GetProperty(\"SourceCollider\")",
+		"GetProperty(\"Reviewed\")",
+		"GetProperty(\"SpatialReviewKind\")",
+		"GetProperty(\"SourceColliders\")",
+		"string.Equals(kind.GetValue(item) as string, \"room-obstacle\", StringComparison.Ordinal)",
+		"System.Tuple.Create(item.transform, collider == null ? new Collider[0] : new [] { collider })",
+		"reviewedSurfaceColliders.UnionWith(reviewedObstacleColliders)",
+		"var reviewedColliderScopes = reviewedSurfaceScopes.Concat(reviewedObstacleScopes).ToArray()",
+		"System.Func<Component,Component,bool> shapeContains",
+		"renderer.transform.IsChildOf(scope.Item1)",
+		"scope.Item2.Any(collider => componentUsable(collider) && shapeContains(collider, renderer))",
+		"!(entry.Item2[0] is Renderer && entry.Item2.All(rendererCoveredByReviewedCompound))",
+		"entry.Item2.Cast<Collider>().All(collider => reviewedSurfaceColliders.Contains(collider.GetInstanceID()))",
+		"Assets/KayKit/Models/Bookcase.fbx",
+	} {
+		if !strings.Contains(snippet, required) {
+			t.Fatalf("detailed snippet missing %q", required)
+		}
+	}
+	if strings.Contains(snippet, "FindObjectsByType<Renderer>") {
+		t.Fatal("detailed snippet only discovers renderer-backed scene objects")
+	}
+	if strings.Contains(snippet, `GetProperty("Reviewed").GetValue(item) && (bool)item.GetType().GetProperty("Supported")`) {
+		t.Fatal("unsupported reviewed surfaces must still be able to review solid obstacle geometry")
+	}
+	if strings.Contains(snippet, "System.Tuple.Create(collider == null ? null : collider.transform") {
+		t.Fatal("a room boundary collider must not become the ancestry scope for every renderer inside the room")
+	}
+	if strings.Index(snippet, "Assets/KayKit/Models/Bookcase.fbx") > strings.Index(snippet, "Assets/Prefabs/Torch.prefab") {
+		t.Fatal("detailed snippet does not sort GameObject asset paths")
+	}
+}
+
+func TestEditorScanSnippetsUseExplicitStringArrayForEmptyPrefabList(t *testing.T) {
+	for name, snippet := range map[string]string{
+		"basic":    buildEditorScanSnippet("Assets/Scenes/Room.unity", nil),
+		"detailed": buildDetailedEditorScanSnippet("Assets/Scenes/Room.unity", nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(snippet, "var prefabPaths = new string[] {  };") {
+				t.Fatalf("empty prefab list must still have an inferable C# type:\n%s", snippet)
+			}
+			if strings.Contains(snippet, "var prefabPaths = new [] {  };") {
+				t.Fatal("empty implicitly typed C# array does not compile")
 			}
 		})
 	}

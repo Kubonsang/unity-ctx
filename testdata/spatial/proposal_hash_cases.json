@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "asset-awaiting-review",
+      "contract": {
+        "contract_version": 1,
+        "contract_type": "asset",
+        "state": "AwaitingHumanReview",
+        "asset": {
+          "asset_guid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "asset_path": "Assets/KayKit/banner.prefab",
+          "dependency_hash": "dependency-v1",
+          "units": "meter",
+          "forward": [0, 0, 1],
+          "up": [0, 1, 0],
+          "pivot_offset": [0, 0, 0],
+          "collision_proxies": [
+            {"id": "banner", "center": [0, 1, 0], "size": [1, 2, 0.05], "rotation": [0, 0, 0, 1]}
+          ],
+          "frames": [
+            {"id": "back", "point": [0, 1, -0.025], "normal": [0, 0, -1], "tangent": [1, 0, 0], "size": [1, 2]}
+          ],
+          "contacts": [
+            {"id": "wall", "kind": "WallMounted", "frame_id": "back", "target": "surface:wall", "minimum_gap": 0.005, "maximum_gap": 0.01, "maximum_penetration": 0, "minimum_support": 0.6, "direction_alignment": 0.95}
+          ],
+          "revision": 1,
+          "geometry_hash": "6df415e66995809273aa4b7c65c98093ff6e78b9ced217f72725adef5c679e15",
+          "capture_set_hash": "capture-banner"
+        },
+        "technical": {"passed": true, "error_count": 0, "report_hash": "report-banner"}
+      },
+      "payload_hash": "6df415e66995809273aa4b7c65c98093ff6e78b9ced217f72725adef5c679e15",
+      "proposal_hash": "e0aa2b5c8d00adc5fa14e38daf4146a7b55a6c29b7425616e6cbba8267d6f7a6"
+    },
+    {
+      "name": "interaction-awaiting-review",
+      "contract": {
+        "contract_version": 1,
+        "contract_type": "interaction",
+        "state": "AwaitingHumanReview",
+        "interaction": {
+          "subject_guid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "target_key": "asset:cccccccccccccccccccccccccccccccc",
+          "relation": "SupportedBy",
+          "subject_frame": "bottom",
+          "target_frame": "top",
+          "relative_position": [0, 0, 0],
+          "relative_rotation": [0, 0, 0, 1],
+          "position_tolerance": [0.1, 0.01, 0.1],
+          "angle_tolerance": 10,
+          "collision_policy": "contact-only",
+          "revision": 1,
+          "interaction_hash": "d747a5154d463b62eaed9e8734f9f70378d0fa91dec96b6fb29876e99c8ea1a1",
+          "capture_set_hash": "capture-interaction"
+        },
+        "technical": {"passed": true, "error_count": 0, "report_hash": "report-interaction"}
+      },
+      "payload_hash": "d747a5154d463b62eaed9e8734f9f70378d0fa91dec96b6fb29876e99c8ea1a1",
+      "proposal_hash": "107410253dace1b16fa54ea18a02b679b20bba595b590631127044e257427a90"
+    }
+  ]
+}

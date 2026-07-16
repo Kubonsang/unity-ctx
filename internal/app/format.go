@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/Kubonsang/unity-ctx/internal/bench"
+	"github.com/Kubonsang/unity-ctx/internal/bounds"
+	"github.com/Kubonsang/unity-ctx/internal/check"
 	"github.com/Kubonsang/unity-ctx/internal/core"
 	"github.com/Kubonsang/unity-ctx/internal/document"
 	impactscan "github.com/Kubonsang/unity-ctx/internal/impact"
@@ -17,6 +19,34 @@ import (
 	scenepatch "github.com/Kubonsang/unity-ctx/internal/patch"
 	suggestplan "github.com/Kubonsang/unity-ctx/internal/suggest"
 )
+
+func joinStringsOrNone(values []string) string {
+	if len(values) == 0 {
+		return "none"
+	}
+	return strings.Join(values, ",")
+}
+func joinIDsOrNone(values []int64) string {
+	if len(values) == 0 {
+		return "none"
+	}
+	parts := make([]string, len(values))
+	for i, value := range values {
+		parts[i] = strconv.FormatInt(value, 10)
+	}
+	return strings.Join(parts, ",")
+}
+
+func formatContactResults(values []check.ContactResult) string {
+	if len(values) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, fmt.Sprintf("%s@%s[%s]:gap=%g:penetration=%g:alignment=%g:support=%g", value.RequirementID, value.SurfaceID, joinStringsOrNone(value.Codes), value.Gap, value.Penetration, value.Alignment, value.Support))
+	}
+	return strings.Join(parts, ";")
+}
 
 func formatCheckBody(prefix, manifestPath, prefabPath string, position [3]float64, overlapIDs []int64) string {
 	var builder strings.Builder
@@ -92,18 +122,16 @@ func formatSuggestBody(manifestPath, prefabPath string, plan suggestplan.Result)
 			len(plan.Candidates)-clearCount,
 		),
 	}
+	if plan.SurfaceID != "" {
+		lines[0] += fmt.Sprintf(" surface_id=%s contact=%s", plan.SurfaceID, plan.Contact)
+	}
 
 	for _, candidate := range plan.Candidates {
-		lines = append(lines, fmt.Sprintf(
-			"CANDIDATE rank=%d direction=%s position=%s status=%s overlap_ids=%s anchor_id=%d anchor_name=%s",
-			candidate.Rank,
-			candidate.Direction,
-			formatPosition([3]float64(candidate.Position)),
-			candidate.Status,
-			formatPatchIDList(candidate.OverlapIDs),
-			plan.Near.FileID,
-			plan.Near.Name,
-		))
+		if plan.SurfaceID != "" {
+			lines = append(lines, fmt.Sprintf("CANDIDATE rank=%d direction=%s position=%s rotation=%g,%g,%g,%g status=%s overlap_ids=%s anchor_id=%d anchor_name=%s", candidate.Rank, candidate.Direction, formatPosition([3]float64(candidate.Position)), candidate.Rotation[0], candidate.Rotation[1], candidate.Rotation[2], candidate.Rotation[3], candidate.Status, formatPatchIDList(candidate.OverlapIDs), plan.Near.FileID, plan.Near.Name))
+		} else {
+			lines = append(lines, fmt.Sprintf("CANDIDATE rank=%d direction=%s position=%s status=%s overlap_ids=%s anchor_id=%d anchor_name=%s", candidate.Rank, candidate.Direction, formatPosition([3]float64(candidate.Position)), candidate.Status, formatPatchIDList(candidate.OverlapIDs), plan.Near.FileID, plan.Near.Name))
+		}
 	}
 
 	return strings.Join(lines, "\n")
@@ -207,12 +235,18 @@ func impactPayloadFromScanResult(result impactscan.Result) *ImpactPayload {
 func suggestPayloadFromPlan(manifestPath string, plan suggestplan.Result) *SuggestPayload {
 	candidates := make([]SuggestCandidatePayload, 0, len(plan.Candidates))
 	for _, candidate := range plan.Candidates {
+		var rotation *bounds.Quat
+		if plan.SurfaceID != "" {
+			value := candidate.Rotation
+			rotation = &value
+		}
 		candidates = append(candidates, SuggestCandidatePayload{
 			Rank:       candidate.Rank,
 			Direction:  candidate.Direction,
 			Position:   candidate.Position,
 			Status:     candidate.Status,
 			OverlapIDs: append([]int64(nil), candidate.OverlapIDs...),
+			Rotation:   rotation,
 		})
 	}
 
@@ -227,6 +261,8 @@ func suggestPayloadFromPlan(manifestPath string, plan suggestplan.Result) *Sugge
 		Align:      string(plan.Align),
 		Count:      plan.Count,
 		Candidates: candidates,
+		SurfaceID:  plan.SurfaceID,
+		Contact:    plan.Contact,
 	}
 }
 

@@ -504,7 +504,7 @@ go run ./cmd/unity-ctx --help
 
 ## 상태
 
-현재 **[v0.8.0 — Structural Scene Mutation](https://github.com/Kubonsang/unity-ctx/releases/tag/v0.8.0)**: `scene reposition` / `reparent` / `delete`가 안전 게이트 write 경로에 합류했고, 프로젝트 전역 교차 파일 참조 스캐너가 이를 뒷받침하며, `BLOCKED`는 이제 exit `3`을 반환합니다. 모든 write 경로가 [unity-fileid-graph](https://github.com/Kubonsang/unity-fileid-graph) 안전 커널로 게이트됩니다. 전체 로드맵은 [`docs/ROADMAP.md`](docs/ROADMAP.md) 참고.
+현재 **[v0.9.1 — Human-reviewed Spatial Contracts](https://github.com/Kubonsang/unity-ctx/releases/tag/v0.9.1)**: Spatial Manifest v2에 검수된 표면, compound OBB, 접촉 검사, 결정론적 벽 정렬 제안이 추가됐습니다. 재사용 가능한 Asset/Interaction 계약과 Surface Arrangement 사양은 MCP에 승인·변형 권한을 노출하지 않으면서 실제 사용자 승인을 암호학적으로 검증합니다. 기존 manifest v1과 dry-run-first 워크플로도 계속 지원합니다. 전체 로드맵은 [`docs/ROADMAP.md`](docs/ROADMAP.md) 참고.
 
 다음 마일스톤: **v1.0 Agent Harness Release** — 샘플 Unity 프로젝트, CI 예제, 설치 도구.
 

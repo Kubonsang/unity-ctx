@@ -22,14 +22,17 @@ import (
 	"github.com/Kubonsang/unity-ctx/internal/mutation"
 	"github.com/Kubonsang/unity-ctx/internal/parser"
 	scenepatch "github.com/Kubonsang/unity-ctx/internal/patch"
+	"github.com/Kubonsang/unity-ctx/internal/reviewgrant"
 	"github.com/Kubonsang/unity-ctx/internal/safety"
 	"github.com/Kubonsang/unity-ctx/internal/scan"
+	"github.com/Kubonsang/unity-ctx/internal/spatialcontract"
 	suggestplan "github.com/Kubonsang/unity-ctx/internal/suggest"
 	"github.com/Kubonsang/unity-ctx/internal/xref"
 )
 
 type Service struct {
-	scanRunner scan.Runner
+	scanRunner               scan.Runner
+	approvedContractVerifier spatialcontract.ApprovedContractVerifier
 }
 
 type loadedDoc struct {
@@ -49,6 +52,16 @@ func NewWithScanRunner(runner scan.Runner) *Service {
 	if runner != nil {
 		svc.scanRunner = runner
 	}
+	return svc
+}
+
+// NewWithScanRunnerAndApprovedContractVerifier is a narrow integration/test
+// seam for callers that own an isolated external approval ledger. Production
+// CLI and MCP construction use New/NewWithScanRunner and therefore resolve the
+// OS-account ledger below; a nil verifier never disables approval checks.
+func NewWithScanRunnerAndApprovedContractVerifier(runner scan.Runner, verifier spatialcontract.ApprovedContractVerifier) *Service {
+	svc := NewWithScanRunner(runner)
+	svc.approvedContractVerifier = verifier
 	return svc
 }
 
@@ -1485,7 +1498,7 @@ func (s *Service) Suggest(namespace, path string, view core.View, jsonOut bool, 
 		result.Body = "ERROR suggest requires --prefab"
 		return result, 1
 	}
-	if strings.TrimSpace(args.Near) == "" {
+	if strings.TrimSpace(args.Near) == "" && strings.TrimSpace(args.Align) != string(suggestplan.AlignWall) {
 		result.Status = "ERROR"
 		result.Body = "ERROR suggest requires --near"
 		return result, 1
@@ -1499,9 +1512,9 @@ func (s *Service) Suggest(namespace, path string, view core.View, jsonOut bool, 
 	if align == "" {
 		align = string(suggestplan.AlignFloor)
 	}
-	if align != string(suggestplan.AlignFloor) && align != string(suggestplan.AlignGrid) {
+	if align != string(suggestplan.AlignFloor) && align != string(suggestplan.AlignGrid) && align != string(suggestplan.AlignWall) {
 		result.Status = "ERROR"
-		result.Body = "ERROR suggest supports only --align floor|grid"
+		result.Body = "ERROR suggest supports only --align floor|grid|wall"
 		return result, 1
 	}
 
@@ -1511,15 +1524,42 @@ func (s *Service) Suggest(namespace, path string, view core.View, jsonOut bool, 
 		result.Body = fmt.Sprintf("ERROR %v", err)
 		return result, 1
 	}
+	if _, err := s.load(path); err != nil {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR %v", err)
+		return result, 1
+	}
+	if !sameManifestSceneReference(path, manifest.Scene) {
+		result.Status = "ERROR"
+		result.Body = fmt.Sprintf("ERROR manifest scene mismatch file=%s manifest_scene=%s", path, manifest.Scene)
+		return result, 1
+	}
 
 	plan, err := suggestplan.Plan(suggestplan.Request{
-		Manifest: manifest,
-		Prefab:   args.Prefab,
-		Near:     args.Near,
-		Count:    count,
-		Align:    suggestplan.Align(align),
+		Manifest:  manifest,
+		Prefab:    args.Prefab,
+		Near:      args.Near,
+		Count:     count,
+		Align:     suggestplan.Align(align),
+		SurfaceID: args.SurfaceID,
+		Contact:   args.Contact,
 	})
 	if err != nil {
+		if errors.Is(err, check.ErrNeedGeometryV2) {
+			result.Status = "UNKNOWN"
+			result.Body = "UNKNOWN reason=NEED_GEOMETRY_V2"
+			return result, 0
+		}
+		if errors.Is(err, check.ErrGeometryUnreviewed) || errors.Is(err, check.ErrRoomGeometryUnreviewed) {
+			result.Status = "UNKNOWN"
+			result.Body = fmt.Sprintf("UNKNOWN reason=%s", err)
+			return result, 0
+		}
+		if strings.HasPrefix(err.Error(), "SUPPORT_CONTRACT_MISSING") || strings.HasPrefix(err.Error(), "SUPPORT_REGION_INVALID") {
+			result.Status = "UNKNOWN"
+			result.Body = "UNKNOWN reason=" + err.Error()
+			return result, 0
+		}
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR %v", err)
 		return result, 1
@@ -1532,6 +1572,11 @@ func (s *Service) Suggest(namespace, path string, view core.View, jsonOut bool, 
 	}
 
 	if args.PatchOut != "" {
+		if plan.SurfaceID != "" {
+			result.Status = "UNKNOWN"
+			result.Body = fmt.Sprintf("UNKNOWN reason=ROTATION_PATCH_UNSUPPORTED align=%s surface_id=%s; use the Unity Editor preview/apply path", plan.Align, plan.SurfaceID)
+			return result, 0
+		}
 		pick := args.Pick
 		if pick < 1 {
 			pick = 1
@@ -1623,6 +1668,18 @@ func (s *Service) Scan(namespace, path string, view core.View, jsonOut bool, arg
 		result.Body = "ERROR scan requires --out"
 		return result, 1
 	}
+	geometry := strings.TrimSpace(args.Geometry)
+	if geometry != "" && geometry != "detailed" {
+		result.Status = "ERROR"
+		result.Body = "ERROR scan supports only --geometry detailed"
+		return result, 1
+	}
+	contractsPath := strings.TrimSpace(args.Contracts)
+	if contractsPath != "" && geometry != "detailed" {
+		result.Status = "ERROR"
+		result.Body = "ERROR scan --contracts requires --geometry detailed"
+		return result, 1
+	}
 
 	sceneAssetPath, err := scan.ResolveSceneAssetPath(project, path)
 	if err != nil {
@@ -1632,30 +1689,78 @@ func (s *Service) Scan(namespace, path string, view core.View, jsonOut bool, arg
 	}
 
 	prefabs := scan.NormalizePrefabList(args.Prefabs)
-	payloadBytes, err := s.scanRunner.RunEditorScan(project, sceneAssetPath, prefabs)
+	var payloadBytes []byte
+	if geometry == "detailed" {
+		detailed, ok := s.scanRunner.(scan.DetailedRunner)
+		if !ok {
+			result.Status = "ERROR"
+			result.Body = "ERROR SCAN_DETAILED_UNAVAILABLE runner does not support detailed geometry"
+			return result, 1
+		}
+		payloadBytes, err = detailed.RunDetailedEditorScan(project, sceneAssetPath, prefabs)
+	} else {
+		payloadBytes, err = s.scanRunner.RunEditorScan(project, sceneAssetPath, prefabs)
+	}
 	if err != nil {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR SCAN_EDITOR_FAILED project=%s scene=%s err=%v", project, sceneAssetPath, err)
 		return result, 1
 	}
 
-	payload, err := scan.DecodeEditorPayload(payloadBytes)
-	if err != nil {
-		result.Status = "ERROR"
-		result.Body = fmt.Sprintf("ERROR %v", err)
-		return result, 1
+	var manifest bounds.Manifest
+	if geometry == "detailed" {
+		manifest, err = bounds.Decode(payloadBytes)
+		if err != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR %v", err)
+			return result, 1
+		}
+		if manifest.Scene != sceneAssetPath {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR scan payload scene mismatch requested=%s payload=%s", sceneAssetPath, manifest.Scene)
+			return result, 1
+		}
+	} else {
+		var payload scan.EditorPayload
+		payload, err = scan.DecodeEditorPayload(payloadBytes)
+		if err != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR %v", err)
+			return result, 1
+		}
+		if payload.Scene != sceneAssetPath {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR scan payload scene mismatch requested=%s payload=%s", sceneAssetPath, payload.Scene)
+			return result, 1
+		}
+		manifest, err = scan.BuildManifestFromPayload(payload)
+		if err != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR %v", err)
+			return result, 1
+		}
 	}
-	if payload.Scene != sceneAssetPath {
-		result.Status = "ERROR"
-		result.Body = fmt.Sprintf("ERROR scan payload scene mismatch requested=%s payload=%s", sceneAssetPath, payload.Scene)
-		return result, 1
-	}
-
-	manifest, err := scan.BuildManifestFromPayload(payload)
-	if err != nil {
-		result.Status = "ERROR"
-		result.Body = fmt.Sprintf("ERROR %v", err)
-		return result, 1
+	appliedContracts := 0
+	if contractsPath != "" {
+		if !filepath.IsAbs(contractsPath) {
+			contractsPath = filepath.Join(project, filepath.FromSlash(contractsPath))
+		}
+		verifier := s.approvedContractVerifier
+		if verifier == nil {
+			ledger, ledgerErr := reviewgrant.DefaultLedger()
+			if ledgerErr != nil {
+				result.Status = "ERROR"
+				result.Body = fmt.Sprintf("ERROR spatial contract approval ledger: %v", ledgerErr)
+				return result, 1
+			}
+			verifier = ledger
+		}
+		appliedContracts, err = spatialcontract.OverlayApprovedAssetsWithPolicy(&manifest, contractsPath, spatialcontract.OverlayPolicy{Verifier: verifier})
+		if err != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR spatial contracts: %v", err)
+			return result, 1
+		}
 	}
 	if err := bounds.Save(outPath, manifest); err != nil {
 		result.Status = "ERROR"
@@ -1664,15 +1769,11 @@ func (s *Service) Scan(namespace, path string, view core.View, jsonOut bool, arg
 	}
 
 	result.Status = "OK"
-	result.Body = fmt.Sprintf(
-		"OK mode=editor project=%s scene=%s out=%s objects=%d prefabs=%d source=%s",
-		project,
-		sceneAssetPath,
-		outPath,
-		len(manifest.Objects),
-		len(manifest.Prefabs),
-		manifest.Source,
-	)
+	if geometry == "detailed" {
+		result.Body = fmt.Sprintf("OK mode=editor geometry=detailed project=%s scene=%s out=%s objects=%d prefabs=%d surfaces=%d contracts=%d source=%s version=%d", project, sceneAssetPath, outPath, len(manifest.Objects), len(manifest.Prefabs), len(manifest.Surfaces), appliedContracts, manifest.Source, manifest.Version)
+	} else {
+		result.Body = fmt.Sprintf("OK mode=editor project=%s scene=%s out=%s objects=%d prefabs=%d source=%s", project, sceneAssetPath, outPath, len(manifest.Objects), len(manifest.Prefabs), manifest.Source)
+	}
 	return result, 0
 }
 
@@ -1729,10 +1830,46 @@ func (s *Service) Check(namespace, path string, view core.View, jsonOut bool, ar
 		result.Body = fmt.Sprintf("ERROR %v", err)
 		return result, 1
 	}
-	if !sameSceneReference(path, manifest.Scene) {
+	if !sameManifestSceneReference(path, manifest.Scene) {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR manifest scene mismatch file=%s manifest_scene=%s", path, manifest.Scene)
 		return result, 1
+	}
+
+	if manifest.Version == bounds.ManifestVersion2 || args.HasRotation || strings.TrimSpace(args.SurfaceID) != "" || strings.TrimSpace(args.Contact) != "" || strings.TrimSpace(args.ContactSurfaces) != "" {
+		rotation := bounds.Quat{0, 0, 0, 1}
+		if args.HasRotation {
+			rotation = bounds.Quat(args.Rotation)
+		}
+		contactSurfaces, parseErr := check.ParseContactSurfaces(args.ContactSurfaces)
+		if parseErr != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR %v", parseErr)
+			return result, 1
+		}
+		spatial, spatialErr := check.CheckSpatialPlacement(check.SpatialRequest{Manifest: manifest, Prefab: args.Prefab, Position: bounds.Vec3(args.Position), Rotation: rotation, SurfaceID: strings.TrimSpace(args.SurfaceID), Contact: strings.TrimSpace(args.Contact), ContactSurfaces: contactSurfaces})
+		if errors.Is(spatialErr, check.ErrNeedGeometryV2) {
+			result.Status = "UNKNOWN"
+			result.Body = fmt.Sprintf("UNKNOWN reason=NEED_GEOMETRY_V2 manifest=%s prefab=%s", args.Manifest, args.Prefab)
+			return result, 0
+		}
+		if errors.Is(spatialErr, check.ErrGeometryUnreviewed) || errors.Is(spatialErr, check.ErrRoomGeometryUnreviewed) {
+			result.Status = "UNKNOWN"
+			result.Body = fmt.Sprintf("UNKNOWN reason=%s manifest=%s prefab=%s", spatialErr, args.Manifest, args.Prefab)
+			return result, 0
+		}
+		if spatialErr != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR %v", spatialErr)
+			return result, 1
+		}
+		status := "OK"
+		if !spatial.Clear {
+			status = "WARN"
+		}
+		result.Status = status
+		result.Body = fmt.Sprintf("%s manifest=%s prefab=%s position=%g,%g,%g rotation=%g,%g,%g,%g surface_id=%s contact=%s contact_surfaces=%s codes=%s overlap_ids=%s gap=%g penetration=%g alignment=%g support=%g contacts=%s", status, args.Manifest, args.Prefab, args.Position[0], args.Position[1], args.Position[2], rotation[0], rotation[1], rotation[2], rotation[3], args.SurfaceID, args.Contact, args.ContactSurfaces, joinStringsOrNone(spatial.Codes), joinIDsOrNone(spatial.OverlapIDs), spatial.Gap, spatial.Penetration, spatial.Alignment, spatial.Support, formatContactResults(spatial.Contacts))
+		return result, 0
 	}
 
 	checkResult, err := check.CheckPlacement(manifest, args.Prefab, bounds.Vec3(args.Position))
@@ -1842,7 +1979,7 @@ func (s *Service) Patch(namespace, path string, view core.View, jsonOut bool, ar
 		result.Body = fmt.Sprintf("ERROR %v", err)
 		return result, 1
 	}
-	if !sameSceneReference(path, manifest.Scene) {
+	if !sameManifestSceneReference(path, manifest.Scene) {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR manifest scene mismatch file=%s manifest_scene=%s", path, manifest.Scene)
 		return result, 1
@@ -2005,7 +2142,14 @@ func (s *Service) Diff(namespace, path string, view core.View, jsonOut bool, arg
 		result.Body = fmt.Sprintf("ERROR %v", err)
 		return result, 1
 	}
-	if !sameSceneReference(path, envelope.File) {
+	if envelope.SchemaVersion == scenepatch.FileSchemaVersionV2 {
+		if err := validateSceneFileKind(path); err != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR %v", err)
+			return result, 1
+		}
+	}
+	if !sameManifestSceneReference(path, envelope.File) {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR patch scene mismatch file=%s patch_file=%s", path, envelope.File)
 		return result, 1
@@ -2078,7 +2222,14 @@ func (s *Service) Apply(namespace, path string, view core.View, jsonOut bool, ar
 		result.Body = fmt.Sprintf("ERROR %v", err)
 		return result, 1
 	}
-	if !sameSceneReference(path, envelope.File) {
+	if envelope.SchemaVersion == scenepatch.FileSchemaVersionV2 {
+		if err := validateSceneFileKind(path); err != nil {
+			result.Status = "ERROR"
+			result.Body = fmt.Sprintf("ERROR %v", err)
+			return result, 1
+		}
+	}
+	if !sameManifestSceneReference(path, envelope.File) {
 		result.Status = "ERROR"
 		result.Body = fmt.Sprintf("ERROR patch scene mismatch file=%s patch_file=%s", path, envelope.File)
 		return result, 1
@@ -2950,28 +3101,31 @@ func samePath(left, right string) bool {
 	return impactscan.SamePath(left, right)
 }
 
-func sameSceneReference(left, right string) bool {
-	if samePath(left, right) {
-		return true
-	}
-
-	leftBase := strings.TrimSuffix(filepath.Base(left), filepath.Ext(left))
-	rightBase := strings.TrimSuffix(filepath.Base(right), filepath.Ext(right))
-	return normalizeSceneReference(leftBase) == normalizeSceneReference(rightBase) &&
-		strings.EqualFold(filepath.Ext(left), filepath.Ext(right))
+// sameManifestSceneReference binds a generated manifest to the exact Unity
+// Assets-relative scene path. It is shared by manifests and patch envelopes
+// and deliberately has no basename or punctuation fallback: two projects may
+// contain identically named rooms, and their evidence is not interchangeable.
+func sameManifestSceneReference(filePath, manifestScene string) bool {
+	fileReference, fileOK := sceneAssetReference(filePath)
+	manifestReference, manifestOK := sceneAssetReference(manifestScene)
+	return fileOK && manifestOK && strings.EqualFold(fileReference, manifestReference)
 }
 
-func normalizeSceneReference(value string) string {
-	var builder strings.Builder
-	builder.Grow(len(value))
-	for _, r := range value {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			builder.WriteRune(r)
+func sceneAssetReference(path string) (string, bool) {
+	normalized := filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
+	segments := strings.Split(normalized, "/")
+	assetIndex := -1
+	for index, segment := range segments {
+		if !strings.EqualFold(segment, "Assets") {
 			continue
 		}
-		if r >= 'A' && r <= 'Z' {
-			builder.WriteRune(r + ('a' - 'A'))
+		if assetIndex >= 0 {
+			return "", false
 		}
+		assetIndex = index
 	}
-	return builder.String()
+	if assetIndex < 0 || assetIndex == len(segments)-1 {
+		return "", false
+	}
+	return strings.Join(segments[assetIndex:], "/"), true
 }

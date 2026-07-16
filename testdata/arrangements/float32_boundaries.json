@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "slider_decimal_boundary",
+      "input": 0.5500005,
+      "normalized": 0.55
+    },
+    {
+      "name": "positive_half_micro",
+      "input": 0.0000005,
+      "normalized": 0
+    },
+    {
+      "name": "upper_unit_boundary",
+      "input": 0.9999995,
+      "normalized": 1
+    },
+    {
+      "name": "negative_zero",
+      "input": -0.0,
+      "normalized": 0
+    }
+  ]
+}

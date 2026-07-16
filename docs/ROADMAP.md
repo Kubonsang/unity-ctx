@@ -110,6 +110,34 @@ Status: complete (tag `v0.8.0`)
   success
 - `index` snapshots stamp the real build version in `generated_by`
 
+## v0.9 — Reviewed Spatial Geometry
+
+Status: complete (released in tag `v0.9.1`).
+
+- Spatial Manifest v2 with v1 read compatibility and strict stable JSON output
+- compound local OBB proxies, semantic axes, pivot offsets, arbitrary named contact frames, and legacy bottom/back/top aliases
+- reviewed planar `SurfacePatch` floor, wall, and ceiling records
+- `scene scan --mode editor --geometry detailed` using Unity-imported Collider data first and Renderer bounds as fallback
+- rotated compound OBB SAT and holistic simultaneous-contact checks in `scene check`
+- `scene suggest --align wall --surface-id ...` read-only deterministic candidates
+- `UNKNOWN NEED_GEOMETRY_V2` instead of estimating contact from manifest v1
+- read-only MCP tools `unity_spatial_check` and `unity_suggest_wall`
+- shared Go/C# geometry verdict fixtures
+
+Unity remains the final authority for preview and Apply. unity-ctx does not parse raw FBX geometry and its MCP server does not expose mutation tools.
+
+## v0.9.1 — Human-reviewed Spatial Contracts
+
+Status: complete (tag `v0.9.1`).
+
+- strict `AssetSpatialContract` and `InteractionContract` load/save with stable normalized hashes
+- Draft, technical, human-review, revision-request, unable-to-judge, approved, and stale states
+- `spatial validate`, `spatial review`, `spatial diff`, and dry-run-first `spatial apply`
+- approval invalidation through contract, dependency, geometry, interaction, and capture hashes
+- approved contract overlay for `scene scan --geometry detailed --contracts ...`
+- CLI-only human-authority writes; MCP remains read-only/proposal-only
+- lifecycle tests covering technical-error approval refusal and verified apply
+
 ## v1.0 — Agent Harness Release
 
 - batch / transaction patch (multi-op atomic apply)

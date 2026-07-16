@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "utf16_ordinal_order": [
+    "book-𐀀",
+    "book-"
+  ],
+  "html_escape": {
+    "input": "<&>",
+    "canonical": "\\u003c\\u0026\\u003e"
+  },
+  "minimum_long_id_length": 129,
+  "edge_margin_over_legacy_limit": 101.25,
+  "canonical_json": "{\"surface_arrangement_version\":1,\"arrangement_id\":\"arrangement-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-한글\\u003c\\u0026\\u003e\",\"target_element_id\":\"table\\u003c\\u0026\\u003e\",\"target_frame_id\":\"top-면\",\"members\":[{\"descriptor_id\":\"book-𐀀\",\"minimum_count\":1,\"maximum_count\":1,\"selection_weight\":0.55,\"affinity_group\":\"책\\u003c\\u0026\\u003e\"},{\"descriptor_id\":\"book-\",\"minimum_count\":1,\"maximum_count\":1,\"selection_weight\":1,\"affinity_group\":\"책\\u003c\\u0026\\u003e\"}],\"preset\":\"InUse\",\"amount\":0.55,\"orderliness\":0.45,\"grouping\":0.75,\"stacking\":0.55,\"edge_margin\":101.25,\"max_stack_height\":3,\"seed_offset\":17,\"resolver_version\":1,\"spec_hash\":\"\"}",
+  "spec_hash": "d47aa81e6f6bcd2568fc372662c1f91b2e20f66391b87449009912d0369f398e"
+}

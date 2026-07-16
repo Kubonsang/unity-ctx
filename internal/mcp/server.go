@@ -12,6 +12,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"sort"
+	"strings"
 
 	"github.com/Kubonsang/unity-ctx/internal/app"
 	"github.com/Kubonsang/unity-ctx/internal/core"
@@ -134,12 +137,31 @@ func strArg(args map[string]any, key string) string {
 func int64Arg(args map[string]any, key string) (int64, bool) {
 	switch v := args[key].(type) {
 	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v || v < -9223372036854775808.0 || v >= 9223372036854775808.0 {
+			return 0, false
+		}
 		return int64(v), true
 	case json.Number:
 		n, err := v.Int64()
 		return n, err == nil
 	}
 	return 0, false
+}
+
+func floatArrayArg(args map[string]any, key string, count int) ([]float64, bool) {
+	v, ok := args[key].([]any)
+	if !ok || len(v) != count {
+		return nil, false
+	}
+	result := make([]float64, count)
+	for i, item := range v {
+		number, ok := item.(float64)
+		if !ok {
+			return nil, false
+		}
+		result[i] = number
+	}
+	return result, true
 }
 
 func buildTools() []tool {
@@ -221,7 +243,99 @@ func buildTools() []tool {
 				return r.Body, code != 0
 			},
 		},
+		{
+			Name:        "unity_spatial_check",
+			Description: "Prove compound-OBB overlap and all reviewed surface contacts for a proposed prefab transform. Use contact_surfaces for simultaneous requirements. Manifest v1 returns UNKNOWN NEED_GEOMETRY_V2.",
+			InputSchema: schema(`{"type":"object","properties":{"file":{"type":"string"},"manifest":{"type":"string"},"prefab":{"type":"string"},"position":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3},"rotation":{"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4},"surface_id":{"type":"string"},"contact":{"type":"string","enum":["floor-supported","wall-backed","wall-mounted","ceiling-mounted"]},"contact_surfaces":{"type":"object","minProperties":1,"additionalProperties":{"type":"string"}}},"required":["file","manifest","prefab","position","rotation"],"oneOf":[{"required":["surface_id","contact"]},{"required":["contact_surfaces"]}]}`),
+			handler: func(svc *app.Service, a map[string]any) (string, bool) {
+				position, positionOK := floatArrayArg(a, "position", 3)
+				rotation, rotationOK := floatArrayArg(a, "rotation", 4)
+				if !positionOK || !rotationOK {
+					return "ERROR INVALID_ARGUMENT position must have 3 numbers and rotation must have 4 numbers", true
+				}
+				contactSurfaces, hasContactSurfaces, contactSurfacesOK := contactSurfacesArg(a, "contact_surfaces")
+				legacyContact := strArg(a, "surface_id") != "" || strArg(a, "contact") != ""
+				if !contactSurfacesOK || hasContactSurfaces == legacyContact {
+					return "ERROR INVALID_ARGUMENT provide exactly one of contact_surfaces or surface_id/contact", true
+				}
+				if legacyContact && (strArg(a, "surface_id") == "" || strArg(a, "contact") == "") {
+					return "ERROR INVALID_ARGUMENT surface_id and contact must be provided together", true
+				}
+				args := app.CheckArgs{
+					Manifest:        strArg(a, "manifest"),
+					Prefab:          strArg(a, "prefab"),
+					HasPosition:     true,
+					Position:        [3]float64{position[0], position[1], position[2]},
+					HasRotation:     true,
+					Rotation:        [4]float64{rotation[0], rotation[1], rotation[2], rotation[3]},
+					SurfaceID:       strArg(a, "surface_id"),
+					Contact:         strArg(a, "contact"),
+					ContactSurfaces: contactSurfaces,
+				}
+				r, code := svc.Check("scene", strArg(a, "file"), core.ViewCompact, false, args)
+				return r.Body, code != 0
+			},
+		},
+		{
+			Name:        "unity_suggest_wall",
+			Description: "Return deterministic read-only wall-aligned candidate transforms from a reviewed Spatial Manifest v2 surface.",
+			InputSchema: schema(`{"type":"object","properties":{"file":{"type":"string"},"manifest":{"type":"string"},"prefab":{"type":"string"},"surface_id":{"type":"string"},"contact":{"type":"string","enum":["wall-backed","wall-mounted"]},"count":{"type":"integer","minimum":1,"maximum":4}},"required":["file","manifest","prefab","surface_id"]}`),
+			handler: func(svc *app.Service, a map[string]any) (string, bool) {
+				count := 4
+				if _, present := a["count"]; present {
+					value, ok := int64Arg(a, "count")
+					if !ok {
+						return "ERROR INVALID_ARGUMENT count must be an integer between 1 and 4", true
+					}
+					count = int(value)
+				}
+				if count < 1 || count > 4 {
+					return "ERROR INVALID_ARGUMENT count must be between 1 and 4", true
+				}
+				r, code := svc.Suggest("scene", strArg(a, "file"), core.ViewCompact, false, app.SuggestArgs{
+					Manifest:  strArg(a, "manifest"),
+					Prefab:    strArg(a, "prefab"),
+					SurfaceID: strArg(a, "surface_id"),
+					Contact:   strArg(a, "contact"),
+					Align:     "wall",
+					Count:     count,
+				})
+				return r.Body, code != 0
+			},
+		},
 	}
+}
+
+func contactSurfacesArg(args map[string]any, key string) (string, bool, bool) {
+	raw, exists := args[key]
+	if !exists {
+		return "", false, true
+	}
+	values, ok := raw.(map[string]any)
+	if !ok || len(values) == 0 {
+		return "", true, false
+	}
+	keys := make([]string, 0, len(values))
+	normalized := make(map[string]string, len(values))
+	for rawRequirementID, rawSurfaceID := range values {
+		surfaceID, ok := rawSurfaceID.(string)
+		requirementID := strings.TrimSpace(rawRequirementID)
+		surfaceID = strings.TrimSpace(surfaceID)
+		if !ok || requirementID == "" || surfaceID == "" || strings.ContainsAny(requirementID, "=,") || strings.Contains(surfaceID, ",") {
+			return "", true, false
+		}
+		if _, duplicate := normalized[requirementID]; duplicate {
+			return "", true, false
+		}
+		normalized[requirementID] = surfaceID
+		keys = append(keys, requirementID)
+	}
+	sort.Strings(keys)
+	items := make([]string, 0, len(keys))
+	for _, requirementID := range keys {
+		items = append(items, requirementID+"="+normalized[requirementID])
+	}
+	return strings.Join(items, ","), true, true
 }
 
 func schema(s string) json.RawMessage {

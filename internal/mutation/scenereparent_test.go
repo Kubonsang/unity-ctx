@@ -65,7 +65,7 @@ func TestPlanSceneReparentToRoot(t *testing.T) {
 	}
 	out := string(plan.UpdatedData)
 	if !strings.Contains(out, "  m_Children: []\n  m_Father: {fileID: 0}\n--- !u!1 &1001") {
-		// old parent A collapsed to [] (first block before child GO)
+		t.Fatalf("old parent m_Children not collapsed:\n%s", out)
 	}
 	if !strings.Contains(out, "--- !u!4 &4001\nTransform:\n  m_GameObject: {fileID: 1001}\n  m_LocalPosition: {x: 0, y: 0, z: 0}\n  m_Children: []\n  m_Father: {fileID: 0}\n") {
 		t.Fatalf("child not moved to root:\n%s", out)
