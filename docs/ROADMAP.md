@@ -112,7 +112,7 @@ Status: complete (tag `v0.8.0`)
 
 ## v0.9 — Reviewed Spatial Geometry
 
-Status: implemented on the Concept Room Decorator integration branch.
+Status: complete (released in tag `v0.9.1`).
 
 - Spatial Manifest v2 with v1 read compatibility and strict stable JSON output
 - compound local OBB proxies, semantic axes, pivot offsets, arbitrary named contact frames, and legacy bottom/back/top aliases
@@ -128,7 +128,7 @@ Unity remains the final authority for preview and Apply. unity-ctx does not pars
 
 ## v0.9.1 — Human-reviewed Spatial Contracts
 
-Status: implemented on the Agent Spatial Contract Studio branch.
+Status: complete (tag `v0.9.1`).
 
 - strict `AssetSpatialContract` and `InteractionContract` load/save with stable normalized hashes
 - Draft, technical, human-review, revision-request, unable-to-judge, approved, and stale states

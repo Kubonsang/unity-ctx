@@ -91,10 +91,11 @@ go run ./cmd/unity-ctx asset get testdata/assets/enemy_config.asset --field maxH
 
 ## Status
 
-**v0.8.0 — Structural Scene Mutation (released).** All write paths are gated by
-the safety kernel; structural scene ops (`reposition`, `reparent`, `delete` via
-v2 `ops[]` patches) and the project-wide cross-file reference scanner
-(`internal/xref`) are in; `BLOCKED` exits `3`.
+**v0.9.1 — Human-reviewed Spatial Contracts (released).** Spatial Manifest v2,
+reviewed surfaces, compound OBB/contact checks, Asset/Interaction contracts,
+Surface Arrangement specs, and the OS-local signed human-review ledger are in.
+Manifest v1 remains readable, approval writes stay outside MCP, and all existing
+mutation paths remain dry-run-first and safety-kernel gated.
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for what is next.
 
 ## Reference Docs

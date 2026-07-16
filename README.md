@@ -765,7 +765,7 @@ blocks — RectTransform and prefab-instance (stripped) endpoints are refused.
 
 ## Status
 
-Currently at **[v0.8.0 — Structural Scene Mutation](https://github.com/Kubonsang/unity-ctx/releases/tag/v0.8.0)**: `scene reposition` / `reparent` / `delete` join the safety-gated write paths, backed by a project-wide cross-file reference scanner, and `BLOCKED` now exits `3`. Every write path is gated by the [unity-fileid-graph](https://github.com/Kubonsang/unity-fileid-graph) safety kernel. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full roadmap.
+Currently at **[v0.9.1 — Human-reviewed Spatial Contracts](https://github.com/Kubonsang/unity-ctx/releases/tag/v0.9.1)**: Spatial Manifest v2 adds reviewed surfaces, compound OBBs, contact checks, and deterministic wall suggestions; reusable Asset/Interaction contracts and Surface Arrangement specs add cryptographically verified human approval without exposing approval or mutation through MCP. Existing manifest v1 and dry-run-first workflows remain supported. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full roadmap.
 
 Next milestone: **v1.0 Agent Harness Release** — sample Unity project, CI examples, installer.
 
